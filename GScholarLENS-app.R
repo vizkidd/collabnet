@@ -1434,7 +1434,8 @@ server <- function(input, output, session) {
           scrollY = "600px",
           scrollX = TRUE,
           paging = TRUE,
-          dom = 'Bfrtip',       # 2. Add 'B' to the layout (B = Buttons)
+          dom = 'Blfrtip',       # 2. Add 'B' to the layout (B = Buttons)
+          lengthMenu = list(c(10, 25, 50, 100, -1), c('10', '25', '50', '100', 'All')),
           buttons = c('copy', 'csv', 'excel', 'pdf', 'print') # 3. Define buttons
         )
       )
