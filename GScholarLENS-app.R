@@ -110,7 +110,10 @@ compute_indices <- function(rv) {
     v <- sort(v, decreasing = TRUE)
     h <- 0L
     for (i in seq_along(v)) {
-      if (v[i] > i) h <- i else break
+      #STRICT
+      #if (v[i] > i) h <- i else break 
+      #Correct/Standard way
+      if (v[i] >= i) h <- i else break 
     }
     as.integer(h)
   }
@@ -124,7 +127,7 @@ compute_indices <- function(rv) {
   
   for (pos in positions) {
     sub <- df %>% filter(.data[[pos]] == 1)
-    h <- compute_h_index(sub$Adjusted_Citations)
+    h <- compute_h_index(sub %>% arrange(Citations) %>% select(Citations))
     results[[pos]] <- list(
       h_index = h,
       n_papers = nrow(sub)
@@ -132,8 +135,8 @@ compute_indices <- function(rv) {
   }
   
   # Classical H-indices
-  h_cites <- compute_h_index(df$Citations)
-  h_adjcites <- compute_h_index(df$Adjusted_Citations)
+  h_cites <- compute_h_index(df %>% arrange(Citations) %>% select(Citations))
+  h_adjcites <- compute_h_index(df %>% arrange(Adjusted_Citations) %>% select(Adjusted_Citations))
   
   rv$summary_table <- tibble(
     Position = positions,
@@ -1800,3 +1803,4 @@ jcr_names_norm <- jcr |>
   select(Name, Name_norm, JIF5Years, Qscore) 
 
 shinyApp(ui = ui, server = server, options = list(port=2447))
+#shinyApp(ui = ui, server = server, options = list(port=structure("/tmp/glens.sock", mask=385, group="www-data")))
