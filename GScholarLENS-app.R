@@ -35,6 +35,7 @@ source("./GScholarLENS-PlotGLENS.R")
 
 #Flow functions
 extend_input_table <- function(rv) {
+  
   glens_extended_table <- rv$glens_input_table %>%
     rowwise() %>%
     mutate(
@@ -43,70 +44,44 @@ extend_input_table <- function(rv) {
       matched_token = dec$matched_token
     ) %>%
     ungroup() %>%
+    filter(label != "Not_found") %>%
     mutate(
       First_Author = as.integer(label == "First_Author"),
       Second_Author = as.integer(label == "Second_Author"),
       Co_Author = as.integer(label == "Co_Author"),
       Corresponding_Author = as.integer(label == "Corresponding_Author")
     ) %>%
-    select(-dec) %>% filter(label!="Not_found")
+    select(-dec)
   
-  glens_extended_table <- glens_extended_table %>% 
-    # dplyr::group_by(label) %>%
+  # Ensure Author_Count exists
+  if (!"Author_Count" %in% colnames(glens_extended_table)) {
+    glens_extended_table <- glens_extended_table %>%
+      mutate(Author_Count = str_count(Authors, ",") + 1)
+  }
+  
+  # Correct weight logic
+  glens_extended_table <- glens_extended_table %>%
     mutate(
       Adjustment_Weights = case_when(
-        label == "First_Author"         ~  0.90,
-        label == "Second_Author"        ~  0.50,
-        label == "Corresponding_Author" ~  1.00,
+        label == "Corresponding_Author" ~ 1.00,
+        label == "First_Author" ~ 0.90,
+        label == "Second_Author" ~ 0.50,
         label == "Co_Author" & Author_Count <= 6 ~ 0.25,
-        label == "Co_Author" & Author_Count > 6 ~ 0.1,
-        TRUE                            ~ NA_real_
-      )
-    ) %>% mutate(
-      Adjusted_Citations = Citations * Adjustment_Weights
-    ) %>% ungroup()
+        label == "Co_Author" & Author_Count > 6 ~ 0.10,
+        TRUE ~ 0
+      ),
+      Adjusted_Citations = as.numeric(Citations) * Adjustment_Weights
+    )
   
-  # print(colnames(glens_extended_table))
-  # print(nrow(glens_extended_table))
-  # print(glens_extended_table)
-  # print(glens_extended_table[,c("label", "Citations","Adjusted_Citations")])
+  # Clean numeric columns
+  glens_extended_table$Adjusted_Citations <- suppressWarnings(as.numeric(glens_extended_table$Adjusted_Citations))
   
-  # if(nrow(glens_extended_table) <= 0){
-  #   #No names were matched. return
-  #   output$log <- renderText(sprintf("No names were matched."))
-  #   shinyjs::enable(id = "submit_button")
-  #   progress$close()
-  #   return()
-  # }
-  #
-  # required_cols <- c("Adjusted_Citations",
-  #                    "First_Author", "Second_Author", "Co_Author", "Corresponding_Author")
-  # missing <- setdiff(required_cols, names(glens_extended_table))
-  # if (length(missing) > 0) {
-  #   # stop(paste("Input is missing required columns:", paste(missing, collapse = ", ")))
-  #   output$log <- renderText(paste("Input is missing required columns:", paste(missing, collapse = ", ")))
-  #   return()
-  # }
-  
-  # Ensure Adjusted_Citations numeric
-  glens_extended_table <- glens_extended_table %>% mutate(Adjusted_Citations = suppressWarnings(as.numeric(Adjusted_Citations)))
-  
-  # Replace NAs by 0 in indicators if necessary
   for (col in c("First_Author","Second_Author","Co_Author","Corresponding_Author")) {
-    if (!is.numeric(glens_extended_table[[col]])) glens_extended_table[[col]] <- suppressWarnings(as.numeric(glens_extended_table[[col]]))
     glens_extended_table[[col]][is.na(glens_extended_table[[col]])] <- 0
     glens_extended_table[[col]] <- ifelse(glens_extended_table[[col]] >= 1, 1L, 0L)
   }
   
-  # -----------------------------
-  # Build a position rank to order rows globally:
-  #  First_Author  -> rank 1
-  #  Second_Author -> rank 2
-  #  Co_Author     -> rank 3
-  #  Corresponding_Author -> rank 4
-  # If a row has multiple flags (rare), choose the smallest rank it matches.
-  # Rows with none of the flags will get rank 99 and appear last.
-  # -----------------------------
+  # Global ordering (consistent with file2.R logic)
   rv$glens_etable_final <- glens_extended_table %>%
     mutate(
       position_rank = case_when(
@@ -115,60 +90,70 @@ extend_input_table <- function(rv) {
         Co_Author == 1 ~ 3L,
         Corresponding_Author == 1 ~ 4L,
         TRUE ~ 99L
-      )
+      ),
+      adj_cit_for_sort = ifelse(is.na(Adjusted_Citations), -Inf, Adjusted_Citations)
     ) %>%
-    # Within same position_rank, sort by Adjusted_Citations descending (NA treated as -Inf so they go last)
-    mutate(adj_cit_for_sort = ifelse(is.na(Adjusted_Citations), -Inf, Adjusted_Citations)) %>%
     arrange(position_rank, desc(adj_cit_for_sort)) %>%
     select(-adj_cit_for_sort) %>%
     mutate(Year = as.integer(Year))
 }
 
 compute_indices <- function(rv) {
-  # -----------------------------
-  # For each authorship position, extract the ordered list (from rv$glens_etable_final)
-  # and compute H-index using Adjusted_Citations in that order (function re-sorts internally)
-  # Also save the ordered dataframes for output sheets
-  # -----------------------------
-  positions <- list(
-    First_Author = "First_Author",
-    Second_Author = "Second_Author",
-    Co_Author = "Co_Author",
-    Corresponding_Author = "Corresponding_Author"
-  )
   
-  rv$glens_year_filtered <- rv$glens_year_filtered %>% arrange(desc(Adjusted_Citations), .by_group = TRUE)
+  # Use FINAL ordered table only
+  df <- rv$glens_etable_final
   
-  glens_final_list <- list()
-  # print("compute_indices():")
-  # print(rv$glens_etable_final)
-  for (pos_name in names(positions)) {
-    col <- positions[[pos_name]]
-    # select rows where this position indicator == 1, preserving rv$glens_etable_final order
-    sub <- rv$glens_year_filtered %>% filter(.data[[col]] == 1) 
-    # extract Adjusted_Citations in listed order
-    cit_vec <- sub$Adjusted_Citations
-    # compute H (function sorts descending internally)
-    h <- compute_h_index(cit_vec)
-    glens_final_list[[pos_name]] <- list(h_index = h, n_papers = nrow(sub))
+  # Strict H-index (as you changed)
+  compute_h_index <- function(citations_vec) {
+    v <- citations_vec[!is.na(citations_vec)]
+    if (length(v) == 0) return(0L)
+    v <- sort(v, decreasing = TRUE)
+    h <- 0L
+    for (i in seq_along(v)) {
+      if (v[i] > i) h <- i else break
+    }
+    as.integer(h)
   }
   
+  positions <- c("First_Author",
+                 "Second_Author",
+                 "Co_Author",
+                 "Corresponding_Author")
   
-  h_cites <- compute_h_index(rv$glens_year_filtered$Citations[order(rv$glens_year_filtered$Citations, decreasing = TRUE)])
-  h_adjcites <- compute_h_index(rv$glens_year_filtered$Adjusted_Citations[order(rv$glens_year_filtered$Adjusted_Citations, decreasing = TRUE)])
+  results <- list()
   
-  # Summary table
+  for (pos in positions) {
+    sub <- df %>% filter(.data[[pos]] == 1)
+    h <- compute_h_index(sub$Adjusted_Citations)
+    results[[pos]] <- list(
+      h_index = h,
+      n_papers = nrow(sub)
+    )
+  }
+  
+  # Classical H-indices
+  h_cites <- compute_h_index(df$Citations)
+  h_adjcites <- compute_h_index(df$Adjusted_Citations)
+  
   rv$summary_table <- tibble(
-    Position = names(glens_final_list),
-    H_index = sapply(glens_final_list, function(x) x$h_index),
-    Num_papers = sapply(glens_final_list, function(x) x$n_papers)
+    Position = positions,
+    H_index = sapply(results, function(x) x$h_index),
+    Num_papers = sapply(results, function(x) x$n_papers)
   )
   
-  rv$summary_table <- rv$summary_table %>% add_row(Position = "h-index(Citations)", H_index=h_cites, Num_papers=nrow(rv$glens_year_filtered))
-  rv$summary_table <- rv$summary_table %>% add_row(Position = "h-index(Adj.Citations)", H_index=h_adjcites, Num_papers=nrow(rv$glens_year_filtered))
+  rv$summary_table <- rv$summary_table %>%
+    add_row(Position = "h-index(Citations)",
+            H_index = h_cites,
+            Num_papers = nrow(df)) %>%
+    add_row(Position = "h-index(Adj.Citations)",
+            H_index = h_adjcites,
+            Num_papers = nrow(df))
   
-  rv$sh_index <- sum(rv$summary_table$H_index[c(1,2,3,4)], na.rm = TRUE)
-  # summary_tbl <- bind_rows(summary_tbl, tibble(Position = "Sh_index", H_index = Sh_index, Num_papers = NA_integer_))
+  # Correct Sh-index: sum ONLY the 4 positional H indices
+  rv$sh_index <- sum(rv$summary_table$H_index[
+    rv$summary_table$Position %in% positions
+  ], na.rm = TRUE)
+  
   shinyjs::show("sh_index")
   shinyjs::show("summary_table")
   shinyjs::show("extended_table")
@@ -1431,13 +1416,26 @@ server <- function(input, output, session) {
     
     # output$extended_table <- renderTable(rv$glens_year_filtered, striped = TRUE)
     output$summary_table <- renderTable(rv$summary_table, striped = TRUE)
+    # output$extended_table <- DT::renderDataTable({
+    #   datatable(
+    #     rv$glens_year_filtered,
+    #     options = list(
+    #       scrollY = "600px",
+    #       scrollX = TRUE,
+    #       paging = TRUE
+    #     )
+    #   )
+    # })
     output$extended_table <- DT::renderDataTable({
       datatable(
         rv$glens_year_filtered,
+        extensions = 'Buttons', # 1. Load the extension
         options = list(
           scrollY = "600px",
           scrollX = TRUE,
-          paging = TRUE
+          paging = TRUE,
+          dom = 'Bfrtip',       # 2. Add 'B' to the layout (B = Buttons)
+          buttons = c('copy', 'csv', 'excel', 'pdf', 'print') # 3. Define buttons
         )
       )
     })
@@ -1800,4 +1798,4 @@ jcr$Name_norm <- sapply(jcr$Name, function(x) normalize_journal(x))
 jcr_names_norm <- jcr |>
   select(Name, Name_norm, JIF5Years, Qscore) 
 
-shinyApp(ui = ui, server = server, options = list(port=structure("/tmp/glens.sock", mask=385, group="www-data")))
+shinyApp(ui = ui, server = server, options = list(port=2447))
