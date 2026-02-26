@@ -147,15 +147,18 @@ compute_indices <- function(rv) {
   rv$summary_table <- rv$summary_table %>%
     add_row(Position = "h-index(Citations)",
             H_index = h_cites,
-            Num_papers = nrow(df)) %>%
-    add_row(Position = "h-index(Adj.Citations)",
-            H_index = h_adjcites,
             Num_papers = nrow(df))
+  # %>%
+  #   add_row(Position = "h-index(Adj.Citations)",
+  #           H_index = h_adjcites,
+  #           Num_papers = nrow(df))
   
-  # Correct Sh-index: sum ONLY the 4 positional H indices
-  rv$sh_index <- sum(rv$summary_table$H_index[
-    rv$summary_table$Position %in% positions
-  ], na.rm = TRUE)
+  # # Correct Sh-index: sum ONLY the 4 positional H indices
+  # rv$sh_index <- sum(rv$summary_table$H_index[
+  #   rv$summary_table$Position %in% positions
+  # ], na.rm = TRUE)
+  
+  rv$sh_index <- h_adjcites
   
   shinyjs::show("sh_index")
   shinyjs::show("summary_table")
