@@ -17,13 +17,31 @@ require(future.apply)
 require(tidyr)
 require(DT)
 
-
 font_add(
   family = "schibsted-grotesk",
   regular = "www/fonts/SchibstedGrotesk.ttf"
 )
-
+theme_set(theme_minimal(base_family = "schibsted-grotesk"))
 showtext_auto()
+
+# # 1. Verify showtext is active
+# print(showtext::showtext_auto())
+# # 2. List all fonts R currently 'sees' via systemfonts
+# library(systemfonts)
+# print(match_fonts("Schibsted Grotesk"))
+# # 3. Check ggplot2 default
+# print(theme_get()$text$family)
+# # Check if R actually registered the alias
+# # This lists all available font families registered in the session
+print(sysfonts::font_families())
+# # This checks if your specific font is in that list
+# print("schibsted-grotesk" %in% sysfonts::font_families())
+# # Check the file path visibility (Shiny looks relative to the project root)
+# print(file.exists("www/fonts/SchibstedGrotesk.ttf"))
+# return()
+
+update_geom_defaults("text", list(family = "schibsted-grotesk"))
+update_geom_defaults("label", list(family = "schibsted-grotesk"))
 
 # use a multisession plan so futures run in background R sessions
 plan(multisession)
@@ -35,8 +53,8 @@ source("./GScholarLENS-PlotGLENS.R")
 
 #Flow functions
 extend_input_table <- function(rv) {
-  print("target_variants_norm")
-  print(rv$target_variants_norm)
+  # print("target_variants_norm")
+  # print(rv$target_variants_norm)
   # glens_extended_table <- dplyr::bind_rows(lapply(rv$target_variants_norm, function(curr_variant){
   #   return(rv$glens_input_table %>%
   #     rowwise() %>%
@@ -636,10 +654,11 @@ plot_glens_table <- function(rv, output, session){
     # Scatter trace index = (i - 1) * 2 + 1
     scatter_trace_idx <- (i - 1) * 2 + 1
     
-    print("x_violin")
-    print(x_violin)
-    print("y_violin")
-    print(y_violin)
+    # print("x_violin")
+    # print(x_violin)
+    # print("y_violin")
+    # print(y_violin)
+    
     # Update violin 'y' (restyle)
     # Note: plotlyProxyInvoke expects values for the trace; we pass y as a list of values for that trace
     plotlyProxyInvoke(cdist_proxy, "restyle", list(x=list(x_violin),y = list(y_violin)), list(violin_trace_idx))
@@ -1319,7 +1338,17 @@ render_skeleton_plots <- function(rv, output){
 #SHINY BLOCK
 ui <- fluidPage(
   shinyjs::useShinyjs(),
-  
+  tags$head(
+    tags$style(HTML("
+    @font-face {
+      font-family: 'schibsted-grotesk';
+      src: url('fonts/SchibstedGrotesk.ttf') format('truetype');
+    }
+    * { 
+      font-family: 'schibsted-grotesk', sans-serif !important; 
+    }
+  "))
+  ),
   # 1. Custom Title Header
   tags$div(
     style = "padding: 20px; background-color: #4B8BBE; color: white; margin-bottom: 20px; border-radius: 0 0 10px 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);",

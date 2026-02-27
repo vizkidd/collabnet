@@ -127,7 +127,7 @@ decide_label_for_target <- function(author_field, target_variants_norm, author_r
   
   # print(toks)
   # print(nrow(toks))
-  print(target_variants_norm)
+  # print(target_variants_norm)
   
   last_pos <- max(toks$pos)
   any_star_in_row <- any(toks$has_star)
@@ -251,7 +251,7 @@ getExcelColumns <- function(journalTitleIdx, unique_journals, jsonData) {
   if(length(title_norm) <= 0){
     warning(paste("idx:", journalTitleIdx, "normalize failed!:", unique_journals[journalTitleIdx]))
     stop()
-    print(c(idx,title_norm, journalTitle))
+    # print(c(idx,title_norm, journalTitle))
   }
   idx <- c()
   idx <- which(
