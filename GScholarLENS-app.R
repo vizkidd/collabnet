@@ -35,7 +35,27 @@ source("./GScholarLENS-PlotGLENS.R")
 
 #Flow functions
 extend_input_table <- function(rv) {
-  
+  print("target_variants_norm")
+  print(rv$target_variants_norm)
+  # glens_extended_table <- dplyr::bind_rows(lapply(rv$target_variants_norm, function(curr_variant){
+  #   return(rv$glens_input_table %>%
+  #     rowwise() %>%
+  #     mutate(
+  #       dec = list(decide_label_for_target(Authors, curr_variant, rv$author_match_regex)),
+  #       label = dec$label,
+  #       matched_token = dec$matched_token
+  #     ) %>%
+  #     ungroup() %>%
+  #     filter(label != "Not_found") %>%
+  #     mutate(
+  #       First_Author = as.integer(label == "First_Author"),
+  #       Second_Author = as.integer(label == "Second_Author"),
+  #       Co_Author = as.integer(label == "Co_Author"),
+  #       Corresponding_Author = as.integer(label == "Corresponding_Author")
+  #     ) %>%
+  #     select(-dec) ) #END - return
+  # })) #END - lapply
+
   glens_extended_table <- rv$glens_input_table %>%
     rowwise() %>%
     mutate(
@@ -616,6 +636,10 @@ plot_glens_table <- function(rv, output, session){
     # Scatter trace index = (i - 1) * 2 + 1
     scatter_trace_idx <- (i - 1) * 2 + 1
     
+    print("x_violin")
+    print(x_violin)
+    print("y_violin")
+    print(y_violin)
     # Update violin 'y' (restyle)
     # Note: plotlyProxyInvoke expects values for the trace; we pass y as a list of values for that trace
     plotlyProxyInvoke(cdist_proxy, "restyle", list(x=list(x_violin),y = list(y_violin)), list(violin_trace_idx))
@@ -687,53 +711,50 @@ plot_glens_table <- function(rv, output, session){
     ))
   }
   
-    req(pub_pdata)
-    aperc_proxy <- plotlyProxy("aperc_plot", session)
-
-    # plotlyProxyInvoke(
-    #   aperc_proxy,
-    #   "restyle",
-    #   list(y = list("Publications")),
-    #   seq_along(all_positions) - 1
-    # )
-
-    n <- length(all_positions)
-    # build values in TRACE ORDER
-    aperc_vals <- sapply(all_positions, function(pos) {
-      i <- which(pub_pdata$position_rank == pos)
-      if (length(i) == 1) pub_pdata$pcontrib[i] else 0
-    })
-    
-    # normalize to 100%
-    aperc_vals <- aperc_vals / sum(aperc_vals) * 100
-    
-    # IMPORTANT: each attribute must be a list-of-lists
-    aperc_x_list <- lapply(aperc_vals, function(v) list(v))
-    print(aperc_x_list)
-    aperc_y_list <- lapply(seq_len(n), function(i) list("Publications"))
-    aperc_text_list <- lapply(seq_len(n), function(i) {
-      list(
-        paste0(
-          "<b>Position:</b> ", all_positions[i],
-          "<br><b>Contribution %:</b> ", round(aperc_vals[i], 1)
-        )
-      )
-    })
-    aperc_textpos_list <- lapply(seq_len(n), function(i) list("inside"))
-    
-    aperc_trace_idxs <- as.list(0:(n - 1))
-    
-    plotlyProxyInvoke(
-      aperc_proxy,
-      "restyle",
-      list(
-        x = I(aperc_x_list),
-        y = I(aperc_y_list),
-        text = aperc_text_list,
-        textposition = aperc_textpos_list
-      ),
-      aperc_trace_idxs
-    )
+  req(pub_pdata)
+  aperc_proxy <- plotlyProxy("aperc_plot", session)
+  
+  n <- length(all_positions)
+  
+  # 1. Calculate values
+  aperc_vals <- sapply(all_positions, function(pos) {
+    i <- which(pub_pdata$position_rank == pos)
+    if (length(i) == 1) pub_pdata$pcontrib[i] else 0
+  })
+  
+  # Normalize to 100%
+  if(sum(aperc_vals) > 0) {
+    aperc_vals <- (aperc_vals / sum(aperc_vals)) * 100
+  }
+  
+  # 2. Prepare the lists for restyle
+  # Restyle expects a list where each element corresponds to a trace
+  # Each element itself must be a list containing the data point(s)
+  aperc_x_list <- lapply(aperc_vals, function(v) list(v)) 
+  # print("aperc_x_list")
+  # print(aperc_x_list)
+  aperc_y_list <- lapply(seq_len(n), function(i) list("Publications"))
+  # print("aperc_y_list")
+  # print(aperc_y_list)
+  aperc_text_list <- lapply(seq_len(n), function(i) {
+    list(paste0(
+      "<b>Position:</b> ", all_positions[i],
+      "<br><b>Contribution %:</b> ", round(aperc_vals[i], 1), "%"
+    ))
+  })
+  
+  # 3. Execute Invoke
+  plotlyProxyInvoke(
+    aperc_proxy,
+    "restyle",
+    list(
+      x = unname(aperc_x_list),
+      y = unname(aperc_y_list),
+      text = unname(aperc_text_list),
+      textposition = rep(list("inside"), n)
+    ),
+    as.list(0:(n - 1)) # Trace indices
+  )
     
     # if (!is.null(rv$aperc_plot)) {
     #   pb <- plotly_build(rv$aperc_plot)
@@ -778,61 +799,43 @@ plot_glens_table <- function(rv, output, session){
   # print(cites_pdata)
   
   req(cites_pdata)
-  
   cperc_proxy <- plotlyProxy("cperc_plot", session)
   
-    # plotlyProxyInvoke(
-    #   cperc_proxy,
-    #   "restyle",
-    #   list(
-    #     x = list(cites_pdata$pcontrib),   # SINGLE value
-    #     y = "Citations",            # SINGLE shared category
-    #     text = list(
-    #       paste0(
-    #         "<b>Position:</b> ", cites_pdata$position_rank,
-    #         "<br><b>Contribution %:</b> ", cites_pdata$pcontrib
-    #       )
-    #     )
-    #   ),
-    #   0
-    # )
+  n <- length(all_positions)
   
-    
-  for (i in seq_along(all_positions)) {
-    # row <- which(cites_pdata$position_rank == all_positions[i])
-    # # print(cites_pdata[row,])
-    # # print(cites_pdata$pcontrib[row])
-    # if (length(row) == 0) {
-    #   # print("EMPTY ROW")
-    #   plotlyProxyInvoke(
-    #     cperc_proxy,
-    #     "restyle",
-    #     list(
-    #       x = numeric(0),
-    #       y = character(0),
-    #       text = list(character(0))
-    #     ),
-    #     list(i - 1)
-    #   )
-    # } else {
-      plotlyProxyInvoke(
-        cperc_proxy,
-        "restyle",
-        list(
-          x = list(cites_pdata$pcontrib[i]),   # SINGLE value
-          y = list("Citations"),            # SINGLE shared category
-          text = list(
-            paste0(
-              "<b>Position:</b> ", cites_pdata$position_rank[i],
-              "<br><b>Contribution %:</b> ", cites_pdata$pcontrib[i]
-            )
-          )
-        ),
-        i - 1
-      )
-    # }
-
-  }# End - for
+  # 1. Map the citation data to match the order of all_positions
+  cperc_vals <- sapply(all_positions, function(pos) {
+    idx <- which(cites_pdata$position_rank == pos)
+    if (length(idx) == 1) cites_pdata$pcontrib[idx] else 0
+  })
+  
+  # Ensure total is 100% (Safety check)
+  if(sum(cperc_vals) > 0) {
+    cperc_vals <- (cperc_vals / sum(cperc_vals)) * 100
+  }
+  
+  # 2. Build the List-of-Lists (Unnamed)
+  cperc_x_list <- lapply(cperc_vals, function(v) list(v))
+  cperc_y_list <- lapply(seq_len(n), function(i) list("Citations"))
+  cperc_text_list <- lapply(seq_len(n), function(i) {
+    list(paste0(
+      "<b>Position:</b> ", all_positions[i],
+      "<br><b>Contribution %:</b> ", round(cperc_vals[i], 1), "%"
+    ))
+  })
+  
+  # 3. Single Update Call
+  plotlyProxyInvoke(
+    cperc_proxy,
+    "restyle",
+    list(
+      x = unname(cperc_x_list),
+      y = unname(cperc_y_list),
+      text = unname(cperc_text_list),
+      textposition = rep(list("inside"), n)
+    ),
+    as.list(0:(n - 1))
+  )# End - for
   
   print(cites_pdata)
   print(sum(cites_pdata$pcontrib))
@@ -933,6 +936,16 @@ render_skeleton_plots <- function(rv, output){
     "Corresponding Author" = "#36a2ebff"
   )
   
+  position_45plots <- c("First Author" = "#dbf2f2",
+                               "Second Author" = "#ebe0ff",
+                               "Co-Author" = "#ffe9d4",
+                               "Corresponding Author" = "#d7ecfb")
+  
+  position_45plots_border <- c("First Author" = "#8fcedb",
+                        "Second Author" = "#cfaeec",
+                        "Co-Author" = "#fbb774",
+                        "Corresponding Author" = "#7dc2f1")
+  
   # Alpha values so Q1 most opaque and Q4 faint
   quartile_alpha <- c("Q1" = 0.9, "Q2" = 0.70, "Q3" = 0.50, "Q4" = 0.30, "NA" = 0.1)
   
@@ -1022,7 +1035,7 @@ render_skeleton_plots <- function(rv, output){
         color = ~position_colors[Position],
         opacity = ~quartile_alpha[Qscore],
         line = list(
-          width = 0.25,
+          width = 1,
           color = ~position_border_colors[Position]
         )
       )
@@ -1099,7 +1112,7 @@ render_skeleton_plots <- function(rv, output){
         color = ~position_colors[Position],
         opacity = ~quartile_alpha[Qscore],
         line = list(
-          width = 0.25,
+          width = 1,
           color = ~position_border_colors[Position]
         )
       )
@@ -1233,113 +1246,166 @@ render_skeleton_plots <- function(rv, output){
 
   output$aperc_plot <- renderPlotly({
     p <- plot_ly()
+    
     for (pos in all_positions) {
       p <- add_trace(
         p,
         type = "bar",
         orientation = "h",
-        x = numeric(0),         # IMPORTANT: numeric(0) to make trace numeric
-        y = character(0),       # single shared category
+        x = 0,               # Initialize with 0 instead of numeric(0)
+        y = "Publications",  # Give it the actual category name immediately
         name = pos,
         marker = list(
-          color = position_colors[pos],
-          line = list(color = position_border_colors[pos], width = 0.6)
+          color = position_45plots[pos],
+          line = list(color = position_45plots_border[pos], width = 1)
         ),
-        hoverinfo = "text",     # we'll provide text via restyle
+        hoverinfo = "text",
+
         showlegend = FALSE
       )
     }
     
-    rv$aperc_plot <- p %>%
-      layout(
-        barmode = "stack",
-        xaxis = list(title = NULL, range = c(0,100), ticksuffix = "%"),
-        yaxis = list(title = NULL, showticklabels = FALSE),
-        title = list(text = "Author Contribution in % based on Authorship", x = 0.5)
-      ) 
-    rv$aperc_plot
+    p %>% layout(
+      barmode = "stack",
+      xaxis = list(
+        title = "", 
+        range = c(0, 100), 
+        dtick = 10, 
+        showgrid = TRUE,
+        ticksuffix = "%"
+        
+      ),
+      yaxis = list(
+        title = "", 
+        showticklabels = FALSE, 
+        fixedrange = TRUE
+      ),
+      margin = list(l = 10, r = 10, t = 50, b = 30),
+      title = list(text = "Author Contribution in % based on Authorship", x = 0.5)
+    )
   })
   
   output$cperc_plot <- renderPlotly({
     p <- plot_ly()
     for (pos in all_positions) {
-      print(position_colors[pos])
-      print(position_border_colors[pos])
       p <- add_trace(
         p,
         type = "bar",
         orientation = "h",
-        x = numeric(0),
-        y = character(0),
+        x = 0,               # Start at 0
+        y = "Citations",     # Pre-define the category
         name = pos,
         marker = list(
-          color = position_colors[pos],
-          line = list(color = position_border_colors[pos], width = 0.6)
+          color = position_45plots[pos],
+          line = list(color = position_45plots_border[pos], width = 0.8)
         ),
         hoverinfo = "text",
+
         showlegend = FALSE
       )
     }
     
-    rv$cperc_plot <- p %>%
-      layout(
-        barmode = "stack",   # <-- REQUIRED
-        xaxis = list(title = NULL, range = c(0, 100)),
-        yaxis = list(title = NULL, showticklabels = FALSE),
-        title = list(
-          text = "Citation Contribution in % based on Authorship",
-          x = 0.5
-        )
-      )
-    
-    rv$cperc_plot
+    p %>% layout(
+      barmode = "stack",
+      xaxis = list(title = "", range = c(0, 100), dtick = 10, ticksuffix = "%"),
+      yaxis = list(title = "", showticklabels = FALSE, fixedrange = TRUE),
+      margin = list(l = 20, r = 20, t = 50, b = 30),
+      title = list(text = "Citation Contribution in % based on Authorship", x = 0.5)
+    )
   })
   
 } # End - Plot skeleton renders
 
 #SHINY BLOCK
-ui <- fluidPage( #bootstrapPage(
-  shinyjs::useShinyjs(), 
-  # numericInput('n', 'Number of obs', n),
-  # textOutput("time"),
-  textAreaInput(
-    "doi_text",
-    "DOI input:",
-    value = ""
+ui <- fluidPage(
+  shinyjs::useShinyjs(),
+  
+  # 1. Custom Title Header
+  tags$div(
+    style = "padding: 20px; background-color: #4B8BBE; color: white; margin-bottom: 20px; border-radius: 0 0 10px 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);",
+    h2("GScholarLENS Analysis Dashboard", style = "margin: 0; font-weight: bold;")
   ),
-  textAreaInput(
-    "author_list",
-    "Author Name List (seperated by |) *<required>:",
-    value = ""
-  ),
-  textAreaInput(
-    "orcid_text",
-    "ORCID input:",
-    value = ""
-  ),
-  actionButton("submit_button", "Run GScholarLENS for DOI"),
-  tags$br(),
-  verbatimTextOutput("log"),
-  shinyjs::hidden(
-    sliderInput( 
-      "year_slider", "Year Slider", 
-      min = 0, max = 0, 
-      value = c(0, 0),
-      step = 1,          # Ensures only integer steps
-      round = TRUE       # Ensures display values are integers
-    )),
-  tags$br(),
-  tableOutput("orcid_table"),
-  shinyjs::disabled(shiny::uiOutput("sh_index")),
-  # tableOutput("data_table"),
-  tableOutput("summary_table"),
-  plotlyOutput("acounts_plot"),
-  plotlyOutput("ccounts_plot"),
-  plotlyOutput("cdist_plot"),
-  plotlyOutput("aperc_plot"),
-  plotlyOutput("cperc_plot"),
-  DT::DTOutput("extended_table")
-  # actionButton("update", "Show Time"),
+  
+  # 2. Main Content Grid
+  fluidRow(
+    style = "margin: 0;", # Adds a bit of side padding to the whole row
+    
+    # LEFT COLUMN (Width 3) - Your manual "Sidebar"
+    column(
+      width = 3,
+      style = "padding: 0;", # Removes extra padding to keep cards aligned
+      
+      # Search Container
+      tags$div(
+        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; background: white; margin-bottom: 25px;",
+        h4("Search & Identification", style = "margin-top: 0; color: #2c3e50; font-weight: bold; font-size: 16px;"),
+        textAreaInput("doi_text", "DOI input:", value = "", rows = 2, width = "100%"),
+        textAreaInput("author_list", "Author Name List (separated by |) *<required>:", value = "", rows = 2, width = "100%"),
+        textAreaInput("orcid_text", "ORCID input:", value = "", rows = 2, width = "100%"),
+        actionButton("submit_button", "Run GScholarLENS for DOI", 
+                     class = "btn-primary", 
+                     style = "width: 100%; font-weight: bold; margin-top: 10px; background-color: #4B8BBE; border: none;")
+      ),
+      
+      # Year Slider Container
+      tags$div(
+        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; background: white; margin-bottom: 25px;",
+        h4("Filter by Timeline", style = "margin-top: 0; color: #4B8BBE; font-weight: bold; font-size: 16px;"),
+        shinyjs::hidden(
+          sliderInput(
+            "year_slider", "Publication Years", 
+            min = 0, max = 0, value = c(0, 0),
+            step = 1, round = TRUE, width = "100%"
+          )
+        )
+      ),
+      
+      verbatimTextOutput("log")
+    ),
+    
+    # RIGHT COLUMN (Width 9) - Your main content
+    column(
+      width = 9,
+      
+      # 3) Container for Impact Metrics
+      tags$div(
+        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; background: white; margin-bottom: 25px;",
+        h3("Author Impact Metrics", style = "color: #4B8BBE; margin-top: 0; font-weight: bold;"),
+        hr(style = "border-top: 1px solid #eee;"),
+        fluidRow(
+          column(6, tableOutput("orcid_table")),
+          column(6, shinyjs::disabled(shiny::uiOutput("sh_index")))
+        ),
+        tableOutput("summary_table")
+      ),
+      
+      # 4) Container for Visualizations
+      tags$div(
+        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #2E8B57; background: #fafafa; margin-bottom: 25px;",
+        h3("Publication & Citation Trends", style = "color: #2E8B57; margin-top: 0; font-weight: bold;"),
+        hr(),
+        fluidRow(
+          column(6, plotlyOutput("acounts_plot")),
+          column(6, plotlyOutput("ccounts_plot"))
+        ),
+        tags$br(),
+        plotlyOutput("cdist_plot"),
+        tags$br(),
+        fluidRow(
+          column(6, plotlyOutput("aperc_plot")),
+          column(6, plotlyOutput("cperc_plot"))
+        )
+      ),
+      
+      # 5) Container for Publication Table
+      tags$div(
+        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #D6A77A; background: white; margin-bottom: 25px;",
+        h3("Detailed Publication Record", style = "color: #D6A77A; margin-top: 0; font-weight: bold;"),
+        hr(),
+        DT::DTOutput("extended_table")
+      )
+    )
+  )
 )
 
 # # Define the server code
@@ -1448,7 +1514,10 @@ server <- function(input, output, session) {
     })
     
     output$sh_index <-  renderUI({
-      HTML(paste("<b>Sh-Index:</b>", rv$sh_index))
+      tags$div(
+        style = "text-align: left; padding-left: 0px;",
+        HTML(paste("<b>Sh-Index:</b>", rv$sh_index))
+      )
     })
     
     plot_glens_table(rv, output, session)

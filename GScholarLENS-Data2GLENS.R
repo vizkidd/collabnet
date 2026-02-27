@@ -36,6 +36,7 @@ extract_parts <- function(name) {
 score_match <- function(token_clean, target_variants_norm) {
   best <- list(score = -Inf, variant = NA_character_, reason = NA_character_)
   for (vname in names(target_variants_norm)) {
+    # print(vname)
     vnorm <- target_variants_norm[[vname]]$norm
     vparts <- target_variants_norm[[vname]]$parts
     tparts <- extract_parts(token_clean)
@@ -66,6 +67,8 @@ score_match <- function(token_clean, target_variants_norm) {
     
     if (sc > best$score) best <- list(score = sc, variant = vname, reason = reason)
   }
+  
+  # print(best)
   return(best)
 }
 
@@ -124,7 +127,7 @@ decide_label_for_target <- function(author_field, target_variants_norm, author_r
   
   # print(toks)
   # print(nrow(toks))
-  # print(target_variants_norm)
+  print(target_variants_norm)
   
   last_pos <- max(toks$pos)
   any_star_in_row <- any(toks$has_star)
