@@ -16,6 +16,43 @@ require(stringdist)
 require(future.apply)
 require(tidyr)
 require(DT)
+require(sodium)
+require(uuid)
+require(openssl)
+require(xfun)
+
+fs::dir_create("keys") 
+
+glens_env <- new.env(parent = emptyenv())
+BIOS_ID <- Sys.info()[["user"]] #FALLBACK 
+if(xfun::is_windows()){
+  BIOS_ID <- trimws(system("wmic bios get serialnumber", intern = TRUE)[2])
+}else if(xfun::is_linux() || xfun::is_unix()){
+  BIOS_ID <- readLines("/var/lib/dbus/machine-id")
+}else if(xfun::is_macos()){
+  stop("macOS not tested")
+  system("ioreg -l | grep IOPlatformSerialNumber", intern = TRUE)
+}else{
+  stop("Could not find operating system!")
+}
+
+#CREATING PRIVATE KEY (if it doesn't exist) TO encrypt API keys
+if(!fs::file_exists(file.path("keys","private.key")) || !fs::file_exists(file.path("keys","private.key.signed"))){
+  glens_env$privkey <- charToRaw(openssl::sha512(openssl::base64_encode(uuid::UUIDgenerate()), key=BIOS_ID))
+  # print(glens_env$privkey)
+  # print(str(glens_env$privkey))
+  glens_env$privkey_final <- sodium::data_encrypt(glens_env$privkey, key=sha256(charToRaw(BIOS_ID)))
+  saveRDS(glens_env$privkey, file = file.path("keys","private.key"))
+  saveRDS(glens_env$privkey_final, file = file.path("keys","private.key.signed"))
+  glens_env$privkey_dec <- sodium::data_decrypt(glens_env$privkey_final, key=sha256(charToRaw(BIOS_ID)))
+}else if(fs::file_exists(file.path("keys","private.key")) && fs::file_exists(file.path("keys","private.key.signed"))){
+  glens_env$privkey <- readRDS(file.path("keys","private.key"))
+  glens_env$privkey_final <- readRDS(file.path("keys","private.key.signed"))
+  message("Checking key files, if it doesn't work delete private keys in the keys/ folder and re-run the app.")
+  glens_env$privkey_dec <- sodium::data_decrypt(glens_env$privkey_final, key=sha256(charToRaw(BIOS_ID)))
+  stopifnot(identical(glens_env$privkey_dec, glens_env$privkey))
+}
+
 
 font_add(
   family = "schibsted-grotesk",
@@ -48,6 +85,7 @@ plan(multisession)
 
 source("./GScholarLENS-DOI2Data.R")
 source("./GScholarLENS-ORCID2Data.R")
+source("./GScholarLENS-SCOPUS2Data.R")
 source("./GScholarLENS-Data2GLENS.R")
 source("./GScholarLENS-PlotGLENS.R")
 
@@ -1340,77 +1378,195 @@ ui <- fluidPage(
   shinyjs::useShinyjs(),
   tags$head(
     tags$style(HTML("
-    @font-face {
-      font-family: 'schibsted-grotesk';
-      src: url('fonts/SchibstedGrotesk.ttf') format('truetype');
-    }
-    * { 
-      font-family: 'schibsted-grotesk', sans-serif !important; 
-    }
-  "))
+      @font-face {
+        font-family: 'schibsted-grotesk';
+        src: url('fonts/SchibstedGrotesk.ttf') format('truetype');
+      }
+      *:not(.fa):not(.fas):not(.far) { 
+          font-family: 'schibsted-grotesk', sans-serif !important; 
+      }
+
+      /* --- Theme Variables --- */
+      :root {
+        --bg-color: #f8f9fa;
+        --card-bg: #ffffff;
+        --text-color: #2c3e50;
+      }
+      .dark-mode {
+        --bg-color: #121212;
+        --card-bg: #1e1e1e;
+        --text-color: #ffffff;
+      }
+
+      body { background-color: var(--bg-color) !important; color: var(--text-color) !important; transition: all 0.3s ease; }
+      
+      .custom-card { 
+        background-color: var(--card-bg) !important; 
+        color: var(--text-color) !important; 
+        transition: background-color 0.3s ease;
+      }
+
+      /* --- TABLE PROTECTION --- */
+      .dark-mode table, .dark-mode .table, .dark-mode td, .dark-mode th, .dark-mode .dataTables_wrapper {
+        background-color: white !important; 
+        color: #333333 !important;
+      }
+      
+      /* --- HEADER ALIGNMENT --- */
+      .header-container {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 15px 25px;
+        background-color: #4B8BBE;
+        color: white;
+        margin-bottom: 20px;
+        border-radius: 0 0 10px 10px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+      }
+
+      /* Button Grouping on the right */
+      .header-buttons {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+      }
+      
+      .btn-outline-white {
+        background: rgba(255,255,255,0.15);
+        border: 1px solid rgba(255,255,255,0.6);
+        color: white;
+        font-weight: 600;
+        transition: all 0.2s;
+      }
+      
+      .btn-outline-white:hover {
+        background: rgba(255,255,255,0.3);
+        border-color: white;
+        color: white;
+      }
+      
+ .status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: bold;
+  margin-left: 10px;
+  vertical-align: middle;
+}
+.badge-missing { background-color: #e0e0e0; color: #757575; }
+.badge-found { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+
+/* Ensure the label and badge sit on the same line */
+.label-container {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  margin-bottom: 8px;
+}
+      
+      /* Vertical spacing for the whole row */
+.api-row {
+  margin-bottom: 25px;
+  padding-bottom: 15px;
+  border-bottom: 1px solid #eee;
+}
+
+/* Label styling to stay on top */
+.api-row label {
+  font-weight: bold;
+  margin-bottom: 8px;
+  display: block;
+}
+
+/* The magic grouping container */
+.input-button-group {
+  display: flex;
+  flex-direction: row;
+  align-items: center; /* Centers items vertically relative to each other */
+  gap: 10px;
+}
+
+/* Remove Shiny's default bottom margin from the input within the group */
+.input-button-group .form-group {
+  margin-bottom: 0 !important;
+  flex-grow: 1;
+}
+
+/* Fixed width for buttons to ensure text fits and alignment is consistent */
+.api-save-wrap {
+  flex: 0 0 240px; 
+}
+
+.save-btn-custom {
+  width: 100%;
+  height: 38px; /* Standard Bootstrap input height */
+  font-weight: 600;
+  white-space: nowrap;
+  padding: 6px 12px;
+}
+      
+    "))
   ),
-  # 1. Custom Title Header
+  
+  # 1. Custom Title Header with Settings & Dark Mode
   tags$div(
-    style = "padding: 20px; background-color: #4B8BBE; color: white; margin-bottom: 20px; border-radius: 0 0 10px 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);",
-    h2("GScholarLENS Analysis Dashboard", style = "margin: 0; font-weight: bold;")
+    class = "header-container",
+    h2("GScholarLENS Analysis Dashboard", style = "margin: 0; font-weight: bold;"),
+    tags$div(
+      class = "header-buttons",
+      actionButton("settings_btn", "", icon = icon("gear", lib = "font-awesome"), class = "btn-outline-white"),
+      actionButton("theme_toggle", "🌙 Dark Mode", icon = icon("moon", lib = "font-awesome"), class = "btn-outline-white")
+    )
   ),
   
   # 2. Main Content Grid
   fluidRow(
-    style = "margin: 0;", # Adds a bit of side padding to the whole row
-    
-    # LEFT COLUMN (Width 3) - Your manual "Sidebar"
+    style = "margin: 0;", 
     column(
       width = 3,
-      style = "padding: 0;", # Removes extra padding to keep cards aligned
-      
-      # Search Container
+      style = "padding: 0;", 
       tags$div(
-        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; background: white; margin-bottom: 25px;",
-        h4("Search & Identification", style = "margin-top: 0; color: #2c3e50; font-weight: bold; font-size: 16px;"),
+        class = "custom-card",
+        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; margin-bottom: 25px;",
+        h4("Search & Identification", style = "margin-top: 0; font-weight: bold; font-size: 16px;"),
         textAreaInput("doi_text", "DOI input:", value = "", rows = 2, width = "100%"),
-        textAreaInput("author_list", "Author Name List (separated by |) *<required>:", value = "", rows = 2, width = "100%"),
+        textAreaInput("author_list", "Author Name List:", value = "", rows = 2, width = "100%"),
         textAreaInput("orcid_text", "ORCID input:", value = "", rows = 2, width = "100%"),
-        actionButton("submit_button", "Run GScholarLENS for DOI", 
-                     class = "btn-primary", 
-                     style = "width: 100%; font-weight: bold; margin-top: 10px; background-color: #4B8BBE; border: none;")
+        actionButton("submit_button", "Run GScholarLENS for DOI", class = "btn-primary", style = "width: 100%; font-weight: bold; margin-top: 10px; background-color: #4B8BBE; border: none;")
       ),
-      
-      # Year Slider Container
       tags$div(
-        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; background: white; margin-bottom: 25px;",
-        h4("Filter by Timeline", style = "margin-top: 0; color: #4B8BBE; font-weight: bold; font-size: 16px;"),
-        shinyjs::hidden(
-          sliderInput(
-            "year_slider", "Publication Years", 
-            min = 0, max = 0, value = c(0, 0),
-            step = 1, round = TRUE, width = "100%"
-          )
-        )
+        class = "custom-card",
+        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; margin-bottom: 25px;",
+        h4("Filter by Timeline", style = "margin-top: 0; font-weight: bold; font-size: 16px;"),
+        shinyjs::hidden(sliderInput("year_slider", "Publication Years", min = 0, max = 0, value = c(0, 0), step = 1, round = TRUE, width = "100%"))
       ),
-      
       verbatimTextOutput("log")
     ),
     
-    # RIGHT COLUMN (Width 9) - Your main content
     column(
       width = 9,
-      
-      # 3) Container for Impact Metrics
+      # 3) Impact Metrics
       tags$div(
-        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; background: white; margin-bottom: 25px;",
+        class = "custom-card",
+        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; margin-bottom: 25px;",
         h3("Author Impact Metrics", style = "color: #4B8BBE; margin-top: 0; font-weight: bold;"),
-        hr(style = "border-top: 1px solid #eee;"),
+        hr(),
         fluidRow(
           column(6, tableOutput("orcid_table")),
-          column(6, shinyjs::disabled(shiny::uiOutput("sh_index")))
+          column(6, 
+                 style = "text-align: left;", # Ensures SH-index stays left
+                 shinyjs::disabled(shiny::uiOutput("sh_index")))
         ),
         tableOutput("summary_table")
       ),
       
-      # 4) Container for Visualizations
+      # 4) Visualizations
       tags$div(
-        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #2E8B57; background: #fafafa; margin-bottom: 25px;",
+        class = "custom-card",
+        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #2E8B57; margin-bottom: 25px;",
         h3("Publication & Citation Trends", style = "color: #2E8B57; margin-top: 0; font-weight: bold;"),
         hr(),
         fluidRow(
@@ -1426,9 +1582,10 @@ ui <- fluidPage(
         )
       ),
       
-      # 5) Container for Publication Table
+      # 5) Detailed Publication Record
       tags$div(
-        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #D6A77A; background: white; margin-bottom: 25px;",
+        class = "custom-card",
+        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #D6A77A; margin-bottom: 25px;",
         h3("Detailed Publication Record", style = "color: #D6A77A; margin-top: 0; font-weight: bold;"),
         hr(),
         DT::DTOutput("extended_table")
@@ -1436,7 +1593,6 @@ ui <- fluidPage(
     )
   )
 )
-
 # # Define the server code
 server <- function(input, output, session) {
   rv <- reactiveValues(
@@ -1462,6 +1618,124 @@ server <- function(input, output, session) {
   shinyjs::hide("aperc_plot")
   shinyjs::hide("cperc_plot")
   shinyjs::hide("extended_table")
+  
+  #light to dark mode and vice versa
+  observeEvent(input$theme_toggle, {
+    shinyjs::toggleClass(selector = "body", class = "dark-mode")
+    
+    # Update button label and icon
+    if (input$theme_toggle %% 2 == 1) {
+      updateActionButton(session, "theme_toggle", label = "☀️ Light Mode", icon = icon("sun", lib = "font-awesome"))
+    } else {
+      updateActionButton(session, "theme_toggle", label = "🌙 Dark Mode", icon = icon("moon", lib = "font-awesome"))
+    }
+  })
+  
+  observeEvent(input$settings_btn, {
+    # Check file existence first to set badge states
+    has_scopus <- fs::file_exists(file.path("keys","scopus.key"))
+    has_wos <- fs::file_exists(file.path("keys","wos.key"))
+    has_semantic <- fs::file_exists(file.path("keys","semantic.key"))
+    
+    showModal(modalDialog(
+      title = tags$span(icon("gears", lib = "font-awesome"), " API Configuration Settings"),
+      size = "m",
+      
+      # Scopus
+      tags$div(class = "api-row",
+               tags$div(class = "label-container",
+                        tags$label("Scopus API Key:", style="margin-bottom:0;"),
+                        if(has_scopus) tags$span(class="status-badge badge-found", icon("check", lib = "font-awesome"), " Key Found") 
+                        else tags$span(class="status-badge badge-missing", "Missing")
+               ),
+               tags$div(class = "input-button-group",
+                        passwordInput("scopus_key", label = NULL, placeholder = "Enter Scopus Key", width = "100%"),
+                        tags$div(class = "api-save-wrap",
+                                 actionButton("save_scopus", "Save Scopus Key", class = "btn-success save-btn-custom")
+                        )
+               )
+      ),
+      
+      # Web of Science
+      tags$div(class = "api-row",
+               tags$div(class = "label-container",
+                        tags$label("Web of Science API Key:", style="margin-bottom:0;"),
+                        if(has_wos) tags$span(class="status-badge badge-found", icon("check", lib = "font-awesome"), " Key Found") 
+                        else tags$span(class="status-badge badge-missing", "Missing")
+               ),
+               tags$div(class = "input-button-group",
+                        passwordInput("wos_key", label = NULL, placeholder = "Enter Web of Science Key", width = "100%"),
+                        tags$div(class = "api-save-wrap",
+                                 actionButton("save_wos", "Save Web of Science Key", class = "btn-success save-btn-custom")
+                        )
+               )
+      ),
+      
+      # Example Row: Semantic Scholar
+      tags$div(class = "api-row",
+               tags$div(class = "label-container",
+                        tags$label("Semantic Scholar API Key:", style="margin-bottom:0;"),
+                        if(has_semantic) tags$span(class="status-badge badge-found", icon("check", lib = "font-awesome"), " Key Found") 
+                        else tags$span(class="status-badge badge-missing", "Missing")
+               ),
+               tags$div(class = "input-button-group",
+                        passwordInput("semantic_key", label = NULL, placeholder = "Enter Semantic Scholar Key", width = "100%"),
+                        tags$div(class = "api-save-wrap",
+                                 actionButton("save_semantic", "Save Semantic Scholar Key", class = "btn-success save-btn-custom")
+                        )
+               )
+      ),
+      
+      footer = modalButton("Close Settings"),
+      easyClose = TRUE
+    ))
+    
+    # check for files and update the fields
+    if(has_scopus){
+      glens_env$scopus_key <- sodium::data_decrypt(readRDS(file.path("keys","scopus.key")), key=sha256(glens_env$privkey_dec))
+      updateTextInput(session, "scopus_key", value = rawToChar(glens_env$scopus_key))
+    }
+    if(has_wos){
+      glens_env$wos_key <- sodium::data_decrypt(readRDS(file.path("keys","wos.key")), key=sha256(glens_env$privkey_dec))
+      updateTextInput(session, "wos_key", value = rawToChar(glens_env$wos_key))
+    }
+    if(has_semantic){
+      glens_env$semantic_key <- sodium::data_decrypt(readRDS(file.path("keys","semantic.key")), key=sha256(glens_env$privkey_dec))
+      updateTextInput(session, "semantic_key", value = rawToChar(glens_env$semantic_key))
+    }
+  })
+  
+  # Example of one of the save handlers (repeat for WoS and Semantic)
+  observeEvent(input$save_scopus, {
+    req(input$scopus_key)
+    raw_key <- charToRaw(input$scopus_key)
+    # print(input$scopus_key)
+    # print(raw_key)
+    # print(glens_env$privkey_dec)
+    # print(sha256(glens_env$privkey_dec))
+    encrypted_scopus <- sodium::data_encrypt(raw_key, key=sha256(glens_env$privkey_dec))
+    saveRDS(encrypted_scopus, file = file.path("keys","scopus.key"))
+    showNotification("Scopus Key Encrypted and Saved.", type = "message")
+    removeModal()
+  })
+  observeEvent(input$save_wos, {
+    fs::dir_create("keys")
+    req(input$wos_key)
+    raw_key <- charToRaw(input$wos_key)
+    encrypted_wos <- sodium::data_encrypt(raw_key, key=sha256(glens_env$privkey_dec))
+    saveRDS(encrypted_wos, file = file.path("keys","wos.key"))
+    showNotification("Web of Science Key Encrypted and Saved.", type = "message")
+    removeModal()
+  })
+  observeEvent(input$save_semantic, {
+    fs::dir_create("keys")
+    req(input$semantic_key)
+    raw_key <- charToRaw(input$semantic_key)
+    encrypted_semantic <- sodium::data_encrypt(raw_key, key=sha256(glens_env$privkey_dec))
+    saveRDS(encrypted_semantic, file = file.path("keys","semantic.key"))
+    showNotification("Semantic Scholar Key Encrypted and Saved.", type = "message")
+    removeModal()
+  })
   
   #Slider Event
   observeEvent(input$year_slider, {
@@ -1618,7 +1892,7 @@ server <- function(input, output, session) {
                             user_agent(user_agent_str),
                             timeout(30)), error = function(e) e)
         
-        print(res)
+        # print(res)
         xml_txt <- NULL
         if (inherits(res, "response") && status_code(res) == 200) {
           # extract as text
@@ -1646,6 +1920,14 @@ server <- function(input, output, session) {
             work_type = xtext(g, ".//work:type", xml_vec_ns)
           )
         })
+        
+        if(fs::file_exists(file.path("keys","scopus.key"))){
+          try({
+            glens_env$scopus_key <- sodium::data_decrypt(readRDS(file.path("keys","scopus.key")), key=sha256(glens_env$privkey_dec))
+            #Get SCOPUS Data using orcid if SCOPUS API key is provided
+            orcid_df <- dplyr::bind_rows(orcid_df, get_complete_scopus_data(rawToChar(glens_env$scopus_key), orcid_list[x])) %>% dplyr::distinct()
+          })
+        }
         
         return(orcid_df)
       }, simplify = F))
@@ -1855,6 +2137,8 @@ server <- function(input, output, session) {
       shinyjs::enable(id = "submit_button")
       progress$close()
       # NULL
+      
+      print(rv)
       return(NULL)
     }) %...!% (function(err) {
       # overall failure handler
