@@ -53,41 +53,7 @@ if(!fs::file_exists(file.path("keys","private.key")) || !fs::file_exists(file.pa
   stopifnot(identical(glens_env$privkey_dec, glens_env$privkey))
 }
 
-
-font_add(
-  family = "schibsted-grotesk",
-  regular = "www/fonts/SchibstedGrotesk.ttf"
-)
-theme_set(theme_minimal(base_family = "schibsted-grotesk"))
-showtext_auto()
-
-# # 1. Verify showtext is active
-# print(showtext::showtext_auto())
-# # 2. List all fonts R currently 'sees' via systemfonts
-# library(systemfonts)
-# print(match_fonts("Schibsted Grotesk"))
-# # 3. Check ggplot2 default
-# print(theme_get()$text$family)
-# # Check if R actually registered the alias
-# # This lists all available font families registered in the session
-print(sysfonts::font_families())
-# # This checks if your specific font is in that list
-# print("schibsted-grotesk" %in% sysfonts::font_families())
-# # Check the file path visibility (Shiny looks relative to the project root)
-# print(file.exists("www/fonts/SchibstedGrotesk.ttf"))
-# return()
-
-update_geom_defaults("text", list(family = "schibsted-grotesk"))
-update_geom_defaults("label", list(family = "schibsted-grotesk"))
-
-# use a multisession plan so futures run in background R sessions
-plan(multisession)
-
-source("./GScholarLENS-DOI2Data.R")
-source("./GScholarLENS-ORCID2Data.R")
-source("./GScholarLENS-SCOPUS2Data.R")
-source("./GScholarLENS-Data2GLENS.R")
-source("./GScholarLENS-PlotGLENS.R")
+source("./GScholarLENS-ProcessJCR.R")
 
 #Flow functions
 extend_input_table <- function(rv) {
@@ -111,7 +77,7 @@ extend_input_table <- function(rv) {
   #     ) %>%
   #     select(-dec) ) #END - return
   # })) #END - lapply
-
+  
   glens_extended_table <- rv$glens_input_table %>%
     rowwise() %>%
     mutate(
@@ -553,7 +519,7 @@ plot_glens_table <- function(rv, output, session){
   
   # p_cites
   # output$ccounts_plot <- renderPlotly({ plotly::ggplotly(p_cites, tooltip = "text") %>%
-    # plotly::layout(showlegend = FALSE, transition = list(duration = 500))}) # %>% toWebGL() 
+  # plotly::layout(showlegend = FALSE, transition = list(duration = 500))}) # %>% toWebGL() 
   ccounts_proxy <- plotlyProxy("ccounts_plot", session)
   ccounts_proxy_data <- lapply(all_quartiles, function(q) {
     agg_all %>%
@@ -582,10 +548,10 @@ plot_glens_table <- function(rv, output, session){
       max  = max(Citations, na.rm = TRUE),
       .groups = "drop",
     )
-
+  
   df_plot <- df_ordered_debug %>%
     left_join(stats_by_position, by = "position_rank")
-
+  
   df_plot <- df_plot %>%
     mutate(
       position_rank = factor(position_rank),
@@ -593,7 +559,7 @@ plot_glens_table <- function(rv, output, session){
       Adjusted_Citations = as.numeric(Adjusted_Citations),
       Citations = as.numeric(Citations)
     )
-
+  
   group_counts <- df_plot %>%
     count(position_rank)
   
@@ -711,9 +677,9 @@ plot_glens_table <- function(rv, output, session){
       `marker.size` = list(size_scatter)
     )
     plotlyProxyInvoke(cdist_proxy, "restyle", cdist_proxy_data, list(scatter_trace_idx))
-  
+    
   } #End - for
-
+  
   total_pubs <- nrow(df_plot)
   
   pub_pdata <- df_plot %>% group_by(position_rank) %>% count() %>% rowwise() %>% mutate(pcontrib=(n/total_pubs) * 100) %>% ungroup()
@@ -813,22 +779,22 @@ plot_glens_table <- function(rv, output, session){
     ),
     as.list(0:(n - 1)) # Trace indices
   )
-    
-    # if (!is.null(rv$aperc_plot)) {
-    #   pb <- plotly_build(rv$aperc_plot)
-    #   cat("---- TRACE DEBUG ----\n")
-    #   for (i in seq_along(pb$x$data)) {
-    #     cat(
-    #       "Trace", i-1,
-    #       "| name:", pb$x$data[[i]]$name,
-    #       "| x:", paste(pb$x$data[[i]]$x, collapse=","),
-    #       "| y:", paste(pb$x$data[[i]]$y, collapse=","),
-    #       "\n"
-    #     )
-    #   }
-    # }
-    
-      #   for (i in seq_along(all_positions)) {
+  
+  # if (!is.null(rv$aperc_plot)) {
+  #   pb <- plotly_build(rv$aperc_plot)
+  #   cat("---- TRACE DEBUG ----\n")
+  #   for (i in seq_along(pb$x$data)) {
+  #     cat(
+  #       "Trace", i-1,
+  #       "| name:", pb$x$data[[i]]$name,
+  #       "| x:", paste(pb$x$data[[i]]$x, collapse=","),
+  #       "| y:", paste(pb$x$data[[i]]$y, collapse=","),
+  #       "\n"
+  #     )
+  #   }
+  # }
+  
+  #   for (i in seq_along(all_positions)) {
   #     # trace index is 0-based
   #     trace_idx <- i - 1
   #     
@@ -995,14 +961,14 @@ render_skeleton_plots <- function(rv, output){
   )
   
   position_45plots <- c("First Author" = "#dbf2f2",
-                               "Second Author" = "#ebe0ff",
-                               "Co-Author" = "#ffe9d4",
-                               "Corresponding Author" = "#d7ecfb")
+                        "Second Author" = "#ebe0ff",
+                        "Co-Author" = "#ffe9d4",
+                        "Corresponding Author" = "#d7ecfb")
   
   position_45plots_border <- c("First Author" = "#8fcedb",
-                        "Second Author" = "#cfaeec",
-                        "Co-Author" = "#fbb774",
-                        "Corresponding Author" = "#7dc2f1")
+                               "Second Author" = "#cfaeec",
+                               "Co-Author" = "#fbb774",
+                               "Corresponding Author" = "#7dc2f1")
   
   # Alpha values so Q1 most opaque and Q4 faint
   quartile_alpha <- c("Q1" = 0.9, "Q2" = 0.70, "Q3" = 0.50, "Q4" = 0.30, "NA" = 0.1)
@@ -1041,7 +1007,7 @@ render_skeleton_plots <- function(rv, output){
   )
   
   # print(agg_all)
-
+  
   # stats_by_position <- df_ordered_debug %>%
   #   group_by(position_rank) %>%
   #   summarise(
@@ -1073,7 +1039,7 @@ render_skeleton_plots <- function(rv, output){
   # print(colnames(df_plot))
   # print(nrow(df_plot))
   # print(group_counts)
-    
+  
   output$acounts_plot <- renderPlotly({
     
     rv$acounts_plotly <-  plot_ly(
@@ -1300,8 +1266,8 @@ render_skeleton_plots <- function(rv, output){
         showlegend = FALSE
       )
     rv$cdist_plotly
-    })
-
+  })
+  
   output$aperc_plot <- renderPlotly({
     p <- plot_ly()
     
@@ -1318,7 +1284,7 @@ render_skeleton_plots <- function(rv, output){
           line = list(color = position_45plots_border[pos], width = 1)
         ),
         hoverinfo = "text",
-
+        
         showlegend = FALSE
       )
     }
@@ -1358,7 +1324,7 @@ render_skeleton_plots <- function(rv, output){
           line = list(color = position_45plots_border[pos], width = 0.8)
         ),
         hoverinfo = "text",
-
+        
         showlegend = FALSE
       )
     }
@@ -1374,404 +1340,6 @@ render_skeleton_plots <- function(rv, output){
   
 } # End - Plot skeleton renders
 
-#SHINY BLOCK
-ui <- fluidPage(
-  shinyjs::useShinyjs(),
-  tags$head(
-    tags$style(HTML("
-      @font-face {
-        font-family: 'schibsted-grotesk';
-        src: url('fonts/SchibstedGrotesk.ttf') format('truetype');
-      }
-      *:not(.fa):not(.fas):not(.far) { 
-          font-family: 'schibsted-grotesk', sans-serif !important; 
-      }
-
-      /* --- Theme Variables --- */
-      :root {
-        --bg-color: #f8f9fa;
-        --card-bg: #ffffff;
-        --text-color: #2c3e50;
-      }
-      .dark-mode {
-        --bg-color: #121212;
-        --card-bg: #1e1e1e;
-        --text-color: #ffffff;
-      }
-
-      body { background-color: var(--bg-color) !important; color: var(--text-color) !important; transition: all 0.3s ease; }
-      
-      .custom-card { 
-        background-color: var(--card-bg) !important; 
-        color: var(--text-color) !important; 
-        transition: background-color 0.3s ease;
-      }
-
-      /* --- TABLE PROTECTION --- */
-      .dark-mode table, .dark-mode .table, .dark-mode td, .dark-mode th, .dark-mode .dataTables_wrapper {
-        background-color: white !important; 
-        color: #333333 !important;
-      }
-      
-      /* --- HEADER ALIGNMENT --- */
-      .header-container {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 15px 25px;
-        background-color: #4B8BBE;
-        color: white;
-        margin-bottom: 20px;
-        border-radius: 0 0 10px 10px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-      }
-
-      /* Button Grouping on the right */
-      .header-buttons {
-        display: flex;
-        gap: 12px;
-        align-items: center;
-      }
-      
-      .btn-outline-white {
-        background: rgba(255,255,255,0.15);
-        border: 1px solid rgba(255,255,255,0.6);
-        color: white;
-        font-weight: 600;
-        transition: all 0.2s;
-      }
-      
-      .btn-outline-white:hover {
-        background: rgba(255,255,255,0.3);
-        border-color: white;
-        color: white;
-      }
-      
- .status-badge {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: bold;
-  margin-left: 10px;
-  vertical-align: middle;
-}
-.badge-missing { background-color: #e0e0e0; color: #757575; }
-.badge-found { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
-
-/* Ensure the label and badge sit on the same line */
-.label-container {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  width: 100%;
-  margin-bottom: 8px;
-}
-      
-      /* Vertical spacing for the whole row */
-.api-row {
-  margin-bottom: 25px;
-  padding-bottom: 15px;
-  border-bottom: 1px solid #eee;
-}
-
-/* Label styling to stay on top */
-.api-row label {
-  font-weight: bold;
-  margin-bottom: 8px;
-  display: block;
-}
-
-/* The magic grouping container */
-.input-button-group {
-  display: flex;
-  flex-direction: row;
-  align-items: center; /* Centers items vertically relative to each other */
-  gap: 10px;
-}
-
-/* Remove Shiny's default bottom margin from the input within the group */
-.input-button-group .form-group {
-  margin-bottom: 0 !important;
-  flex-grow: 1;
-}
-
-/* Fixed width for buttons to ensure text fits and alignment is consistent */
-.api-save-wrap {
-  flex: 0 0 240px; 
-}
-
-.save-btn-custom {
-  width: 100%;
-  height: 38px; /* Standard Bootstrap input height */
-  font-weight: 600;
-  white-space: nowrap;
-  padding: 6px 12px;
-}
-
-/* Styling for the new Source radio buttons */
-#dynamic_source_ui .shiny-options-group {
-  margin-top: 10px;
-}
-
-#dynamic_source_ui label {
-  font-weight: normal;
-  cursor: pointer;
-  padding: 5px 0;
-  display: block;
-}
-
-/* Optional: Make the radio button labels change color on hover */
-#dynamic_source_ui label:hover {
-  color: #3498db;
-}
-
-
-
-
-/* The sticky container that floats at the bottom left */
-.floating-log-container {
-  position: fixed;           /* Detaches it from the page flow */
-  bottom: 20px;              /* 20px spacing from the bottom edge */
-  left: 20px;                /* 20px spacing from the left edge */
-  width: 23%;                /* Matches roughly the width of your sidebar */
-  min-width: 280px;          /* Prevents it from getting too squished on small screens */
-  z-index: 9999;             /* Ensures it stays on top of other scrolling content */
-  
-  /* Styling to match your custom cards */
-  background-color: white;
-  box-shadow: 0 -4px 15px rgba(0,0,0,0.15); /* Stronger shadow so it pops off the background */
-  border-radius: 10px;
-  border-top: 6px solid #f39c12; /* Orange accent */
-  padding: 15px;
-}
-
-/* The actual text output inside the container */
-.floating-log-container pre#log {
-  margin: 0;
-  border: none;
-  background-color: #f8f9fa; /* Light grey background for the text area */
-  
-  /* Scrollbar settings */
-  max-height: 25vh;          /* Takes up a max of 25% of the screen height */
-  overflow-y: auto;          /* Enables VERTICAL scrollbar when text overflows */
-  overflow-x: hidden;        /* Hides horizontal scroll */
-  
-  /* Text wrapping */
-  white-space: pre-wrap !important;
-  word-wrap: break-word !important;
-  font-size: 12px;
-}
-
-
-
-
-/* --- FIX 2: Radio Button Alignment --- */
-#dynamic_source_ui .shiny-options-group {
-  display: flex;
-  flex-direction: column;
-  gap: 10px; /* Clean spacing between the options */
-  margin-top: 5px;
-}
-
-#dynamic_source_ui .radio {
-  margin: 0; /* Remove Shiny's default block margins */
-}
-
-/* Flexbox alignment locks the circle and text on the same horizontal axis */
-#dynamic_source_ui .radio label {
-  display: flex !important;
-  align-items: center; 
-  gap: 8px; /* Space between the radio circle and the text */
-  margin: 0;
-  padding: 0;
-  font-weight: normal;
-  cursor: pointer;
-}
-
-/* Reset the actual input circle so it sits normally */
-#dynamic_source_ui .radio input[type='radio'] {
-  margin: 0 !important;
-  position: static !important; /* Overrides Shiny's default absolute positioning */
-}
-
-
-/* --- Minimal Table Styling --- */
-.minimal-table table {
-  width: 100%;
-  border-collapse: collapse;
-  margin-bottom: 20px;
-  font-family: inherit;
-}
-
-.minimal-table th {
-  background-color: #f8f9fa;  /* Very light grey header */
-  color: #4a5568;             /* Soft dark grey text */
-  font-weight: 600;
-  font-size: 13px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  padding: 12px 15px;
-  border-bottom: 2px solid #e2e8f0;
-  text-align: left;
-}
-
-.minimal-table td {
-  padding: 12px 15px;
-  border-bottom: 1px solid #edf2f7; /* Very subtle row dividers */
-  color: #2d3748;
-  font-size: 14px;
-}
-
-/* Subtle hover effect for table rows */
-.minimal-table tbody tr:hover {
-  background-color: #f7fafc;
-}
-
-/* --- SH-Index Badge Styling --- */
-.sh-index-container {
-  display: inline-flex;
-  align-items: baseline;
-  background-color: #f0f7ff; /* Soft blue background to match your theme */
-  padding: 12px 20px;
-  border-radius: 8px;
-  border: 1px solid #cce4fc;
-  box-shadow: 0 2px 4px rgba(75, 139, 190, 0.05);
-  margin-top: 10px;
-}
-
-.sh-index-label {
-  color: #4a5568;
-  font-size: 14px;
-  font-weight: 600;
-  margin-right: 10px;
-}
-
-.sh-index-value {
-  color: #4B8BBE; /* Your primary blue */
-  font-size: 24px;
-  font-weight: 800;
-}
-
-
-      
-    "))
-  ),
-  
-  # 1. Custom Title Header with Settings & Dark Mode
-  tags$div(
-    class = "header-container",
-    h2("GScholarLENS Analysis Dashboard", style = "margin: 0; font-weight: bold;"),
-    tags$div(
-      class = "header-buttons",
-      actionButton("settings_btn", "", icon = icon("gear", lib = "font-awesome"), class = "btn-outline-white"),
-      actionButton("theme_toggle", "🌙 Dark Mode", icon = icon("moon", lib = "font-awesome"), class = "btn-outline-white")
-    )
-  ),
-  
-  # 2. Main Content Grid
-  fluidRow(
-    style = "margin: 0;", 
-    column(
-      width = 3,
-      style = "padding: 0;", 
-      
-      # Section 1: Search
-      tags$div(
-        class = "custom-card",
-        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; margin-bottom: 25px;",
-        h4("Search & Identification", style = "margin-top: 0; font-weight: bold; font-size: 16px;"),
-        textAreaInput("doi_text", "DOI input:", value = "", rows = 2, width = "100%"),
-        textAreaInput("author_list",  "Author Name List (seperated by |) *<required>:", value = "", rows = 2, width = "100%"),
-        textAreaInput("orcid_text", "ORCID input:", value = "", rows = 2, width = "100%"),
-        actionButton("submit_button", "Run GScholarLENS for DOI", class = "btn-primary", style = "width: 100%; font-weight: bold; margin-top: 10px; background-color: #4B8BBE; border: none;")
-      ),
-      
-      # Section 2: Timeline
-      tags$div(
-        class = "custom-card",
-        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; margin-bottom: 25px;",
-        h4("Filter by Timeline", style = "margin-top: 0; font-weight: bold; font-size: 16px;"),
-        shinyjs::hidden(sliderInput("year_slider", "Publication Years", min = 0, max = 0, value = c(0, 0), step = 1, round = TRUE, width = "100%"))
-      ),
-      
-      # Section 3: Source
-      tags$div(
-        class = "custom-card",
-        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; margin-bottom: 25px;",
-        h4("Source", style = "margin-top: 0; font-weight: bold; font-size: 16px;"),
-        uiOutput("dynamic_source_ui") 
-      ),
-      
-      # Section 4: Log Output 
-      tags$div(
-        class = "floating-log-container",
-        
-        # Log Header
-        tags$div(
-          style = "display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;",
-          h4("Log", style = "margin: 0; font-weight: bold; font-size: 16px;")
-        ),
-        
-        # The Log Output
-        verbatimTextOutput("log")
-      )
-    ),
-    
-    column(
-      width = 9,
-      # 3) Impact Metrics
-      tags$div(
-        class = "custom-card",
-        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; margin-bottom: 25px;",
-        h3("Author Impact Metrics", style = "color: #4B8BBE; margin-top: 0; font-weight: bold;"),
-        hr(style = "border-top: 1px solid #edf2f7; margin-bottom: 20px;"), # Softened the hr() line
-        
-        fluidRow(
-          # Wrapped in minimal-table
-          column(6, tags$div(class = "minimal-table", tableOutput("orcid_table"))),
-          
-          # Vertically centering the SH-Index next to the table
-          column(6, 
-                 style = "display: flex; align-items: center; justify-content: flex-start; height: 100%; min-height: 80px;", 
-                 shinyjs::disabled(shiny::uiOutput("sh_index")))
-        ),
-        
-        # Wrapped in minimal-table
-        tags$div(class = "minimal-table", tableOutput("summary_table"))
-      ),
-      
-      # 4) Visualizations
-      tags$div(
-        class = "custom-card",
-        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #2E8B57; margin-bottom: 25px;",
-        h3("Publication & Citation Trends", style = "color: #2E8B57; margin-top: 0; font-weight: bold;"),
-        hr(),
-        fluidRow(
-          column(6, plotlyOutput("acounts_plot")),
-          column(6, plotlyOutput("ccounts_plot"))
-        ),
-        tags$br(),
-        plotlyOutput("cdist_plot"),
-        tags$br(),
-        fluidRow(
-          column(6, plotlyOutput("aperc_plot")),
-          column(6, plotlyOutput("cperc_plot"))
-        )
-      ),
-      
-      # 5) Detailed Publication Record
-      tags$div(
-        class = "custom-card",
-        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #D6A77A; margin-bottom: 25px;",
-        h3("Detailed Publication Record", style = "color: #D6A77A; margin-top: 0; font-weight: bold;"),
-        hr(),
-        DT::DTOutput("extended_table")
-      )
-    )
-  )
-)
-# # Define the server code
 server <- function(input, output, session) {
   rv <- reactiveValues(
     glens_input_table = data.frame(),
@@ -1779,6 +1347,8 @@ server <- function(input, output, session) {
     glens_year_filtered = data.frame(),
     summary_table = data.frame(),
     scopus_df = data.frame(),
+    wos_df = data.frame(),
+    semantic_df = data.frame(),
     sh_index = 0,
     is_glens_exec = F,
     log_text = NULL,
@@ -1968,7 +1538,7 @@ server <- function(input, output, session) {
     }
     
     rv$log_text <- paste("(Slider:", input$year_slider[1], "-", input$year_slider[2],")","Filtered years to range...", min(rv$glens_year_filtered$Year), "and",max(rv$glens_year_filtered$Year)
-            )
+    )
     
     output$log <- renderText({ rv$log_text })
     print(paste("(Slider:", input$year_slider[1], "-", input$year_slider[2],")","Filtered years to range...", min(rv$glens_year_filtered$Year), "and",max(rv$glens_year_filtered$Year)))
@@ -2037,6 +1607,12 @@ server <- function(input, output, session) {
     # basic input guard
     rv$is_glens_exec <- T
     rv$log_text <- ""
+    rv$glens_etable_final <- NULL
+    rv$glens_year_filtered <- NULL
+    # rv$scopus_df <- NULL
+    # rv$wos_df <- NULL
+    # rv$semantic_df <- NULL
+
     
     # check_orcid_input <- F
     # input_is_orcid <- F
@@ -2060,16 +1636,16 @@ server <- function(input, output, session) {
       # check_orcid_input <- T
     }
     orcid_list <- str_split(input$orcid_text, "\n")[[1]]
-    # print(orcid_list)
+    print(orcid_list)
     # print(length(orcid_list))
     # if(check_orcid_input){
-      if (is.null(input$orcid_text) || stringi::stri_isempty(input$orcid_text) || length(orcid_list) == 0) {
-        rv$log_text <- paste(rv$log_text, "Empty ORC-ID input.\n")
-        output$log <- renderText({rv$log_text})
-        # shinyjs::enable(id = "submit_button")
-        # rv$is_glens_exec <- F
-        # return()
-      } 
+    if (is.null(input$orcid_text) || stringi::stri_isempty(input$orcid_text) || length(orcid_list) == 0) {
+      rv$log_text <- paste(rv$log_text, "Empty ORC-ID input.\n")
+      output$log <- renderText({rv$log_text})
+      # shinyjs::enable(id = "submit_button")
+      # rv$is_glens_exec <- F
+      # return()
+    } 
     #   input_is_orcid <- T
     # }
     
@@ -2151,15 +1727,19 @@ server <- function(input, output, session) {
       # print(orcid2doi_table)
       
       
-       if(nrow(orcid2doi_table) <= 0){
-         rv$log_text <-  paste(rv$log_text, "\nError: Could not find data for OCR-ID(s).")
-         output$log <- renderText({ rv$log_text })
-         shinyjs::enable(id = "submit_button")
-         rv$is_glens_exec <- F
-         return()
-       }
-       orcid2doi_table[is.na(orcid2doi_table$external_id_url), c("external_id_url")] <- orcid2doi_table[is.na(orcid2doi_table$external_id_url), c("external_id_value")]
-       doi_lines <- c(doi_lines, orcid2doi_table$external_id_url) #strsplit("DOIs from the API", "\n")[[1]]
+      if(nrow(orcid2doi_table) <= 0){
+        rv$log_text <-  paste(rv$log_text, "\nError: Could not find data for OCR-ID(s).")
+        output$log <- renderText({ rv$log_text })
+        shinyjs::enable(id = "submit_button")
+        rv$is_glens_exec <- F
+        return()
+      }
+      orcid2doi_table[is.na(orcid2doi_table$external_id_url), c("external_id_url")] <- orcid2doi_table[is.na(orcid2doi_table$external_id_url), c("external_id_value")]
+      doi_lines <- c(doi_lines, orcid2doi_table$external_id_url) #strsplit("DOIs from the API", "\n")[[1]]
+    }else{
+      rv$scopus_df <- NULL
+      rv$wos_df <- NULL
+      rv$semantic_df <- NULL
     }
     
     
@@ -2167,7 +1747,7 @@ server <- function(input, output, session) {
       rv$log_text <- paste(rv$log_text, "DOI(s) provided as input.\n")
       doi_lines <- c(doi_lines, strsplit(input$doi_text, "\n")[[1]])
     }
-
+    
     if(length(doi_lines) <= 0){
       rv$log_text <- paste(rv$log_text, "Cannot fetch DOI(s) for any input.\n")
       output$log <- renderText({rv$log_text})
@@ -2280,7 +1860,7 @@ server <- function(input, output, session) {
       print(colnames(accumulated_df))
       # print(head(accumulated_df))
       print(nrow(accumulated_df))
- 
+      
       saveRDS(rv$scopus_df, file="scopus.rds")
       saveRDS(accumulated_df, file="accumulated_df.rds")
       
@@ -2378,7 +1958,7 @@ server <- function(input, output, session) {
       # print(input$year_slider)
       updateSliderInput(session, "year_slider", value = c(min_year,max_year),min = min_year, max=max_year)
       shinyjs::show(id="year_slider")
-   
+      
       #SCRIPT3 Starts here
       match_journals(rv)
       rv$glens_year_filtered <- rv$glens_etable_final
@@ -2406,38 +1986,3 @@ server <- function(input, output, session) {
     output$log <- renderText(sprintf("Started processing %d DOIs...", doi_count))
   })
 }
-
-
-jcr_base <- "2024-JCR_IMPACT_FACTOR"
-jcr_file_xlsx <- paste0(jcr_base, ".xlsx")
-jcr_file_xls  <- paste0(jcr_base, ".xls")
-jcr_file_csv  <- paste0(jcr_base, ".csv")
-
-jcr_path <- NULL
-if (file.exists(jcr_file_xlsx)) jcr_path <- jcr_file_xlsx
-if (is.null(jcr_path) && file.exists(jcr_file_xls)) jcr_path <- jcr_file_xls
-if (is.null(jcr_path) && file.exists(jcr_file_csv)) jcr_path <- jcr_file_csv
-
-if (is.null(jcr_path)) {
-  warning("Cannot find '2024-JCR_IMPACT_FACTOR(.xlsx/.csv)' in working directory.\n")
-  # jcr_path <- readline(prompt = "Enter full path to JCR file (xlsx or csv): ")
-  # jcr_path <- str_trim(jcr_path)
-  warning("JCR file not found. Exiting.")
-  return()
-} else {
-  cat("Found JCR file:", jcr_path, "\n")
-}
-jcr <- read_jcr(jcr_path)
-
-# If JIF columns exist, ensure numeric
-if ("JIF" %in% names(jcr)) jcr$JIF <- suppressWarnings(as.numeric(jcr$JIF))
-if ("JIF5Years" %in% names(jcr)) jcr$JIF5Years <- suppressWarnings(as.numeric(jcr$JIF5Years))
-
-jcr$Name_norm <- sapply(jcr$Name, function(x) normalize_journal(x))
-# rv$glens_etable_final$Name_norm <- sapply(rv$glens_etable_final$Journal, function(x) normalize_journal(x))
-
-jcr_names_norm <- jcr |>
-  select(Name, Name_norm, JIF5Years, Qscore) 
-
-shinyApp(ui = ui, server = server, options = list(port=2447))
-#shinyApp(ui = ui, server = server, options = list(port=structure("/tmp/glens.sock", mask=385, group="www-data")))

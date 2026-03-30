@@ -13,11 +13,12 @@ get_complete_scopus_data <- function(api_key = NULL, orcid) {
     "X-ELS-APIKey" = api_key,
     "Accept" = "application/json"
   )
-  print(api_key) #DEBUG
-  print(orcid) #DEBUG
+  # print(api_key) #DEBUG
+  # print(orcid) #DEBUG
   # --- STEP 1: Get AU-ID ---
   author_url <- paste0("https://api.elsevier.com/content/author/orcid/", orcid)
   resp_auth <- GET(author_url, headers)
+  # print(str(resp_auth))
   stop_for_status(resp_auth)
   
   auth_data <- content(resp_auth, as = "text", encoding = "UTF-8") %>% fromJSON(flatten = TRUE)
@@ -72,14 +73,37 @@ get_complete_scopus_data <- function(api_key = NULL, orcid) {
     as_tibble() %>%
     mutate(
       Title        = `dc:title`,
-      Authors      = map_chr(author, ~ {
+      # Authors      = map_chr(author, ~ {
+      #   if (is.null(.x) || length(.x) == 0) return(NA_character_)
+      #   paste(.x$authname, collapse = "; ")
+      # }),
+      Authors = map_chr(author, ~ {
         if (is.null(.x) || length(.x) == 0) return(NA_character_)
-        paste(.x$authname, collapse = "; ")
+        
+        # 1. Attempt to fetch Full Names (First Last) if available in Scopus response
+        if ("given-name" %in% names(.x) && "surname" %in% names(.x)) {
+          name_strings <- paste(.x$`given-name`, .x$surname)
+        } else {
+          # 2. Fallback: Switch existing authname (e.g., "Sharma G." -> "G. Sharma")
+          name_strings <- sapply(.x$authname, function(name) {
+            # Splitting by space to separate Surname and Initials
+            name_parts <- unlist(strsplit(name, " "))
+            if (length(name_parts) > 1) {
+              # Places the initials/first name first and surname last
+              paste(paste(name_parts[-1], collapse = " "), name_parts[1])
+            } else {
+              name
+            }
+          })
+        }
+        
+        # 3. Join authors with ',' as requested
+        paste(name_strings, collapse = ", ")
       }),
       Author_Count = map_int(author, ~ ifelse(is.null(.x), 0L, nrow(.x))),
       Citations    = as.numeric(`citedby-count`),
       Journal      = `prism:publicationName`,
-      Publisher    = if ("dc:publisher" %in% names(.)) `dc:publisher` else "SCOPUS", #NA_character_
+      Publisher    = if ("dc:publisher" %in% names(.)) `dc:publisher` else NA_character_, 
       Year         = substr(`prism:coverDate`, 1, 4)
     ) %>%
     select(Title, Authors, Author_Count, Citations, Journal, Publisher, Year)
