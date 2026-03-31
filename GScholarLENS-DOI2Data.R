@@ -249,44 +249,46 @@ doi2gscholarlens <- function(doi_input, write_file = NULL){
     warning("Empty DOI")
     return(NULL)
   }
+  
   doi_lines_input <- strsplit(doi_input, "\n")[[1]]
-  return(dplyr::bind_rows(sapply(doi_lines_input, function(doi_line){
+  
+  return(dplyr::bind_rows(lapply(doi_lines_input, function(doi_line){
     if(stringi::stri_isempty(doi_line)){
-      return()
+      return(NULL)
     }
     ris <- extract_ris(doi_line, write_file = write_file)
     ris_lines <- strsplit(ris, "\n")[[1]]
-    # cat(ris)
-    # print(head(strsplit(ris, "\n")[[1]], n=10))
+    
     journal_text <- construct_journal_from_ris(ris)
+    
     publisher_text <- gsub(paste0("^PB\\s+-\\s+"), "", x = grep(pattern = "PB", ris_lines,value = T))
     publisher_text <- ifelse(length(publisher_text) > 0,publisher_text, NA)
+    
     publisher_year_text <- gsub(paste0("^(PY|Y1|Y2)\\s+-\\s+"), "", x = grep(pattern = "PY|Y1|Y2", ris_lines,value = T))
     publisher_year_text <- ifelse(length(publisher_year_text) > 0,publisher_year_text, NA)
-    #Extracting T2 Journal Publisher
+    
     author_list <- tidyr::tibble(na.omit(construct_author_list_from_ris(ris)))
-    # print(str(author_list))
-    # print(author_list)
+    
     if(nrow(author_list) <=0){
-      # warning("Author list is empty.")
-      return()
+      return(NULL)
     }
-    author_text <- author_list$Authors #paste(author_list, collapse = ", ")
+    
+    author_text <- author_list$Authors 
     author_text <- ifelse(length(author_text) > 0, author_text, NA)
-    # print(paste(author_list, collapse=", "))
     title_text <- get_title_from_ris(ris)
     doi_citations <- get_citation_counts(doi_line)
-    # print(title_text)
-    # print(journal_text)
-    # print(doi_citations)
-    # print("---------")
-    # print(unlist(doi_citations))
-    # print("======")
-    # print(na.omit(unlist(doi_citations)))
-    # print(max(as.numeric(unlist(doi_citations))))
-    return(data.frame(Title=title_text, Authors=author_text,Author_Count=author_list$Author_Count, Citations=as.numeric(max(na.omit(unlist(doi_citations)))),Journal=journal_text, Publisher=publisher_text, Year=publisher_year_text))
-    # return(data.frame(Title=title_text, Authors=author_list, Citations=max(as.numeric(na.omit(unlist(doi_citations)))),Journal=journal_text, Publisher=publisher_text))
-  }, simplify = F)))
+    
+    # Return the data frame (NO UI UPDATES HERE)
+    return(data.frame(
+      Title = title_text, 
+      Authors = author_text,
+      Author_Count = author_list$Author_Count, 
+      Citations = as.numeric(max(na.omit(unlist(doi_citations)))),
+      Journal = journal_text, 
+      Publisher = publisher_text, 
+      Year = publisher_year_text
+    ))
+  })))
 }
 
 # # If run as script with args, use them
