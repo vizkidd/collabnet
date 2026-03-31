@@ -17,12 +17,19 @@ require(future.apply)
 require(tidyr)
 require(DT)
 require(sodium)
+require(digest)
 require(uuid)
 require(openssl)
 require(xfun)
+require(httr)
+
+is_WASM <- grepl(pattern="wasm",x=Sys.info()["machine"])
 
 fs::dir_create("keys") 
 
+BIOS_ID <- ""
+
+tryCatch({
 glens_env <- new.env(parent = emptyenv())
 BIOS_ID <- Sys.info()[["user"]] #FALLBACK 
 if(xfun::is_windows()){
@@ -35,17 +42,57 @@ if(xfun::is_windows()){
 }else{
   stop("Could not find operating system!")
 }
+}, error=function(e){
+  #Probably running in webR with WASM so lets take the session cookie
+  # We are likely in WebR/WASM. System commands are sandboxed.
+  message("OS hardware ID failed (likely WebR). Generating session UUID instead.")
+  # # Pure Base R function to generate random hex strings (WASM safe!)
+  # random_hex <- function(n) {
+  #   paste(sample(c(0:9, letters[1:6]), n, replace = TRUE), collapse = "")
+  # }
+  # BIOS_ID <<- paste0(
+  #   random_hex(8), "-", 
+  #   random_hex(4), "-4", 
+  #   random_hex(3), "-",
+  #   sample(c("8", "9", "a", "b"), 1), random_hex(3), "-", 
+  #   random_hex(12)
+  # )
+  BIOS_ID <<- uuid::UUIDgenerate()
+})
+
+# Print to verify it worked in the browser console
+message(paste("Active ID:", BIOS_ID))
 
 #CREATING PRIVATE KEY (if it doesn't exist) TO encrypt API keys
 if(!fs::file_exists(file.path("keys","private.key")) || !fs::file_exists(file.path("keys","private.key.signed"))){
-  glens_env$privkey <- charToRaw(openssl::sha512(openssl::base64_encode(uuid::UUIDgenerate()), key=BIOS_ID))
-  # print(glens_env$privkey)
-  # print(str(glens_env$privkey))
-  glens_env$privkey_final <- sodium::data_encrypt(glens_env$privkey, key=sha256(charToRaw(BIOS_ID)))
+  # message(paste("HERE1.1"))
+  # glens_env$privkey <- charToRaw(openssl::sha512(openssl::base64_encode(uuid::UUIDgenerate()), key=BIOS_ID))
+  # # print(glens_env$privkey)
+  # # print(str(glens_env$privkey))
+  # glens_env$privkey_final <- sodium::data_encrypt(glens_env$privkey, key=sha256(charToRaw(BIOS_ID)))
+  # saveRDS(glens_env$privkey, file = file.path("keys","private.key"))
+  # saveRDS(glens_env$privkey_final, file = file.path("keys","private.key.signed"))
+  # message(paste("HERE1.2"))
+  # glens_env$privkey_dec <- sodium::data_decrypt(glens_env$privkey_final, key=sha256(charToRaw(BIOS_ID)))
+  # message(paste("HERE1.3"))
+  message("HERE1.1")
+  # 1. WASM-safe SHA512 hashing using digest
+  raw_uuid <- uuid::UUIDgenerate() 
+  hashed_uuid <- digest::digest(raw_uuid, algo = "sha512", serialize = FALSE)
+  glens_env$privkey <- charToRaw(hashed_uuid)
+  # 2. Skip sodium encryption (WASM incompatible). 
+  # If you must obfuscate, use base64 or a simple XOR, but for a local session, just copy it.
+  glens_env$privkey_final <- glens_env$privkey 
+  # Ensure the directory exists in the VFS before saving
+  dir.create("keys", showWarnings = FALSE)
   saveRDS(glens_env$privkey, file = file.path("keys","private.key"))
   saveRDS(glens_env$privkey_final, file = file.path("keys","private.key.signed"))
-  glens_env$privkey_dec <- sodium::data_decrypt(glens_env$privkey_final, key=sha256(charToRaw(BIOS_ID)))
+  message("HERE1.2")
+  # 3. Skip sodium decryption
+  glens_env$privkey_dec <- glens_env$privkey_final
+  message("HERE1.3")
 }else if(fs::file_exists(file.path("keys","private.key")) && fs::file_exists(file.path("keys","private.key.signed"))){
+  message(paste("HERE1.2"))
   glens_env$privkey <- readRDS(file.path("keys","private.key"))
   glens_env$privkey_final <- readRDS(file.path("keys","private.key.signed"))
   message("Checking key files, if it doesn't work delete private keys in the keys/ folder and re-run the app.")
@@ -53,7 +100,9 @@ if(!fs::file_exists(file.path("keys","private.key")) || !fs::file_exists(file.pa
   stopifnot(identical(glens_env$privkey_dec, glens_env$privkey))
 }
 
-source("./GScholarLENS-ProcessJCR.R")
+message(paste("HERE2"))
+
+source("GScholarLENS-ProcessJCR.R", local = TRUE)
 
 #Flow functions
 extend_input_table <- function(rv) {
@@ -1368,6 +1417,15 @@ server <- function(input, output, session) {
   shinyjs::hide("cperc_plot")
   shinyjs::hide("extended_table")
   
+  output$log <- renderText({
+    files <- list.files(getwd(), all.files = TRUE, recursive = TRUE)
+    paste(
+      "Current working dir:", getwd(),
+      "\n\nFiles in VFS:\n", 
+      paste(files, collapse = "\n")
+    )
+  })
+  
   #light to dark mode and vice versa
   observeEvent(input$theme_toggle, {
     shinyjs::toggleClass(selector = "body", class = "dark-mode")
@@ -1671,20 +1729,51 @@ server <- function(input, output, session) {
           # shinyjs::enable(id = "submit_button")
           return()
         }
-        
-        res <- tryCatch(GET(url=paste0("https://pub.orcid.org/v3.0/", orcid_list[x], "/works"),add_headers(Accept = "application/xml"),
-                            user_agent(user_agent_str),
-                            timeout(30)), error = function(e) e)
-        
-        # print(res)
         xml_txt <- NULL
-        if (inherits(res, "response") && status_code(res) == 200) {
-          # extract as text
-          xml_txt <- content(res, as = "text", encoding = "UTF-8")
-        }else{
-          rv$log_text <- paste(rv$log_text, "Couldn't find ORC-ID:", orcid_list[x],"\nResponse:", res,"\nStatus Code:", status_code(res))
-          output$log <- renderText({rv$log_text})
-          return()
+        clean_orcid <- trimws(as.character(orcid_list[x]))
+        target_url <- paste0("https://pub.orcid.org/v3.0/", clean_orcid, "/works")
+        if(!is_WASM){
+          res <- tryCatch(GET(url=target_url,
+                              httr::add_headers(Accept = "application/xml"),
+                              # user_agent(user_agent_str),
+                              timeout(60)), error = function(e) e)
+          # message(paste(Sys.info(),collapse=","))
+          # message(paste(names(Sys.info()),collapse=","))
+          # message(res)
+          if (inherits(res, "response") && httr::status_code(res) == 200) {
+            # extract as text
+            xml_txt <- content(res, as = "text", encoding = "UTF-8")
+          }else{
+            rv$log_text <- paste(rv$log_text, "Couldn't find ORC-ID:", clean_orcid,"\nResponse:", res,"\nStatus Code:", httr::status_code(res))
+            output$log <- renderText({rv$log_text})
+            return()
+          }
+        }else{ #If WASM using JS fetch()
+          res <- tryCatch({
+            # Open a connection, passing the Accept header as a named character vector
+            con <- url(target_url, headers = c(Accept = "application/xml"))
+            
+            # Read the lines, close the connection, and collapse into a single string
+            lines <- readLines(con, warn = FALSE)
+            close(con)
+            paste(lines, collapse = "\n")
+          }, error = function(e) {
+            # If the connection fails, close it safely just in case and return the error
+            if (exists("con")) try(close(con), silent = TRUE)
+            return(e)
+          })
+          
+          # Handle the result
+          if (inherits(res, "error")) {
+            error_msg <- conditionMessage(res)
+            rv$log_text <- paste(rv$log_text, "\nNetwork Error for ORC-ID:", clean_orcid, "\nDetails:", error_msg)
+            output$log <- renderText({rv$log_text})
+            return()
+          } else {
+            # Success! 'res' is pure character text containing your XML
+            xml_txt <- res
+            message("Successfully fetched XML!")
+          }
         }
         
         xml_vec <- read_xml(xml_txt)

@@ -22,8 +22,6 @@ require(openssl)
 require(xfun)
 
 
-
-
 ui <- fluidPage(
   shinyjs::useShinyjs(),
   tags$head(
@@ -363,7 +361,7 @@ ui <- fluidPage(
         ),
         
         # The Log Output
-        verbatimTextOutput("log")
+        verbatimTextOutput("log"),
       )
     ),
     
@@ -397,15 +395,15 @@ ui <- fluidPage(
         h3("Publication & Citation Trends", style = "color: #2E8B57; margin-top: 0; font-weight: bold;"),
         hr(),
         fluidRow(
-          column(6, plotlyOutput("acounts_plot")),
-          column(6, plotlyOutput("ccounts_plot"))
+          column(6, plotly::plotlyOutput("acounts_plot")),
+          column(6, plotly::plotlyOutput("ccounts_plot"))
         ),
         tags$br(),
-        plotlyOutput("cdist_plot"),
+        plotly::plotlyOutput("cdist_plot"),
         tags$br(),
         fluidRow(
-          column(6, plotlyOutput("aperc_plot")),
-          column(6, plotlyOutput("cperc_plot"))
+          column(6, plotly::plotlyOutput("aperc_plot")),
+          column(6, plotly::plotlyOutput("cperc_plot"))
         )
       ),
       

@@ -1,5 +1,5 @@
 # server.R (or inside server function)
-require(shiny)
+# require(shiny)
 require(shinyjs)
 require(promises)
 require(future)
@@ -20,14 +20,24 @@ require(sodium)
 require(uuid)
 require(openssl)
 require(xfun)
+# require(munsell)
+require(readxl)
+require(tools)
+require(utils)
 
-source("./ui.R")
-source("./server.R")
-source("./GScholarLENS-DOI2Data.R")
-source("./GScholarLENS-ORCID2Data.R")
-source("./GScholarLENS-SCOPUS2Data.R")
-source("./GScholarLENS-Data2GLENS.R")
-source("./GScholarLENS-PlotGLENS.R")
+# # Add this to your server function to see the actual file list in the browser console
+# message(paste("Current Directory:", getwd()))
+# message("Files in VFS:")
+# message(list.files(all.files = TRUE))
+
+# source("ui.R", local = TRUE)
+source("server.R", local = TRUE)
+# safe_source("server.R")
+source("GScholarLENS-DOI2Data.R", local = TRUE)
+source("GScholarLENS-ORCID2Data.R", local = TRUE)
+source("GScholarLENS-SCOPUS2Data.R", local = TRUE)
+source("GScholarLENS-Data2GLENS.R", local = TRUE)
+source("GScholarLENS-PlotGLENS.R", local = TRUE)
 
 font_add(
   family = "schibsted-grotesk",

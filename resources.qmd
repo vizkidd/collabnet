@@ -1,0 +1,10 @@
+---
+format: live-html
+resources:
+  - "data"
+webr:
+  resources:
+    - www/fonts/SchibstedGrotesk.ttf
+    - 2024-JCR_IMPACT_FACTOR.xlsx
+    - app.R
+---
