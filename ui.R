@@ -416,6 +416,47 @@ ui <- fluidPage(
         h3("Detailed Publication Record", style = "color: #D6A77A; margin-top: 0; font-weight: bold;"),
         hr(),
         DT::DTOutput("extended_table")
+      ),
+      
+      tags$div(
+        id = "progress_overlay",
+        style = "display: none;", # Hidden until processing starts
+        
+        tags$div(
+          style = "position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; 
+             background-color: rgba(0, 0, 0, 0.6); z-index: 9999; 
+             display: flex; justify-content: center; align-items: center;",
+          
+          tags$div(
+            class = "custom-card",
+            style = "background: white; padding: 40px; border-radius: 12px; 
+               box-shadow: 0 10px 25px rgba(0,0,0,0.5); width: 40%; min-width: 400px;
+               text-align: center; border-top: 6px solid #f39c12;",
+            
+            h3("Processing Data", style = "margin-top: 0; color: #2c3e50; font-weight: bold;"),
+            p("Please wait while GScholarLENS fetches and analyzes the records. This may take a moment.", 
+              style = "color: #7f8c8d; margin-bottom: 25px;"),
+            
+            shinyWidgets::progressBar(
+              id = "doi_progress",
+              value = 0,
+              total = 100,
+              title = "Initializing...",
+              status = "warning",
+              striped = TRUE,
+              size = "sm"
+            ),
+            
+            # --- NEW: Cancel Button ---
+            actionButton(
+              inputId = "cancel_button", 
+              label = "Cancel Processing", 
+              icon = icon("times"),
+              class = "btn-danger", # Makes it red
+              style = "margin-top: 20px; width: 50%; border-radius: 20px;"
+            )
+          )
+        )
       )
     )
   )

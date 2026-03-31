@@ -1347,10 +1347,12 @@ server <- function(input, output, session) {
     glens_year_filtered = data.frame(),
     summary_table = data.frame(),
     scopus_df = data.frame(),
+    # scopus_future = future({}),
     wos_df = data.frame(),
     semantic_df = data.frame(),
     sh_index = 0,
     is_glens_exec = F,
+    is_cancelled = F,
     log_text = NULL,
     acounts_plotly = NULL,
     ccounts_plotly = NULL,
@@ -1367,6 +1369,14 @@ server <- function(input, output, session) {
   shinyjs::hide("aperc_plot")
   shinyjs::hide("cperc_plot")
   shinyjs::hide("extended_table")
+  shinyjs::hide("progress_overlay") # Reveal the bar
+  # shinyWidgets::updateProgressBar(
+  #   session, 
+  #   id = "doi_progress", 
+  #   value = 0, 
+  #   total = doi_count,
+  #   title = sprintf("Starting calculation for %d DOIs...", doi_count)
+  # )
   
   #light to dark mode and vice versa
   observeEvent(input$theme_toggle, {
@@ -1378,6 +1388,18 @@ server <- function(input, output, session) {
     } else {
       updateActionButton(session, "theme_toggle", label = "🌙 Dark Mode", icon = icon("moon", lib = "font-awesome"))
     }
+  })
+  
+  observeEvent(input$cancel_button, {
+    rv$is_cancelled <- TRUE
+    print("HERE1")
+    # Immediately hide the overlay and re-enable the UI
+    shinyjs::hide("progress_overlay")
+    shinyjs::enable(id = "submit_button")
+    
+    # Update logs
+    rv$log_text <- paste0("Process cancelled by user.\n")
+    output$log <- renderText({ rv$log_text })
   })
   
   observeEvent(input$settings_btn, {
@@ -1454,7 +1476,7 @@ server <- function(input, output, session) {
     }
   })
   
-  # Example of one of the save handlers (repeat for WoS and Semantic)
+  # SCOPUS save handlers (repeat for WoS and Semantic)
   observeEvent(input$save_scopus, {
     req(input$scopus_key)
     raw_key <- charToRaw(trimws(input$scopus_key))
@@ -1605,6 +1627,7 @@ server <- function(input, output, session) {
   #Submit Button Event
   observeEvent(input$submit_button, {   # same as bindEvent(input$submit_button)
     # basic input guard
+    rv$is_cancelled <- FALSE
     rv$is_glens_exec <- T
     rv$log_text <- ""
     rv$glens_etable_final <- NULL
@@ -1622,13 +1645,15 @@ server <- function(input, output, session) {
       # check_orcid_input <- T
       output$log <- renderText({rv$log_text})
       shinyjs::enable(id = "submit_button")
+      shinyjs::hide("progress_overlay")
       rv$is_glens_exec <- F
       req(input$author_list)
       return()
     }
     
     shinyjs::disable(id = "submit_button")
-    shinyjs::hide(id="year_slider")  
+    shinyjs::hide(id="year_slider")
+    shinyjs::show("progress_overlay")
     
     if (is.null(input$doi_text) || stringi::stri_isempty(input$doi_text)) {
       rv$log_text <- paste(rv$log_text, "No DOIs provided in Input.\n")
@@ -1714,7 +1739,8 @@ server <- function(input, output, session) {
           try({
             glens_env$scopus_key <- sodium::data_decrypt(readRDS(file.path("keys","scopus.key")), key=sha256(glens_env$privkey_dec))
             #Get SCOPUS Data using orcid if SCOPUS API key is provided
-            scopus_df <- get_complete_scopus_data(trimws(rawToChar(glens_env$scopus_key)), orcid_list[x]) %>% dplyr::distinct() %>% dplyr::mutate(Source="SCOPUS")
+            # scopus_df <- get_complete_scopus_data(trimws(rawToChar(glens_env$scopus_key)), orcid_list[x], rv, session) %>% dplyr::distinct() %>% dplyr::mutate(Source="SCOPUS")
+            scopus_df <- get_complete_scopus_data(trimws(rawToChar(glens_env$scopus_key)), orcid_list[x], rv, session) 
             # print(colnames(scopus_df))
             # print(head(scopus_df))
           })
@@ -1731,6 +1757,7 @@ server <- function(input, output, session) {
         rv$log_text <-  paste(rv$log_text, "\nError: Could not find data for OCR-ID(s).")
         output$log <- renderText({ rv$log_text })
         shinyjs::enable(id = "submit_button")
+        shinyjs::hide("progress_overlay")
         rv$is_glens_exec <- F
         return()
       }
@@ -1752,6 +1779,7 @@ server <- function(input, output, session) {
       rv$log_text <- paste(rv$log_text, "Cannot fetch DOI(s) for any input.\n")
       output$log <- renderText({rv$log_text})
       shinyjs::enable(id = "submit_button")
+      shinyjs::hide("progress_overlay")
       rv$is_glens_exec <- F
       return()
     }
@@ -1768,8 +1796,8 @@ server <- function(input, output, session) {
     
     
     # progress object for UI (non-blocking)
-    progress <- Progress$new(session, min = 0, max = doi_count)
-    progress$set(message = "Calculation in progress", detail = "Starting...", value = 0)
+    # progress <- Progress$new(session, min = 0, max = doi_count)
+    # progress$set(message = "Calculation in progress", detail = "Starting...", value = 0)
     
     # reactive storage (local to this observer) to accumulate rows as they finish
     # glens_input_table <- data.frame()
@@ -1784,17 +1812,30 @@ server <- function(input, output, session) {
     update_every_secs <- 2   # minimum seconds between log updates
     last_log_time <- Sys.time()
     
-    # helper to possibly update the log (throttled)
+# helper to possibly update the log (throttled)
+    # maybe_update_log <- function() {
+    #   now <- Sys.time()
+    #   if ((processed_counter %% update_every_n == 0L) ||
+    #       as.numeric(difftime(now, last_log_time, units = "secs")) >= update_every_secs ||
+    #       processed_counter == doi_count) {
+    #     # update text
+    #     output$log <- renderText({
+    #       sprintf("Processed %d/%d DOIs — found %d result rows so far",
+    #               processed_counter, doi_count, found_counter)
+    #     })
+    #     last_log_time <<- now
+    #   }
+    # }
+    
     maybe_update_log <- function() {
       now <- Sys.time()
       if ((processed_counter %% update_every_n == 0L) ||
           as.numeric(difftime(now, last_log_time, units = "secs")) >= update_every_secs ||
           processed_counter == doi_count) {
-        # update text
-        output$log <- renderText({
-          sprintf("Processed %d/%d DOIs — found %d result rows so far",
-                  processed_counter, doi_count, found_counter)
-        })
+        
+        rv$log_text <- paste0(rv$log_text, sprintf("Processed %d/%d DOIs — found %d result rows so far\n",
+                                                   processed_counter, doi_count, found_counter))
+        output$log <- renderText({ rv$log_text })
         last_log_time <<- now
       }
     }
@@ -1816,6 +1857,10 @@ server <- function(input, output, session) {
           return(NULL)
         })
       }) %...>% (function(res_df) {
+        
+        if (rv$is_cancelled) {
+          return(NULL) # Skip processing this resolved future
+        }
         # this runs on the main R session when the future resolves
         # print(res_df)
         processed_counter <<- processed_counter + 1L
@@ -1825,15 +1870,40 @@ server <- function(input, output, session) {
           # output$log <- renderText(paste("Found",found_counter,"DOIs"))
         }
         # increment the progress bar (non-blocking)
-        progress$inc(1)
+        # progress$inc(1)
+        # maybe_update_log()
+        # print("HERE1")
+        pct <- round((processed_counter / doi_count) * 100)
+        shinyWidgets::updateProgressBar(
+          session, 
+          id = "doi_progress", 
+          value = processed_counter, 
+          total = doi_count,
+          title = sprintf("Processing: %d%% (%d/%d DOIs)", pct, processed_counter, doi_count),
+          status = if(pct == 100) "success" else "warning" # Turns green when finished
+        )
         maybe_update_log()
         
         # resolve to something useful for the final aggregator
         list(index = i, doi = doi, result = res_df)
       }) %...!% (function(err){
+        
+        if (rv$is_cancelled) {
+          return(NULL) # Skip processing this resolved future
+        }
         # on future error: increment processed and progress, update log if needed
         processed_counter <<- processed_counter + 1L
-        progress$inc(1)
+        
+        pct <- round((processed_counter / doi_count) * 100)
+        shinyWidgets::updateProgressBar(
+          session, 
+          id = "doi_progress", 
+          value = processed_counter, 
+          total = doi_count,
+          title = sprintf("Processing: %d%% (%d/%d DOIs) [Errors detected]", pct, processed_counter, doi_count),
+          status = "danger" # Turns red if an error occurs
+        )
+        # progress$inc(1)
         maybe_update_log()
         # return a list showing error
         list(index = i, doi = doi, result = NULL, error = conditionMessage(err))
@@ -1843,6 +1913,9 @@ server <- function(input, output, session) {
     # Use promise_all to wait until all DOI futures finish.
     # promise_all accepts a named list; using .list argument
     promise_all(.list = promises_list) %...>% (function(all_results) {
+      if (rv$is_cancelled) {
+        return(NULL) # Skip processing this resolved future
+      }
       
       multi_merge_tbl <- data.frame()
       
@@ -1854,16 +1927,16 @@ server <- function(input, output, session) {
         accumulated_df <- unique(bind_rows(accumulated)) %>% dplyr::mutate(Source="DOI/ORCID")
       } 
       
-      print(colnames(rv$scopus_df))
-      # print(head(rv$scopus_df))
-      print(nrow(rv$scopus_df))
-      print(colnames(accumulated_df))
-      # print(head(accumulated_df))
-      print(nrow(accumulated_df))
+      # print(colnames(rv$scopus_df))
+      # # print(head(rv$scopus_df))
+      # print(nrow(rv$scopus_df))
+      # print(colnames(accumulated_df))
+      # # print(head(accumulated_df))
+      # print(nrow(accumulated_df))
       
-      saveRDS(rv$scopus_df, file="scopus.rds")
-      saveRDS(accumulated_df, file="accumulated_df.rds")
-      
+      # saveRDS(rv$scopus_df, file="scopus.rds")
+      # saveRDS(accumulated_df, file="accumulated_df.rds")
+      # rv$scopus_df <- future::value(rv$scopus_future) # %>% dplyr::distinct() %>% dplyr::mutate(Source="SCOPUS")
       multi_merge_tbl <- dplyr::bind_rows(rv$scopus_df, accumulated_df)
       rv$glens_input_table <- multi_merge_tbl
       
@@ -1913,8 +1986,8 @@ server <- function(input, output, session) {
       }
       rv$author_match_regex <- build_name_regex_for_variants(target_variants)
       
-      print(target_variants)
-      print(rv$target_variants_norm)
+      # print(target_variants)
+      # print(rv$target_variants_norm)
       
       extend_input_table(rv)
       
@@ -1927,7 +2000,8 @@ server <- function(input, output, session) {
         #No names were matched. return
         output$log <- renderText(sprintf("No names were matched."))
         shinyjs::enable(id = "submit_button")
-        progress$close()
+        shinyjs::hide("progress_overlay")
+        # progress$close()
         return()
       }
       
@@ -1965,18 +2039,24 @@ server <- function(input, output, session) {
       render_skeleton_plots(rv, output)
       plot_glens_table(rv, output, session)
       rv$is_glens_exec <- F   
+      shinyjs::delay(1500, shinyjs::hide("progress_overlay"))
       #Enable button after all 3 script flows end
       shinyjs::enable(id = "submit_button")
-      progress$close()
+      # progress$close()
       # NULL
       
-      print(rv)
+      # print(rv)
       return(NULL)
     }) %...!% (function(err) {
+      if (rv$is_cancelled) {
+        return(NULL) # Skip processing this resolved future
+      }
       # overall failure handler
-      progress$close()
+      # progress$close()
+      shinyWidgets::updateProgressBar(session, id = "doi_progress", value = 100, status = "danger", title = "Process Failed!")
       print(conditionMessage(err))
       output$log <- renderText(sprintf("Failed: %s", conditionMessage(err)))
+      shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
       shinyjs::enable(id = "submit_button")
       # NULL
       return(NULL)
@@ -1985,4 +2065,5 @@ server <- function(input, output, session) {
     # immediately show a short message so user sees something while promises run
     output$log <- renderText(sprintf("Started processing %d DOIs...", doi_count))
   })
+  
 }
