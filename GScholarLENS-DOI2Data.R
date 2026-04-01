@@ -1,8 +1,17 @@
-require(httr)
-require(jsonlite)
-require(stringi)
-require(dplyr)
-require(openxlsx)
+suppressPackageStartupMessages(require(httr))
+suppressPackageStartupMessages(require(jsonlite))
+suppressPackageStartupMessages(require(stringi))
+suppressPackageStartupMessages(require(dplyr))
+suppressPackageStartupMessages(require(openxlsx))
+
+is_WASM <- grepl(pattern="wasm",x=Sys.info()["machine"])
+# use a multisession plan so futures run in background R sessions
+# if(!is_WASM){
+#   future::plan(future::multisession)
+future::plan(future::multicore)
+# }else{
+#   future::plan(future::sequential)
+# }
 
 extract_ris <- function(doi_or_url,
                         write_file = NULL,
@@ -24,39 +33,49 @@ extract_ris <- function(doi_or_url,
   
   # helper to do GET with common headers
   get_with_ris_accept <- function(url) {
-    GET(url,
-        add_headers(Accept = "application/x-research-info-systems"),
-        user_agent(user_agent_str),
-        timeout(timeout_secs))
+    tryCatch({
+      if(is_WASM){
+        # Open a connection, passing the Accept header
+        con <- url(url, headers = c(Accept = "application/x-research-info-systems"))
+        lines <- readLines(con, warn = FALSE)
+        close(con)
+        return(paste(lines, collapse = "\n"))
+      }else{
+        res <- GET(url,
+                   add_headers(Accept = "application/x-research-info-systems"),
+                   user_agent(user_agent_str),
+                   timeout(timeout_secs))
+        if (inherits(res, "response") && status_code(res) == 200) {
+          # extract as text
+          txt <- content(res, as = "text", encoding = "UTF-8")
+          # quick sanity check: RIS often starts with "TY  - "
+          if (nzchar(txt) && grepl("^TY  - |^TY - ", txt)) {
+            return(txt)
+          } else {
+            # some servers may return RIS but without the typical header; still accept non-empty text
+            if (nzchar(txt)) return(txt)
+          }
+        }
+      }
+    }, error = function(e) {
+      if (exists("con")) try(close(con), silent = TRUE)
+      return(NULL) # Return NULL on failure
+    })
   }
   
   # 1) Try doi.org content negotiation
   doi_url <- paste0("https://doi.org/", doi_enc)
-  res <- tryCatch(get_with_ris_accept(doi_url), error = function(e) e)
-  
   ris_text <- NULL
-  if (inherits(res, "response") && status_code(res) == 200) {
-    # extract as text
-    txt <- content(res, as = "text", encoding = "UTF-8")
-    # quick sanity check: RIS often starts with "TY  - "
-    if (nzchar(txt) && grepl("^TY  - |^TY - ", txt)) {
-      ris_text <- txt
-    } else {
-      # some servers may return RIS but without the typical header; still accept non-empty text
-      if (nzchar(txt)) ris_text <- txt
-    }
-  }
+  ris_text <- tryCatch(get_with_ris_accept(doi_url), error = function(e) e)
+  # message(paste("RIS TEXT 1:", ris_text))
   
   # 2) Fallback: CrossRef transform endpoint: /works/{doi}/transform/application/x-research-info-systems
   if (is.null(ris_text)) {
     crossref_url <- paste0("https://api.crossref.org/works/", doi_enc,
                            "/transform/application/x-research-info-systems")
-    res2 <- tryCatch(get_with_ris_accept(crossref_url), error = function(e) e)
-    if (inherits(res2, "response") && status_code(res2) == 200) {
-      txt2 <- content(res2, as = "text", encoding = "UTF-8")
-      if (nzchar(txt2)) ris_text <- txt2
-    }
+    ris_text <- tryCatch(get_with_ris_accept(crossref_url), error = function(e) e)
   }
+  # message(paste("RIS TEXT 2:", ris_text))
   
   if (is.null(ris_text)) {
     stop("Failed to retrieve RIS. The DOI may not support content negotiation and CrossRef doesn't have a transform for it.")
@@ -86,50 +105,109 @@ normalize_doi <- function(doi_or_url) {
   doi
 }
 
+safe_fetch_with_backoff <- function(url, req_headers = NULL, max_retries = 3) {
+  wait_time <- 2 
+  
+  for (i in 1:max_retries) {
+    txt <- NULL
+    success <- FALSE
+    
+    if (is_WASM) {
+      con <- NULL # Initialize outside tryCatch
+      tryCatch({
+        con <- url(url, headers = req_headers)
+        # BUG FIXED: Removed the buggy message() lines that crashed the script
+        lines <- readLines(con, warn = FALSE)
+        txt <- paste(lines, collapse = "\n")
+        success <- TRUE
+      }, error = function(e) {
+        # Let it fail silently, the loop will back off and retry
+      }, finally = {
+        # GUARANTEE the connection closes so WASM doesn't run out of memory
+        if (!is.null(con) && inherits(con, "connection")) {
+          try(close(con), silent = TRUE)
+        }
+      })
+    } else {
+      # Standard local R (httr)
+      hdrs <- httr::add_headers()
+      if (!is.null(req_headers)) {
+        hdrs <- do.call(httr::add_headers, as.list(req_headers))
+      }
+      
+      res <- tryCatch(httr::GET(url, hdrs, httr::user_agent("R (httr)")), error = function(e) NULL)
+      
+      if (!is.null(res)) {
+        if (httr::status_code(res) == 200) {
+          txt <- httr::content(res, as = "text", encoding = "UTF-8")
+          success <- TRUE
+        } else if (httr::status_code(res) == 429) {
+          retry_header <- httr::headers(res)[["retry-after"]]
+          if (!is.null(retry_header)) wait_time <- as.numeric(retry_header) + 1
+        }
+      }
+    }
+    
+    if (success && !is.null(txt) && txt != "") return(txt)
+    
+    if (i < max_retries) {
+      Sys.sleep(wait_time)
+      wait_time <- wait_time * 2 
+    }
+  }
+  return(NULL) 
+}
+
 get_crossref_count <- function(doi) {
   doi_e <- URLencode(doi, reserved = TRUE)
   url <- paste0("https://api.crossref.org/works/", doi_e)
-  res <- tryCatch(GET(url, user_agent("R (httr)")), error = function(e) NULL)
-  if (is.null(res) || status_code(res) != 200) return(NA_integer_)
-  j <- fromJSON(content(res, as = "text", encoding = "UTF-8"), simplifyVector = TRUE)
-  # # Crossref uses "is-referenced-by-count"
-  # print(paste("str(j): ", str(j)))
-  # print(paste("j: ", j))
-  # print(paste("is-referenced-by-count: ", j$message$`is-referenced-by-count`))
-  # print(paste("reference-count: ", j$message$`reference-count`))
-  # print(paste("references-count: ", j$message$`references-count`))
+  
+  txt <- safe_fetch_with_backoff(url, req_headers = c(Accept = "application/json"))
+  if (is.null(txt)) return(NA_integer_)
+  
+  j <- tryCatch(jsonlite::fromJSON(txt, simplifyVector = TRUE), error = function(e) NULL)
+  if (is.null(j)) return(NA_integer_)
+  
   cnt <- j$message$`is-referenced-by-count`
   if (is.null(cnt)) return(NA_integer_) else return(as.integer(cnt))
 }
 
+
 get_opencitations_count <- function(doi) {
   doi_e <- URLencode(doi, reserved = TRUE)
-  # OpenCitations unified endpoint (index/v1/citation-count/{doi})
   url <- paste0("https://api.opencitations.net/index/v1/citation-count/", doi_e)
-  res <- tryCatch(GET(url, user_agent("R (httr)")), error = function(e) NULL)
-  if (is.null(res) || status_code(res) != 200) return(NA_integer_)
-  txt <- content(res, as = "text", encoding = "UTF-8")
-  # The API may return JSON array/object; try parsing robustly
-  j <- tryCatch(fromJSON(txt, simplifyVector = TRUE), error = function(e) NULL)
+  
+  txt <- safe_fetch_with_backoff(url, req_headers = c(Accept = "application/json"))
+  if (is.null(txt)) return(NA_integer_)
+  
+  j <- tryCatch(jsonlite::fromJSON(txt, simplifyVector = TRUE), error = function(e) NULL)
   if (is.null(j)) return(NA_integer_)
-  # shape may be list(count = N) or array [{"count":N}] etc.
+  
   if (!is.null(j$count)) return(as.integer(j$count))
   if (is.data.frame(j) && "count" %in% names(j)) return(as.integer(j$count[1]))
   if (is.list(j) && length(j) >= 1 && !is.null(j[[1]]$count)) return(as.integer(j[[1]]$count))
+  
   return(NA_integer_)
 }
+
 
 get_semanticscholar_count <- function(doi, api_key = NULL) {
   doi_e <- URLencode(doi, reserved = TRUE)
   url <- paste0("https://api.semanticscholar.org/graph/v1/paper/DOI:", doi_e, "?fields=citationCount")
-  hdrs <- add_headers()
-  if (!is.null(api_key)) hdrs <- add_headers(Authorization = paste("Bearer", api_key))
-  res <- tryCatch(GET(url, hdrs, user_agent("R (httr)")), error = function(e) NULL)
-  if (is.null(res)) return(NA_integer_)
-  if (status_code(res) == 200) {
-    j <- fromJSON(content(res, as = "text", encoding = "UTF-8"), simplifyVector = TRUE)
-    if (!is.null(j$citationCount)) return(as.integer(j$citationCount))
+  
+  req_headers <- c(Accept = "application/json")
+  if (!is.null(api_key)) {
+    req_headers["Authorization"] <- paste("Bearer", api_key)
   }
+  
+  txt <- safe_fetch_with_backoff(url, req_headers = req_headers)
+  if (is.null(txt)) return(NA_integer_)
+  
+  j <- tryCatch(jsonlite::fromJSON(txt, simplifyVector = TRUE), error = function(e) NULL)
+  if (is.null(j)) return(NA_integer_)
+  
+  if (!is.null(j$citationCount)) return(as.integer(j$citationCount))
+  
   return(NA_integer_)
 }
 
@@ -256,6 +334,7 @@ doi2gscholarlens <- function(doi_input, write_file = NULL){
     if(stringi::stri_isempty(doi_line)){
       return(NULL)
     }
+    
     ris <- extract_ris(doi_line, write_file = write_file)
     ris_lines <- strsplit(ris, "\n")[[1]]
     
@@ -276,14 +355,18 @@ doi2gscholarlens <- function(doi_input, write_file = NULL){
     author_text <- author_list$Authors 
     author_text <- ifelse(length(author_text) > 0, author_text, NA)
     title_text <- get_title_from_ris(ris)
+    
     doi_citations <- get_citation_counts(doi_line)
     
-    # Return the data frame (NO UI UPDATES HERE)
+    # Safely extract valid citations using standard base logic
+    valid_citations <- na.omit(unlist(doi_citations))
+    max_cit <- if (length(valid_citations) == 0) 0 else as.numeric(max(valid_citations))
+    
     return(data.frame(
       Title = title_text, 
       Authors = author_text,
       Author_Count = author_list$Author_Count, 
-      Citations = as.numeric(max(na.omit(unlist(doi_citations)))),
+      Citations = max_cit, # BUG FIXED: Using safe if/else variable
       Journal = journal_text, 
       Publisher = publisher_text, 
       Year = publisher_year_text

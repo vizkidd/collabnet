@@ -1,26 +1,34 @@
 # server.R (or inside server function)
-require(shiny)
-require(shinyjs)
-require(promises)
-require(future)
-require(dplyr)
-require(showtext)
-require(systemfonts)
-require(ggplot2)
-require(plotly)
-require(stringr)
-require(stringi)
-require(tibble)
-require(scales)
-require(stringdist)
-require(future.apply)
-require(tidyr)
-require(DT)
-require(sodium)
-require(uuid)
-require(openssl)
-require(xfun)
+suppressPackageStartupMessages(require(shiny))
+suppressPackageStartupMessages(require(shinyjs))
+suppressPackageStartupMessages(require(promises))
+suppressPackageStartupMessages(require(future))
+suppressPackageStartupMessages(require(dplyr))
+suppressPackageStartupMessages(require(showtext))
+suppressPackageStartupMessages(require(systemfonts))
+suppressPackageStartupMessages(require(ggplot2))
+suppressPackageStartupMessages(require(plotly))
+suppressPackageStartupMessages(require(stringr))
+suppressPackageStartupMessages(require(stringi))
+suppressPackageStartupMessages(require(tibble))
+suppressPackageStartupMessages(require(scales))
+suppressPackageStartupMessages(require(stringdist))
+suppressPackageStartupMessages(require(future.apply))
+suppressPackageStartupMessages(require(tidyr))
+suppressPackageStartupMessages(require(DT))
+suppressPackageStartupMessages(require(sodium))
+suppressPackageStartupMessages(require(uuid))
+suppressPackageStartupMessages(require(openssl))
+suppressPackageStartupMessages(require(xfun))
 
+is_WASM <- grepl(pattern="wasm",x=Sys.info()["machine"])
+# # use a multisession plan so futures run in background R sessions
+# if(!is_WASM){
+#   future::plan(future::multisession)
+future::plan(future::multicore)
+# }else{
+#   future::plan(future::sequential)
+# }
 
 ui <- fluidPage(
   shinyjs::useShinyjs(),
@@ -329,7 +337,7 @@ ui <- fluidPage(
         style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; margin-bottom: 25px;",
         h4("Search & Identification", style = "margin-top: 0; font-weight: bold; font-size: 16px;"),
         textAreaInput("doi_text", "DOI input:", value = "", rows = 2, width = "100%"),
-        textAreaInput("author_list",  "Author Name List (seperated by |) *<required>:", value = "", rows = 2, width = "100%"),
+        textAreaInput("author_list",  "Author Name List :", value = "", rows = 2, width = "100%"),
         textAreaInput("orcid_text", "ORCID input:", value = "", rows = 2, width = "100%"),
         actionButton("submit_button", "Run GScholarLENS for DOI", class = "btn-primary", style = "width: 100%; font-weight: bold; margin-top: 10px; background-color: #4B8BBE; border: none;")
       ),

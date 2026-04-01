@@ -29,4 +29,29 @@ fs::dir_copy("www/","staging_app/")
 # fs::file_copy(c(app_files, helper_scripts), "staging_app/")
 fs::file_copy("2024-JCR_IMPACT_FACTOR.xlsx", "staging_app/")
 shinylive::export(appdir = "./staging_app/", destdir = "./wasm_build/")
-httpuv::runStaticServer("./wasm_build/")
+httpuv::runStaticServer("./wasm_build/", headers = list(
+  "Cross-Origin-Opener-Policy" = "same-origin",
+  "Cross-Origin-Embedder-Policy" = "require-corp"
+))
+
+# httpuv::runServer(
+#   host = "127.0.0.1", port = 7446,
+#   app = list(
+#     staticPaths = list(
+#       "/" = httpuv::staticPath(
+#         "./wasm_build/",
+#         headers = list(
+#           "Cross-Origin-Opener-Policy" = "same-origin",
+#           "Cross-Origin-Embedder-Policy" = "require-corp"
+#         )
+#       )
+#     ),
+#     call = function(req) {
+#       list(
+#         status = 404L, 
+#         headers = list("Content-Type" = "text/plain"), 
+#         body = paste(req, "404 - Not Found")
+#       )
+#     }
+#   )
+# )

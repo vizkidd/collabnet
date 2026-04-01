@@ -1,8 +1,8 @@
-require(httr)
-require(jsonlite)
-require(dplyr)
-require(purrr)
-require(stringr)
+suppressPackageStartupMessages(require(httr))
+suppressPackageStartupMessages(require(jsonlite))
+suppressPackageStartupMessages(require(dplyr))
+suppressPackageStartupMessages(require(purrr))
+suppressPackageStartupMessages(require(stringr))
 
 get_complete_scopus_data <- function(api_key = NULL, orcid, rv, session = NULL) {
   if(is.null(api_key)){

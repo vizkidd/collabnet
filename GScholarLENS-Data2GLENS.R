@@ -1,8 +1,8 @@
-require(readxl)
-require(tools)
-require(stringr)
-require(dplyr)
-require(tidyr)
+suppressPackageStartupMessages(require(readxl))
+suppressPackageStartupMessages(require(tools))
+suppressPackageStartupMessages(require(stringr))
+suppressPackageStartupMessages(require(dplyr))
+suppressPackageStartupMessages(require(tidyr))
 
 # --------------------------------------------------------------
 # Helper functions - Script 2

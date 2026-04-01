@@ -1,9 +1,17 @@
-require(readxl)
-require(future)
+suppressPackageStartupMessages(require(readxl))
+suppressPackageStartupMessages(require(future))
 
-# use a multisession plan so futures run in background R sessions
-future::plan(future::multisession)
-# future::plan(future::sequential)
+# is_WASM <- grepl(pattern="wasm",x=Sys.info()["machine"])
+# # use a multisession plan so futures run in background R sessions
+# if(!is_WASM){
+#   future::plan(future::multisession)
+future::plan(future::multicore)
+# }else{
+#   future::plan(future::sequential)
+# }
+
+source("GScholarLENS-Data2GLENS.R", local=TRUE)
+
 
 ########JOURNAL MATCHING AND SCORING HELPERS
 # ---------------------------

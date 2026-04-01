@@ -1,7 +1,7 @@
-require(xml2)
-require(dplyr)
-require(purrr)
-require(tibble)
+suppressPackageStartupMessages(require(xml2))
+suppressPackageStartupMessages(require(dplyr))
+suppressPackageStartupMessages(require(purrr))
+suppressPackageStartupMessages(require(tibble))
 
 
 xtext <- function(node, xpath, ns) {

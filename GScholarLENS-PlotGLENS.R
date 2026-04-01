@@ -1,9 +1,9 @@
-require(readxl)
-require(tools)
-require(stringr)
-require(dplyr)
-require(tidyr)
-require(ggplot2)
+suppressPackageStartupMessages(require(readxl))
+suppressPackageStartupMessages(require(tools))
+suppressPackageStartupMessages(require(stringr))
+suppressPackageStartupMessages(require(dplyr))
+suppressPackageStartupMessages(require(tidyr))
+suppressPackageStartupMessages(require(ggplot2))
 
 # ---------------------------
 # Aggregate counts and citations by Position × Quartile

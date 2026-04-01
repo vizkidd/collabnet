@@ -1,29 +1,37 @@
 # server.R (or inside server function)
-require(shiny)
-require(shinyjs)
-require(promises)
-require(future)
-require(dplyr)
-require(showtext)
-require(systemfonts)
-require(ggplot2)
-require(plotly)
-require(stringr)
-require(stringi)
-require(tibble)
-require(scales)
-require(stringdist)
-require(future.apply)
-require(tidyr)
-require(DT)
-require(sodium)
-require(digest)
-require(uuid)
-require(openssl)
-require(xfun)
-require(httr)
+suppressPackageStartupMessages(require(shiny))
+suppressPackageStartupMessages(require(shinyjs))
+suppressPackageStartupMessages(require(promises))
+suppressPackageStartupMessages(require(future))
+suppressPackageStartupMessages(require(dplyr))
+suppressPackageStartupMessages(require(showtext))
+suppressPackageStartupMessages(require(systemfonts))
+suppressPackageStartupMessages(require(ggplot2))
+suppressPackageStartupMessages(require(plotly))
+suppressPackageStartupMessages(require(stringr))
+suppressPackageStartupMessages(require(stringi))
+suppressPackageStartupMessages(require(tibble))
+suppressPackageStartupMessages(require(scales))
+suppressPackageStartupMessages(require(stringdist))
+suppressPackageStartupMessages(require(future.apply))
+suppressPackageStartupMessages(require(tidyr))
+suppressPackageStartupMessages(require(DT))
+suppressPackageStartupMessages(require(sodium))
+suppressPackageStartupMessages(require(digest))
+suppressPackageStartupMessages(require(uuid))
+suppressPackageStartupMessages(require(openssl))
+suppressPackageStartupMessages(require(xfun))
+suppressPackageStartupMessages(require(httr))
 
 is_WASM <- grepl(pattern="wasm",x=Sys.info()["machine"])
+
+# use a multisession plan so futures run in background R sessions
+# if(!is_WASM){
+#   future::plan(future::multisession)
+future::plan(future::multicore)
+# }else{
+#   future::plan(future::sequential)
+# }
 
 fs::dir_create("keys") 
 
@@ -64,43 +72,91 @@ if(xfun::is_windows()){
 message(paste("Active ID:", BIOS_ID))
 
 #CREATING PRIVATE KEY (if it doesn't exist) TO encrypt API keys
-if(!fs::file_exists(file.path("keys","private.key")) || !fs::file_exists(file.path("keys","private.key.signed"))){
-  # message(paste("HERE1.1"))
-  # glens_env$privkey <- charToRaw(openssl::sha512(openssl::base64_encode(uuid::UUIDgenerate()), key=BIOS_ID))
-  # # print(glens_env$privkey)
-  # # print(str(glens_env$privkey))
-  # glens_env$privkey_final <- sodium::data_encrypt(glens_env$privkey, key=sha256(charToRaw(BIOS_ID)))
-  # saveRDS(glens_env$privkey, file = file.path("keys","private.key"))
-  # saveRDS(glens_env$privkey_final, file = file.path("keys","private.key.signed"))
-  # message(paste("HERE1.2"))
-  # glens_env$privkey_dec <- sodium::data_decrypt(glens_env$privkey_final, key=sha256(charToRaw(BIOS_ID)))
-  # message(paste("HERE1.3"))
-  message("HERE1.1")
-  # 1. WASM-safe SHA512 hashing using digest
-  raw_uuid <- uuid::UUIDgenerate() 
-  hashed_uuid <- digest::digest(raw_uuid, algo = "sha512", serialize = FALSE)
-  glens_env$privkey <- charToRaw(hashed_uuid)
-  # 2. Skip sodium encryption (WASM incompatible). 
-  # If you must obfuscate, use base64 or a simple XOR, but for a local session, just copy it.
-  glens_env$privkey_final <- glens_env$privkey 
-  # Ensure the directory exists in the VFS before saving
-  dir.create("keys", showWarnings = FALSE)
-  saveRDS(glens_env$privkey, file = file.path("keys","private.key"))
-  saveRDS(glens_env$privkey_final, file = file.path("keys","private.key.signed"))
-  message("HERE1.2")
-  # 3. Skip sodium decryption
-  glens_env$privkey_dec <- glens_env$privkey_final
-  message("HERE1.3")
-}else if(fs::file_exists(file.path("keys","private.key")) && fs::file_exists(file.path("keys","private.key.signed"))){
-  message(paste("HERE1.2"))
-  glens_env$privkey <- readRDS(file.path("keys","private.key"))
-  glens_env$privkey_final <- readRDS(file.path("keys","private.key.signed"))
-  message("Checking key files, if it doesn't work delete private keys in the keys/ folder and re-run the app.")
-  glens_env$privkey_dec <- sodium::data_decrypt(glens_env$privkey_final, key=sha256(charToRaw(BIOS_ID)))
-  stopifnot(identical(glens_env$privkey_dec, glens_env$privkey))
+if (is_WASM) {
+  # =========================================================================
+  # BRANCH 1: WebR / WASM (No Sodium, Mock Encryption)
+  # =========================================================================
+  if (!fs::file_exists(file.path("keys", "private_wasm.key")) || !fs::file_exists(file.path("keys", "private_wasm.key.signed"))) {
+    
+    # 1. WASM-safe SHA512 hashing using digest
+    raw_uuid <- uuid::UUIDgenerate() 
+    hashed_uuid <- digest::digest(raw_uuid, algo = "sha512", serialize = FALSE)
+    glens_env$privkey <- charToRaw(hashed_uuid)
+    
+    # 2. Skip sodium encryption
+    glens_env$privkey_final <- glens_env$privkey 
+    
+    saveRDS(glens_env$privkey, file = file.path("keys", "private_wasm.key"))
+    saveRDS(glens_env$privkey_final, file = file.path("keys", "private_wasm.key.signed"))
+    
+    glens_env$privkey_dec <- glens_env$privkey_final
+    
+  } else {
+    # Read existing WASM keys
+    glens_env$privkey <- readRDS(file.path("keys", "private_wasm.key"))
+    glens_env$privkey_final <- readRDS(file.path("keys", "private_wasm.key.signed"))
+    glens_env$privkey_dec <- glens_env$privkey_final
+  }
+  
+} else {
+  # =========================================================================
+  # BRANCH 2: Local Standard R (Requires Sodium)
+  # =========================================================================
+  if (!fs::file_exists(file.path("keys", "private.key")) || !fs::file_exists(file.path("keys", "private.key.signed"))) {
+    
+    # PUT YOUR ORIGINAL LOCAL R SODIUM CREATION LOGIC HERE
+    # (e.g., Generate key, encrypt it, save it)
+    
+  } else {
+    glens_env$privkey <- readRDS(file.path("keys", "private.key"))
+    glens_env$privkey_final <- readRDS(file.path("keys", "private.key.signed"))
+    message("Checking local key files...")
+    
+    # Note: If this still throws a "24 bytes" error after you delete your old keys, 
+    # make sure you are using sodium::simple_decrypt() which takes a 32-byte key (like sha256). 
+    # data_decrypt() sometimes expects a 24-byte nonce depending on how you call it!
+    glens_env$privkey_dec <- sodium::data_decrypt(
+      glens_env$privkey_final, 
+      key = sodium::sha256(charToRaw(BIOS_ID))
+    )
+    stopifnot(identical(glens_env$privkey_dec, glens_env$privkey))
+  }
 }
 
-message(paste("HERE2"))
+# if(!fs::file_exists(file.path("keys","private.key")) || !fs::file_exists(file.path("keys","private.key.signed"))){
+#   # message(paste("HERE1.1"))
+#   # glens_env$privkey <- charToRaw(openssl::sha512(openssl::base64_encode(uuid::UUIDgenerate()), key=BIOS_ID))
+#   # # print(glens_env$privkey)
+#   # # print(str(glens_env$privkey))
+#   # glens_env$privkey_final <- sodium::data_encrypt(glens_env$privkey, key=sha256(charToRaw(BIOS_ID)))
+#   # saveRDS(glens_env$privkey, file = file.path("keys","private.key"))
+#   # saveRDS(glens_env$privkey_final, file = file.path("keys","private.key.signed"))
+#   # message(paste("HERE1.2"))
+#   # glens_env$privkey_dec <- sodium::data_decrypt(glens_env$privkey_final, key=sha256(charToRaw(BIOS_ID)))
+#   # message(paste("HERE1.3"))
+#   
+#   # 1. WASM-safe SHA512 hashing using digest
+#   raw_uuid <- uuid::UUIDgenerate() 
+#   hashed_uuid <- digest::digest(raw_uuid, algo = "sha512", serialize = FALSE)
+#   glens_env$privkey <- charToRaw(hashed_uuid)
+#   # 2. Skip sodium encryption (WASM incompatible). 
+#   # If you must obfuscate, use base64 or a simple XOR, but for a local session, just copy it.
+#   glens_env$privkey_final <- glens_env$privkey 
+#   # Ensure the directory exists in the VFS before saving
+#   dir.create("keys", showWarnings = FALSE)
+#   saveRDS(glens_env$privkey, file = file.path("keys","private.key"))
+#   saveRDS(glens_env$privkey_final, file = file.path("keys","private.key.signed"))
+#   
+#   # 3. Skip sodium decryption
+#   glens_env$privkey_dec <- glens_env$privkey_final
+#   
+# }else if(fs::file_exists(file.path("keys","private.key")) && fs::file_exists(file.path("keys","private.key.signed"))){
+#   glens_env$privkey <- readRDS(file.path("keys","private.key"))
+#   glens_env$privkey_final <- readRDS(file.path("keys","private.key.signed"))
+#   message("Checking key files, if it doesn't work delete private keys in the keys/ folder and re-run the app.")
+#   glens_env$privkey_dec <- sodium::data_decrypt(glens_env$privkey_final, key=sha256(charToRaw(BIOS_ID)))
+#   stopifnot(identical(glens_env$privkey_dec, glens_env$privkey))
+# }
 
 source("GScholarLENS-ProcessJCR.R", local = TRUE)
 
@@ -1801,13 +1857,15 @@ server <- function(input, output, session) {
           }
         }
         
-        xml_vec <- read_xml(xml_txt)
-        xml_vec_ns <- xml_ns(xml_vec)
-        xml_groups <- xml_find_all(xml_vec, ".//activities:group", xml_vec_ns)
+        xml_vec <- xml2::read_xml(xml_txt)
+        
+        xml_vec_ns <- xml2::xml_ns(xml_vec)
+        
+        xml_groups <- xml2::xml_find_all(xml_vec, ".//activities:group", xml_vec_ns)
         # print(length(xml_vec))
         # print(length(xml_groups))
         
-        orcid_df <- map_dfr(xml_groups, function(g) {
+        orcid_df <- purrr::map_dfr(xml_groups, function(g) {
           tibble(
             source_name = xtext(g, ".//common:source-name", xml_vec_ns),
             title = xtext(g, ".//common:title", xml_vec_ns),
@@ -1840,6 +1898,7 @@ server <- function(input, output, session) {
       }, simplify = F))
       
       # print(orcid2doi_table)
+      
       
       
       if(nrow(orcid2doi_table) <= 0){
@@ -1935,13 +1994,14 @@ server <- function(input, output, session) {
       
       # create a future that executes doi2gscholarlens(doi) in another R session
       future({
+        
         # run the DOI lookup (this happens in the future worker)
         # protect the call with try to return NULL on error instead of stopping everything
         tryCatch({
           return(doi2gscholarlens(doi))
         }, error = function(e) {
           # return a simple data.frame or NULL — we use NULL below to indicate failure / no data
-          print(e)
+          print(paste("ERROR:",e))
           # NULL
           return(NULL)
         })
@@ -2060,7 +2120,8 @@ server <- function(input, output, session) {
       # output$data_table <- renderTable(glens_input_table, striped = TRUE)
       
       #SCRIPT 2 STARTS HERE
-      target_variants <- unlist(stringr::str_split(input$author_list, "\\|"))
+      # target_variants <- unlist(stringr::str_split(input$author_list, "\\|"))
+      target_variants <- unlist(stringr::str_split(input$author_list, "\n"))
       target_variants <- str_trim(target_variants)
       target_variants <- target_variants[target_variants != ""]
       
