@@ -33,6 +33,17 @@ future::plan(future::multicore)
 ui <- fluidPage(
   shinyjs::useShinyjs(),
   tags$head(
+    tags$script("
+      $(document).on('shiny:value', function(event) {
+        // Make sure 'log' matches the exact ID of your verbatimTextOutput
+        if (event.name === 'log') { 
+          setTimeout(function() {
+            var logBox = document.getElementById('log');
+            logBox.scrollTop = logBox.scrollHeight;
+          }, 50); // 50ms delay ensures the new text is rendered before scrolling
+        }
+      });
+    "),
     tags$style(HTML("
       @font-face {
         font-family: 'schibsted-grotesk';
@@ -181,8 +192,10 @@ ui <- fluidPage(
   color: #3498db;
 }
 
-
-
+/* Prevent the log from fading out while the server is busy */
+#log.recalculating {
+  opacity: 1 !important;
+}
 
 /* The sticky container that floats at the bottom left */
 .floating-log-container {
@@ -191,7 +204,7 @@ ui <- fluidPage(
   left: 20px;                /* 20px spacing from the left edge */
   width: 23%;                /* Matches roughly the width of your sidebar */
   min-width: 280px;          /* Prevents it from getting too squished on small screens */
-  z-index: 9999;             /* Ensures it stays on top of other scrolling content */
+  z-index: 10000;             /* Ensures it stays on top of other scrolling content */
   
   /* Styling to match your custom cards */
   background-color: white;

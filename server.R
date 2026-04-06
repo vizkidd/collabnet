@@ -22,6 +22,9 @@ suppressPackageStartupMessages(require(uuid))
 suppressPackageStartupMessages(require(openssl))
 suppressPackageStartupMessages(require(xfun))
 suppressPackageStartupMessages(require(httr))
+suppressPackageStartupMessages(require(xml2))
+suppressPackageStartupMessages(require(httr2))
+suppressPackageStartupMessages(require(jsonlite))
 
 is_WASM <- grepl(pattern="wasm",x=Sys.info()["machine"])
 
@@ -103,9 +106,13 @@ if (is_WASM) {
   # BRANCH 2: Local Standard R (Requires Sodium)
   # =========================================================================
   if (!fs::file_exists(file.path("keys", "private.key")) || !fs::file_exists(file.path("keys", "private.key.signed"))) {
-    
-    # PUT YOUR ORIGINAL LOCAL R SODIUM CREATION LOGIC HERE
-    # (e.g., Generate key, encrypt it, save it)
+    glens_env$privkey <- charToRaw(openssl::sha512(openssl::base64_encode(uuid::UUIDgenerate()), key=BIOS_ID))
+    # print(glens_env$privkey)
+    # print(str(glens_env$privkey))
+    glens_env$privkey_final <- sodium::data_encrypt(glens_env$privkey, key=sha256(charToRaw(BIOS_ID)))
+    saveRDS(glens_env$privkey, file = file.path("keys","private.key"))
+    saveRDS(glens_env$privkey_final, file = file.path("keys","private.key.signed"))
+    glens_env$privkey_dec <- sodium::data_decrypt(glens_env$privkey_final, key=sha256(charToRaw(BIOS_ID)))
     
   } else {
     glens_env$privkey <- readRDS(file.path("keys", "private.key"))
@@ -158,7 +165,36 @@ if (is_WASM) {
 #   stopifnot(identical(glens_env$privkey_dec, glens_env$privkey))
 # }
 
+detect_vpn <- function(rv, output) {
+  req <- request("https://ipinfo.io/json") |>
+   req_timeout(3) |>
+   req_error(is_error = ~ FALSE) # Prevent it from throwing an R error if the API fails
+ # Perform the request, catch any hard network failures (e.g., no internet)
+ ip_resp <- tryCatch(req_perform(req), error = function(e) NULL)
+
+ if (!is.null(ip_resp) && resp_status(ip_resp) == 200) {
+ # Extract the body as a list
+ ip_data <- resp_body_json(ip_resp)
+ org_name <- tolower(ip_data$org)
+ # print(ip_data)
+ # if (grepl("cloudflare", org_name)) {
+ #return("Cloudflare WARP detected.")
+ # } else if (grepl("vpn|proxy", org_name)) {
+ #return("A VPN or Proxy service was detected.")
+ # }
+ rv$log_text <- paste(
+ rv$log_text,
+ "Warning: Detected VPN. Skipping APIs.",
+sep = "\n"
+)
+    output$log <- renderText({ rv$log_text })
+ }
+ return(NULL) # Network looks normal
+}
+
+
 source("GScholarLENS-ProcessJCR.R", local = TRUE)
+source("GScholarLENS-SCOPUS2Data.R", local = TRUE)
 
 #Flow functions
 extend_input_table <- function(rv) {
@@ -1814,18 +1850,49 @@ server <- function(input, output, session) {
         clean_orcid <- trimws(as.character(orcid_list[x]))
         target_url <- paste0("https://pub.orcid.org/v3.0/", clean_orcid, "/works")
         if(!is_WASM){
-          res <- tryCatch(GET(url=target_url,
-                              httr::add_headers(Accept = "application/xml"),
-                              # user_agent(user_agent_str),
-                              timeout(60)), error = function(e) e)
-          # message(paste(Sys.info(),collapse=","))
-          # message(paste(names(Sys.info()),collapse=","))
-          # message(res)
-          if (inherits(res, "response") && httr::status_code(res) == 200) {
-            # extract as text
-            xml_txt <- content(res, as = "text", encoding = "UTF-8")
-          }else{
-            rv$log_text <- paste(rv$log_text, "Couldn't find ORC-ID:", clean_orcid,"\nResponse:", res,"\nStatus Code:", httr::status_code(res))
+          # 1. Build the httr2 request
+          req <- request(target_url) %>%
+            req_headers(Accept = "application/xml") %>%
+            req_timeout(60) %>%
+            req_error(is_error = ~ FALSE) # CRITICAL: Prevents R from halting on 404/500 errors
+          
+          # 2. Perform the request, safely catching total network disconnections
+          res <- tryCatch(req_perform(req), error = function(e) e)
+          
+          # 3. Check if 'res' is a valid httr2 response AND has a 200 OK status
+          if (inherits(res, "httr2_response") && resp_status(res) == 200) {
+            
+            # Extract as text (httr2 defaults to UTF-8 automatically)
+            xml_txt <- resp_body_string(res)
+            
+          } else {
+            
+            # 1. Safely determine the status code (or note if it was a connection drop)
+            status_val <- if (inherits(res, "httr2_response")) {
+              resp_status(res) 
+            } else {
+              "Network/Connection Error"
+            }
+            
+            # 2. Safely extract the response body OR the error message
+            res_val <- if (inherits(res, "httr2_response")) {
+              # If it's a 401/404, get the body to see the API's complaint
+              resp_body_string(res) 
+            } else if (inherits(res, "condition")) {
+              # If the internet dropped, get the curl error message
+              conditionMessage(res) 
+            } else {
+              as.character(res)
+            }
+            
+            # 3. Update the Shiny log
+            rv$log_text <- paste(
+              rv$log_text, 
+              "Couldn't find ORC-ID:", clean_orcid,
+              "\nStatus:", status_val,
+              "\n---"
+            )
+            
             output$log <- renderText({rv$log_text})
             return()
           }
@@ -1887,7 +1954,7 @@ server <- function(input, output, session) {
             glens_env$scopus_key <- sodium::data_decrypt(readRDS(file.path("keys","scopus.key")), key=sha256(glens_env$privkey_dec))
             #Get SCOPUS Data using orcid if SCOPUS API key is provided
             # scopus_df <- get_complete_scopus_data(trimws(rawToChar(glens_env$scopus_key)), orcid_list[x], rv, session) %>% dplyr::distinct() %>% dplyr::mutate(Source="SCOPUS")
-            scopus_df <- get_complete_scopus_data(trimws(rawToChar(glens_env$scopus_key)), orcid_list[x], rv, session) 
+            scopus_df <- get_complete_scopus_data(trimws(rawToChar(glens_env$scopus_key)), orcid_list[x], rv, output, session) 
             # print(colnames(scopus_df))
             # print(head(scopus_df))
           })
@@ -2086,7 +2153,10 @@ server <- function(input, output, session) {
       # saveRDS(rv$scopus_df, file="scopus.rds")
       # saveRDS(accumulated_df, file="accumulated_df.rds")
       # rv$scopus_df <- future::value(rv$scopus_future) # %>% dplyr::distinct() %>% dplyr::mutate(Source="SCOPUS")
-      multi_merge_tbl <- dplyr::bind_rows(rv$scopus_df, accumulated_df)
+      if(nrow(rv$scopus_df) > 0){
+        multi_merge_tbl <- dplyr::bind_rows(rv$scopus_df %>% dplyr::distinct() %>% dplyr::mutate(Source="SCOPUS"), accumulated_df)
+      }
+      
       rv$glens_input_table <- multi_merge_tbl
       
       output$dynamic_source_ui <- renderUI({
