@@ -439,6 +439,24 @@ ui <- fluidPage(
         h4("Search & Identification", style = "margin-top: 0; font-weight: bold; font-size: 16px;"),
         textAreaInput("doi_text", "DOI input:", value = "", rows = 2, width = "100%"),
         textAreaInput("author_list",  "Author Name List :", value = "", rows = 2, width = "100%"),
+        wellPanel(
+          tags$h5(icon("users-cog"), " Author Relationship Filter", class = "text-primary"),
+          tags$p("Filter the publication list based on how the selected authors interact.", class = "text-muted"),
+          
+          radioButtons(
+            inputId = "author_logic_gate",
+            label = NULL, # Label hidden since we have the h5 title
+            choices = c(
+              "Co-patriot/Collaborator (OR)" = "OR",
+              "Companion (AND)"              = "AND",
+              "Rival (XOR)"                  = "XOR",
+              "Ignore (NOR)"                 = "NOR",
+              "Divide (NAND)"                = "NAND"
+            ),
+            selected = "OR",
+            width = "100%"
+          )
+        ),
         textAreaInput("orcid_text", "ORCID input:", value = "", rows = 2, width = "100%"),
         actionButton("submit_button", "Run GScholarLENS for DOI", class = "btn-primary", style = "width: 100%; font-weight: bold; margin-top: 10px; background-color: #4B8BBE; border: none;")
       ),

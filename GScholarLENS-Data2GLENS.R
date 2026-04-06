@@ -184,6 +184,35 @@ decide_label_for_target <- function(author_field, target_variants_norm, author_r
   list(label=label, matched_token=toks$clean[idx])
 }
 
+apply_author_logic <- function(pubs_df, primary_regex, selected_authors, gate) {
+  
+  # Failsafe: If no data or no secondary authors selected, return as-is
+  if (nrow(pubs_df) == 0 || is.null(selected_authors) || length(selected_authors) == 0) {
+    return(pubs_df)
+  }
+  
+  # Escape special characters in the selected names and collapse into an OR regex
+  selected_regex <- paste(gsub("([.|()\\^{}+$*?]|\\[|\\])", "\\\\\\1", selected_authors), collapse = "|")
+  
+  pubs_df %>%
+    mutate(
+      has_primary   = grepl(primary_regex, Authors, ignore.case = TRUE),
+      has_secondary = grepl(selected_regex, Authors, ignore.case = TRUE)
+    ) %>%
+    filter(
+      case_when(
+        gate == "OR"   ~ has_primary | has_secondary,                  # Co-patriot
+        gate == "AND"  ~ has_primary & has_secondary,                  # Companion
+        gate == "XOR"  ~ xor(has_primary, has_secondary),              # Rival
+        gate == "NOR"  ~ !(has_primary | has_secondary),               # Ignore
+        gate == "NAND" ~ !(has_primary & has_secondary),               # Divide
+        TRUE           ~ TRUE # Fallback
+      )
+    ) %>%
+    # Clean up the temporary boolean columns
+    select(-has_primary, -has_secondary)
+}
+
 # -----------------------------
 # H-index function (sorted descending inside)
 # -----------------------------
