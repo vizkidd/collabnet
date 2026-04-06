@@ -173,6 +173,30 @@ source("GScholarLENS-Data2GLENS.R", local = TRUE)
 source("GScholarLENS-PlotGLENS.R", local = TRUE)
 
 detect_vpn <- function(rv, output) {
+  req <- request("https://ipinfo.io/json") |>
+    req_timeout(3) |>
+    req_error(is_error = ~ FALSE) # Prevent it from throwing an R error if the API fails
+  # Perform the request, catch any hard network failures (e.g., no internet)
+  ip_resp <- tryCatch(req_perform(req), error = function(e) NULL)
+  
+  if (!is.null(ip_resp) && resp_status(ip_resp) == 200) {
+    # Extract the body as a list
+    ip_data <- resp_body_json(ip_resp)
+    org_name <- tolower(ip_data$org)
+    # print(ip_data)
+    # if (grepl("cloudflare", org_name)) {
+    #return("Cloudflare WARP detected.")
+    # } else if (grepl("vpn|proxy", org_name)) {
+    #return("A VPN or Proxy service was detected.")
+    # }
+    rv$log_text <- paste(
+      rv$log_text,
+      "Warning: Detected VPN. Skipping APIs.",
+      sep = "\n"
+    )
+    output$log <- renderText({ rv$log_text })
+  }
+  return(NULL) # Network looks normal
 }
 
 #Flow functions
@@ -1846,6 +1870,48 @@ server <- function(input, output, session) {
         clean_orcid <- trimws(as.character(orcid_list[x]))
         target_url <- paste0("https://pub.orcid.org/v3.0/", clean_orcid, "/works")
         if(!is_WASM){
+          # 1. Build the httr2 request
+          req <- request(target_url) %>%
+            req_headers(Accept = "application/xml") %>%
+            req_timeout(60) %>%
+            req_error(is_error = ~ FALSE) # CRITICAL: Prevents R from halting on 404/500 errors
+          
+          # 2. Perform the request, safely catching total network disconnections
+          res <- tryCatch(req_perform(req), error = function(e) e)
+          
+          # 3. Check if 'res' is a valid httr2 response AND has a 200 OK status
+          if (inherits(res, "httr2_response") && resp_status(res) == 200) {
+            
+            # Extract as text (httr2 defaults to UTF-8 automatically)
+            xml_txt <- resp_body_string(res)
+            
+          } else {
+            
+            # 1. Safely determine the status code (or note if it was a connection drop)
+            status_val <- if (inherits(res, "httr2_response")) {
+              resp_status(res) 
+            } else {
+              "Network/Connection Error"
+            }
+            
+            # 2. Safely extract the response body OR the error message
+            res_val <- if (inherits(res, "httr2_response")) {
+              # If it's a 401/404, get the body to see the API's complaint
+              resp_body_string(res) 
+            } else if (inherits(res, "condition")) {
+              # If the internet dropped, get the curl error message
+              conditionMessage(res) 
+            } else {
+              as.character(res)
+            }
+            
+            # 3. Update the Shiny log
+            rv$log_text <- paste(
+              rv$log_text, 
+              "Couldn't find ORC-ID:", clean_orcid,
+              "\nStatus:", status_val,
+              "\n---"
+            )
             output$log <- renderText({rv$log_text})
             return()
           }
@@ -1907,6 +1973,7 @@ server <- function(input, output, session) {
             glens_env$scopus_key <- sodium::data_decrypt(readRDS(file.path("keys","scopus.key")), key=sha256(glens_env$privkey_dec))
             #Get SCOPUS Data using orcid if SCOPUS API key is provided
             # scopus_df <- get_complete_scopus_data(trimws(rawToChar(glens_env$scopus_key)), orcid_list[x], rv, session) %>% dplyr::distinct() %>% dplyr::mutate(Source="SCOPUS")
+            scopus_df <- get_complete_scopus_data(trimws(rawToChar(glens_env$scopus_key)), orcid_list[x], rv, output, session) 
             # print(colnames(scopus_df))
             # print(head(scopus_df))
           })
@@ -2044,6 +2111,7 @@ server <- function(input, output, session) {
         pct <- round((processed_counter / doi_count) * 100)
         shinyWidgets::updateProgressBar(
           session, 
+          id = "prog_doi", 
           value = processed_counter, 
           total = doi_count,
           title = sprintf("Processing: %d%% (%d/%d DOIs)", pct, processed_counter, doi_count),
@@ -2064,6 +2132,7 @@ server <- function(input, output, session) {
         pct <- round((processed_counter / doi_count) * 100)
         shinyWidgets::updateProgressBar(
           session, 
+          id = "prog_doi", 
           value = processed_counter, 
           total = doi_count,
           title = sprintf("Processing: %d%% (%d/%d DOIs) [Errors detected]", pct, processed_counter, doi_count),
@@ -2103,6 +2172,11 @@ server <- function(input, output, session) {
       # saveRDS(rv$scopus_df, file="scopus.rds")
       # saveRDS(accumulated_df, file="accumulated_df.rds")
       # rv$scopus_df <- future::value(rv$scopus_future) # %>% dplyr::distinct() %>% dplyr::mutate(Source="SCOPUS")
+      
+      if(nrow(rv$scopus_df) > 0){
+        multi_merge_tbl <- dplyr::bind_rows(rv$scopus_df %>% dplyr::distinct() %>% dplyr::mutate(Source="SCOPUS"), accumulated_df)
+      }
+      
       rv$glens_input_table <- multi_merge_tbl
       
       output$dynamic_source_ui <- renderUI({
@@ -2219,6 +2293,7 @@ server <- function(input, output, session) {
       }
       # overall failure handler
       # progress$close()
+      shinyWidgets::updateProgressBar(session, id = "prog_doi", value = 100, status = "danger", title = "Process Failed!")
       print(conditionMessage(err))
       output$log <- renderText(sprintf("Failed: %s", conditionMessage(err)))
       shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
