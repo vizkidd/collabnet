@@ -1513,7 +1513,7 @@ server <- function(input, output, session) {
   shinyjs::hide("progress_overlay") # Reveal the bar
   # shinyWidgets::updateProgressBar(
   #   session, 
-  #   id = "doi_progress", 
+  #   id = "prog_doi", 
   #   value = 0, 
   #   total = doi_count,
   #   title = sprintf("Starting calculation for %d DOIs...", doi_count)
@@ -2092,7 +2092,7 @@ server <- function(input, output, session) {
         pct <- round((processed_counter / doi_count) * 100)
         shinyWidgets::updateProgressBar(
           session, 
-          id = "doi_progress", 
+          id = "prog_doi", 
           value = processed_counter, 
           total = doi_count,
           title = sprintf("Processing: %d%% (%d/%d DOIs)", pct, processed_counter, doi_count),
@@ -2113,7 +2113,7 @@ server <- function(input, output, session) {
         pct <- round((processed_counter / doi_count) * 100)
         shinyWidgets::updateProgressBar(
           session, 
-          id = "doi_progress", 
+          id = "prog_doi", 
           value = processed_counter, 
           total = doi_count,
           title = sprintf("Processing: %d%% (%d/%d DOIs) [Errors detected]", pct, processed_counter, doi_count),
@@ -2273,7 +2273,7 @@ server <- function(input, output, session) {
       }
       # overall failure handler
       # progress$close()
-      shinyWidgets::updateProgressBar(session, id = "doi_progress", value = 100, status = "danger", title = "Process Failed!")
+      shinyWidgets::updateProgressBar(session, id = "prog_doi", value = 100, status = "danger", title = "Process Failed!")
       print(conditionMessage(err))
       output$log <- renderText(sprintf("Failed: %s", conditionMessage(err)))
       shinyjs::delay(3000, shinyjs::hide("progress_overlay"))

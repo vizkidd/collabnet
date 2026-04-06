@@ -322,6 +322,94 @@ ui <- fluidPage(
 }
 
 
+/* --- CUSTOM INSIDE-TEXT PROGRESS BARS --- */
+
+# /* 1. Force the wrapper to act as an anchor */
+# #progress_bars_container .progress-group {
+#   position: relative !important;
+#   margin-bottom: 20px; 
+# }
+# 
+# /* 2. Position the title text dead-center inside the bar */
+# #progress_bars_container .progress-text {
+#   position: absolute !important;
+#   width: 100%;
+#   text-align: center;
+#   top: 0;
+#   left: 0;
+#   z-index: 10;
+#   line-height: 24px; /* Matches the bar height below to perfectly center it vertically */
+#   font-size: 13px;
+#   font-weight: bold;
+#   color: #2c3e50;
+#   margin: 0;
+#   
+#   /* Adds a heavy white glow so the text remains readable even when the dark colored bar passes behind it */
+#   text-shadow: 0px 0px 4px white, 0px 0px 4px white, 0px 0px 6px white;
+#   pointer-events: none; /* Prevents the text from interfering with hover states */
+# }
+# 
+# /* 3. Make the bar background thick enough to hold the text */
+# #progress_bars_container .progress {
+#   height: 24px !important; 
+#   border-radius: 12px; /* Smooth rounded pill edges */
+#   background-color: #e9ecef;
+#   margin-bottom: 0;
+# }
+# 
+# /* 4. Hide the default '0/100' numbers on the far right since you put the % in the title */
+# #progress_bars_container .progress-number {
+#   display: none !important;
+# }
+
+.api-progress-wrapper {
+  margin-bottom: 15px; 
+}
+
+/* 2. Static label styling (above the bar) */
+.api-progress-label {
+  font-weight: 600;
+  color: #2c3e50;
+  font-size: 13px;
+  margin-bottom: 4px;
+  display: block;
+}
+
+/* 3. Force the wrapper to act as an anchor */
+#progress_bars_container .progress-group {
+  position: relative !important;
+  margin-bottom: 0px !important; 
+}
+
+/* 4. Position the dynamic text inside the bar */
+#progress_bars_container .progress-text {
+  position: absolute !important;
+  width: 100%;
+  text-align: center;
+  top: 0;
+  left: 0;
+  z-index: 10;
+  line-height: 20px; /* Aligns vertically with the bar height */
+  font-size: 12px;
+  font-weight: 200;
+  color: #2c3e50; /* Standard dark text, no glow */
+  margin: 0;
+  pointer-events: none;
+}
+
+/* 5. Bar background sizing */
+#progress_bars_container .progress {
+  height: 20px !important; 
+  border-radius: 10px; 
+  background-color: #e9ecef;
+  margin-bottom: 0;
+}
+
+/* 6. Hide default right-aligned numbers */
+#progress_bars_container .progress-number {
+  display: none !important;
+}
+
       
     "))
   ),
@@ -456,14 +544,26 @@ ui <- fluidPage(
             p("Please wait while GScholarLENS fetches and analyzes the records. This may take a moment.", 
               style = "color: #7f8c8d; margin-bottom: 25px;"),
             
-            shinyWidgets::progressBar(
-              id = "doi_progress",
-              value = 0,
-              total = 100,
-              title = "Initializing...",
-              status = "warning",
-              striped = TRUE,
-              size = "sm"
+            tags$div(
+              id = "progress_bars_container",
+              style = "text-align: left; margin-bottom: 25px;",
+              
+              tags$div(class = "api-progress-wrapper",
+                       tags$label("DOI / ORCID Resolver", class = "api-progress-label"),
+                       shinyWidgets::progressBar(id = "prog_doi", title = "0%", value = 0, total = 100, status = "warning")
+              ),
+              tags$div(class = "api-progress-wrapper",
+                       tags$label("Scopus API", class = "api-progress-label"),
+                       shinyWidgets::progressBar(id = "prog_scopus", title = "0%", value = 0, total = 100, status = "info")
+              ),
+              tags$div(class = "api-progress-wrapper",
+                       tags$label("Web of Science API", class = "api-progress-label"),
+                       shinyWidgets::progressBar(id = "prog_wos", title = "0%", value = 0, total = 100, status = "primary")
+              ),
+              tags$div(class = "api-progress-wrapper",
+                       tags$label("Semantic Scholar API", class = "api-progress-label"),
+                       shinyWidgets::progressBar(id = "prog_semantic", title = "0%", value = 0, total = 100, status = "success")
+              )
             ),
             
             # --- NEW: Cancel Button ---

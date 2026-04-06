@@ -22,7 +22,7 @@ get_complete_scopus_data <- function(api_key = NULL, orcid, rv, output, session 
   
   if (!is.null(session)) {
     shinyWidgets::updateProgressBar(
-      session, id = "doi_progress", value = 0, total = 100,
+      session, id = "prog_scopus", value = 0, total = 100,
       title = "Locating Author in Scopus...", status = "info"
     )
   }
@@ -108,7 +108,7 @@ get_complete_scopus_data <- function(api_key = NULL, orcid, rv, output, session 
     # Break loop if no more entries are found
     if (is.null(entries) || length(entries) == 0) {
       if (!is.null(session)) {
-        shinyWidgets::updateProgressBar(session, id = "doi_progress", value = total_results, total = total_results,
+        shinyWidgets::updateProgressBar(session, id = "prog_scopus", value = total_results, total = total_results,
                                         title = "Scopus fetching complete!", status = "success")
       }
       break
@@ -123,7 +123,7 @@ get_complete_scopus_data <- function(api_key = NULL, orcid, rv, output, session 
       
       shinyWidgets::updateProgressBar(
         session,
-        id = "doi_progress",
+        id = "prog_scopus",
         value = current_fetched,
         total = total_results,
         title = sprintf("Fetching Scopus Data: %d%% (%d / %d records)", pct, current_fetched, total_results),
@@ -173,7 +173,7 @@ get_complete_scopus_data <- function(api_key = NULL, orcid, rv, output, session 
   #   # Break loop if no more entries are found
   #   if (is.null(entries) || length(entries) == 0) {
   #     if (!is.null(session)) {
-  #       shinyWidgets::updateProgressBar(session, id = "doi_progress", value = total_results, total = total_results,
+  #       shinyWidgets::updateProgressBar(session, id = "prog_scopus", value = total_results, total = total_results,
   #                                       title = "Scopus fetching complete!", status = "success")
   #     }
   #     break
@@ -188,7 +188,7 @@ get_complete_scopus_data <- function(api_key = NULL, orcid, rv, output, session 
   #     
   #     shinyWidgets::updateProgressBar(
   #       session,
-  #       id = "doi_progress",
+  #       id = "prog_scopus",
   #       value = current_fetched,
   #       total = total_results,
   #       title = sprintf("Fetching Scopus Data: %d%% (%d / %d records)", pct, current_fetched, total_results),
@@ -229,7 +229,7 @@ get_complete_scopus_data <- function(api_key = NULL, orcid, rv, output, session 
           
           shinyWidgets::updateProgressBar(
             session,
-            id = "doi_progress",
+            id = "prog_scopus",
             value = current_idx,
             total = total_records,
             title = sprintf("Formatting Records: %d%% (%d / %d)", pct, current_idx, total_records),
@@ -281,7 +281,7 @@ get_complete_scopus_data <- function(api_key = NULL, orcid, rv, output, session 
 # 
 #   if (!is.null(session)) {
 #     shinyWidgets::updateProgressBar(
-#       session, id = "doi_progress", value = 0, total = 100,
+#       session, id = "prog_scopus", value = 0, total = 100,
 #       title = "Locating Author in Scopus...", status = "info"
 #     )
 #   }
@@ -339,7 +339,7 @@ get_complete_scopus_data <- function(api_key = NULL, orcid, rv, output, session 
 #     if (is.null(entries) || length(entries) == 0) {
 #       # Max out progress bar before breaking
 #       if (!is.null(session)) {
-#         shinyWidgets::updateProgressBar(session, id = "doi_progress", value = total_results, total = total_results,
+#         shinyWidgets::updateProgressBar(session, id = "prog_scopus", value = total_results, total = total_results,
 #                                         title = "Scopus fetching complete!", status = "success")
 #       }
 #       break
@@ -355,7 +355,7 @@ get_complete_scopus_data <- function(api_key = NULL, orcid, rv, output, session 
 # 
 #       shinyWidgets::updateProgressBar(
 #         session,
-#         id = "doi_progress",
+#         id = "prog_scopus",
 #         value = current_fetched,
 #         total = total_results,
 #         title = sprintf("Fetching Scopus Data: %d%% (%d / %d records)", pct, current_fetched, total_results),
@@ -438,7 +438,7 @@ get_complete_scopus_data <- function(api_key = NULL, orcid, rv, output, session 
 # 
 #               shinyWidgets::updateProgressBar(
 #                 session,
-#                 id = "doi_progress",
+#                 id = "prog_scopus",
 #                 value = current_idx,
 #                 total = total_records,
 #                 title = sprintf("Formatting Records: %d%% (%d / %d)", pct, current_idx, total_records),
