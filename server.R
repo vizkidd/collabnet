@@ -195,7 +195,7 @@ detect_vpn <- function(rv, output) {
       "Warning: Detected VPN. Skipping APIs.",
       sep = "\n"
     )
-    output$log <- renderText({ rv$log_text })
+    # output$log <- renderText({ rv$log_text })
   }
   return(NULL) # Network looks normal
 }
@@ -600,7 +600,7 @@ match_journals <- function(rv){
 
 plot_glens_table <- function(rv, output, session){
   if(nrow(rv$glens_year_filtered) <= 0){
-    output$log <- renderText({paste("plot_glens_table() - Warning: No data available for these filters!")})
+    output$log <- renderText({paste(rv$log, "plot_glens_table() - Warning: No data available for these filters!", sep="\n")})
     warning("plot_glens_table() - Warning: No data available for these filters!")
     shinyjs::hide("sh_index")
     shinyjs::hide("summary_table")
@@ -612,6 +612,22 @@ plot_glens_table <- function(rv, output, session){
     shinyjs::hide("extended_table")
     return()
   }
+  
+  # Render Filtered Subset Network
+  output$network_filtered <- renderVisNetwork({
+    req(rv$glens_year_filtered) # Assuming this is your filtered reactive variable
+    
+    net_data <- build_collaboration_network(rv$glens_year_filtered, rv$author_list)
+    
+    visNetwork(net_data$nodes, net_data$edges, width = "100%", height = "500px") %>%
+      visNodes(font = list(size = 14)) %>%
+      visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = TRUE) %>%
+      # visPhysics(solver = "forceAtlas2Based", forceAtlas2Based = list(gravitationalConstant = -50)) %>%
+      visIgraphLayout(layout = "layout_with_fr") %>%
+      visOptions(highlightNearest = list(enabled = TRUE, degree = 1), nodesIdSelection = TRUE) %>%
+      # visLegend() %>%
+      addFontAwesome()
+  })
   
   shinyjs::show("acounts_plot")
   shinyjs::show("ccounts_plot")
@@ -849,7 +865,7 @@ plot_glens_table <- function(rv, output, session){
       "plot_glens_table() - Warning: Need more than one group and atleast 1 paper with 1 citation per-group for plotting distribution.",
       sep = "\n"
     )
-    output$log <- renderText({ rv$log_text })
+    # output$log <- renderText({ rv$log_text })
     warning("plot_glens_table() - Warning: Need more than one group and atleast 1 paper with 1 citation per-group for plotting distribution.")
     shinyjs::hide("cdist_plot")
     # return()
@@ -1657,6 +1673,7 @@ render_skeleton_plots <- function(rv, output){
 
 server <- function(input, output, session) {
   rv <- reactiveValues(
+    author_list=list(),
     glens_input_table = data.frame(),
     glens_etable_final = data.frame(),
     glens_year_filtered = data.frame(),
@@ -1691,15 +1708,18 @@ server <- function(input, output, session) {
   #   total = doi_count,
   #   title = sprintf("Starting calculation for %d DOIs...", doi_count)
   # )
-  
   output$log <- renderText({
-    files <- list.files(getwd(), all.files = TRUE, recursive = TRUE)
-    paste(
-      "Current working dir:", getwd(),
-      "\n\nFiles in VFS:\n", 
-      paste(files, collapse = "\n")
-    )
+    rv$log_text
   })
+  
+  # output$log <- renderText({
+  #   files <- list.files(getwd(), all.files = TRUE, recursive = TRUE)
+  #   paste(
+  #     "Current working dir:", getwd(),
+  #     "\n\nFiles in VFS:\n", 
+  #     paste(files, collapse = "\n")
+  #   )
+  # })
   
   output$dynamic_author_filter <- renderUI({
     req(input$author_list)
@@ -1875,7 +1895,6 @@ server <- function(input, output, session) {
   
   #Slider Event
   observeEvent(c(input$selected_source, input$year_slider, input$author_list, input$author_logic_gate), {
-    withCallingHandlers({
       req(rv$glens_etable_final, input$selected_source, input$year_slider, input$author_list)
       
       if(isTRUE(is.null(input$author_logic_gate))){
@@ -1935,18 +1954,19 @@ server <- function(input, output, session) {
       rv$log_text <- paste(rv$log_text,paste("(Slider:", input$year_slider[1], "-", input$year_slider[2],")","Filtered years to range...", min(rv$glens_year_filtered$Year), "and",max(rv$glens_year_filtered$Year)
       ), sep="\n")
       
-      output$log <- renderText({ rv$log_text })
+      # output$log <- renderText({ rv$log_text })
       print(paste("(Slider:", input$year_slider[1], "-", input$year_slider[2],")","Filtered years to range...", min(rv$glens_year_filtered$Year), "and",max(rv$glens_year_filtered$Year)))
       # print(str(rv$glens_year_filtered$Year))
       
       raw_text <- input$author_list
       # Only apply the logic gate if the user has actually typed something
       if (!is.null(raw_text) && trimws(raw_text) != "") {
+        author_list <- unlist(strsplit(input$author_list, "[\n,]"))
+        author_list <- stringr::str_squish(author_list)
+        author_list <- stringr::str_to_title(author_list)
+        author_list <- author_list[author_list != ""]
         
-        # Parse the text box into a clean list of names
-        author_list <- strsplit(raw_text, "\n")[[1]]
-        author_list <- author_list[trimws(author_list) != ""]
-        
+        rv$author_list <- unique(author_list)
         # Apply the logic gate function we built earlier
         if (length(author_list) > 0) {
           filtered_df <- apply_author_logic(
@@ -2017,19 +2037,6 @@ server <- function(input, output, session) {
       plot_glens_table(rv, output, session)
       
       shinyjs::enable(id="year_slider")
-      # --- VERBOSE ERROR/WARNING HANDLERS ---
-    }, warning = function(w) {
-      message("\n[!] WARNING in observeEvent(): ", conditionMessage(w))
-      invokeRestart("muffleWarning") # Prevents R from printing the warning twice
-    }, error = function(e) {
-      if (inherits(e, "shiny.silent.error") || inherits(e, "validation")) {
-        return()
-      }
-      message("\n[X] ERROR in observeEvent(): ", conditionMessage(e))
-      message("Traceback:")
-      print(sys.calls())
-      stop(e) # Re-throw the error so the app stops safely
-    })
   
   })
   
@@ -2057,7 +2064,7 @@ server <- function(input, output, session) {
       rv$log_text <- paste(rv$log_text, "Author list required.\n")
       # #INPUT IS PROLLY ORCID
       # check_orcid_input <- T
-      output$log <- renderText({rv$log_text})
+      # output$log <- renderText({rv$log_text})
       shinyjs::enable(id = "submit_button")
       shinyjs::hide("progress_overlay")
       rv$is_glens_exec <- F
@@ -2080,7 +2087,7 @@ server <- function(input, output, session) {
       
       # Update logs
       rv$log_text <- paste(rv$log_text, paste0("Process cancelled by user.\n"),sep="\n")
-      output$log <- renderText({ rv$log_text })
+      # output$log <- renderText({ rv$log_text })
     })
       
     if (is.null(input$doi_text) || stringi::stri_isempty(input$doi_text)) {
@@ -2094,7 +2101,7 @@ server <- function(input, output, session) {
     # if(check_orcid_input){
     if (is.null(input$orcid_text) || stringi::stri_isempty(input$orcid_text) || length(orcid_list) == 0) {
       rv$log_text <- paste(rv$log_text, "Empty ORC-ID input.\n")
-      output$log <- renderText({rv$log_text})
+      # output$log <- renderText({rv$log_text})
       # shinyjs::enable(id = "submit_button")
       # rv$is_glens_exec <- F
       # return()
@@ -2121,7 +2128,7 @@ server <- function(input, output, session) {
     
     if (length(orcid_list) > 0) {
       rv$log_text <- paste(rv$log_text, sprintf("Processing %d ORC-ID(s)...\n", length(orcid_list)))
-      output$log <- renderText({rv$log_text})
+      # output$log <- renderText({rv$log_text})
       
       # Stream 1: Fetch all ORCIDs in parallel
       orcid_promises <- lapply(orcid_list, function(orcid_str) {
@@ -2170,7 +2177,7 @@ server <- function(input, output, session) {
           progress_state$orcid_done <- progress_state$orcid_done + 1
           if (!is.null(res$error)) {
             rv$log_text <- paste(rv$log_text, "ORCID Error:", res$error, "\n")
-            output$log <- renderText({rv$log_text})
+            # output$log <- renderText({rv$log_text})
           }
           return(res$df)
         })
@@ -2198,7 +2205,7 @@ server <- function(input, output, session) {
     }
     
     rv$log_text <- paste(rv$log_text, "Launching Scopus fetching in parallel...\n")
-    output$log <- renderText({rv$log_text})
+    # output$log <- renderText({rv$log_text})
     
     # --- STREAM B: PARALLEL SCOPUS PROCESSING ---
     scopus_promises <- lapply(seq_along(orcid_list), function(i) {
@@ -2239,7 +2246,7 @@ server <- function(input, output, session) {
         # 4. Check error
         if (is.list(res) && !is.null(res$error)) {
           rv$log_text <- paste(rv$log_text, "\nScopus Error for", orcid_target, ":", res$error)
-          output$log <- renderText({rv$log_text})
+          # output$log <- renderText({rv$log_text})
           return(NULL)
         }
         
@@ -2271,7 +2278,7 @@ server <- function(input, output, session) {
       doi_count <- length(doi_lines)
       
       rv$log_text <- paste(rv$log_text, sprintf("Extracted %d total DOIs. Launching DOIs...\n", doi_count))
-      output$log <- renderText({rv$log_text})
+      # output$log <- renderText({rv$log_text})
       
       # --- STREAM A: PARALLEL DOI PROCESSING ---
       doi_promises <- lapply(seq_along(doi_lines), function(i) {
@@ -2315,7 +2322,7 @@ server <- function(input, output, session) {
       rv$glens_input_table <- dplyr::bind_rows(accumulated_df, rv$scopus_df)
       
       rv$log_text <- paste(rv$log_text, sprintf("\nDone. Found %d total records.\n", nrow(rv$glens_input_table)))
-      output$log <- renderText(rv$log_text)
+      # output$log <- renderText(rv$log_text)
       
       output$dynamic_source_ui <- renderUI({
         req(rv$glens_input_table)
@@ -2338,7 +2345,7 @@ server <- function(input, output, session) {
       rv$glens_year_filtered <- rv$glens_etable_final
       
       if (nrow(rv$glens_year_filtered) <= 0) {
-        output$log <- renderText("No names were matched.")
+        output$log <- renderText(paste(rv$log, "No names were matched.",sep="\n"))
         shinyjs::enable("submit_button")
         shinyjs::hide("progress_overlay")
         return()
@@ -2372,6 +2379,33 @@ server <- function(input, output, session) {
       # 3. Render the initial plots
       render_skeleton_plots(rv, output)
       plot_glens_table(rv, output, session)
+      
+      # Render Full Data Network
+      output$network_full <- renderVisNetwork({
+        req(rv$glens_etable_final) # Ensure data exists
+        
+        net_data <- build_collaboration_network(rv$glens_etable_final, rv$author_list)
+        
+        visNetwork(net_data$nodes, net_data$edges, width = "100%", height = "500px") %>%
+          visNodes(font = list(size = 14)) %>%
+          visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = TRUE) %>%
+          # Add physics for a nice floating layout
+          # visPhysics(solver = "forceAtlas2Based", forceAtlas2Based = list(gravitationalConstant = -50)) %>%
+          # visPhysics(
+          #   solver = "barnesHut", 
+          #   barnesHut = list(
+          #     gravitationalConstant = -2000, 
+          #     springConstant = 0.04, # Stiffer springs respect 'length' better
+          #     avoidOverlap = 0.1     # Prevents nodes from perfectly stacking
+          #   ),
+          #   stabilization = list(enabled = TRUE, iterations = 200)
+          # ) %>%
+          #IgraphLayout overrides physics and is fast
+          visIgraphLayout(layout = "layout_with_fr") %>%
+          visOptions(highlightNearest = list(enabled = TRUE, degree = 1), nodesIdSelection = TRUE) %>%
+          # visLegend() %>%
+          addFontAwesome() # CRITICAL: This is required to render the user icons!
+      })
       
       rv$is_glens_exec <- FALSE   
       shinyjs::delay(1500, shinyjs::hide("progress_overlay"))

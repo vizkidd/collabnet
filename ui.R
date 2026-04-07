@@ -20,6 +20,7 @@ suppressPackageStartupMessages(require(sodium))
 suppressPackageStartupMessages(require(uuid))
 suppressPackageStartupMessages(require(openssl))
 suppressPackageStartupMessages(require(xfun))
+suppressPackageStartupMessages(require(visNetwork))
 
 is_WASM <- grepl(pattern="wasm",x=Sys.info()["machine"])
 # # use a multisession plan so futures run in background R sessions
@@ -592,7 +593,22 @@ ui <- fluidPage(
         hr(),
         DT::DTOutput("extended_table")
       ),
-      
+      # 6) Network graph - filtered
+      tags$div(
+        class = "custom-card",
+        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #D6A77A; margin-bottom: 25px;",
+        h3("Network Graph - Filtered", style = "color: #D6A77A; margin-top: 0; font-weight: bold;"),
+        hr(),
+        visNetwork::visNetworkOutput("network_filtered"),
+      ),
+      # 7) Network graph - full
+      tags$div(
+        class = "custom-card",
+        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #D6A77A; margin-bottom: 25px;",
+        h3("Network Graph - Full", style = "color: #D6A77A; margin-top: 0; font-weight: bold;"),
+        hr(),
+        visNetwork::visNetworkOutput("network_full"),
+      ),
       tags$div(
         id = "progress_overlay",
         style = "display: none;", # Hidden until processing starts
