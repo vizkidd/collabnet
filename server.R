@@ -228,19 +228,18 @@ extend_input_table <- function(rv) {
     stop("Check author logical filter: rv$glens_input_table")  
   }
   
-  filtered_glens_input_table <- apply_author_logic(
-    pubs_df          = rv$glens_input_table,
-    primary_regex    = rv$author_match_regex,
-    selected_authors = rv$selected_filter_authors, 
-    gate             = rv$author_logic_gate        
-  )
-  
-  if(nrow(filtered_glens_input_table) <= 0){
-   stop("Check author logical filter: filtered_glens_input_table") 
-  }
+  # filtered_glens_input_table <- apply_author_logic(
+  #   pubs_df          = rv$glens_input_table,
+  #   primary_regex    = rv$author_match_regex,
+  #   selected_authors = rv$selected_filter_authors, 
+  #   gate             = rv$author_logic_gate        
+  # )
+  # 
+  # if(nrow(filtered_glens_input_table) <= 0){
+  #  stop("Check author logical filter: filtered_glens_input_table") 
+  # }
   
   glens_extended_table <- rv$glens_input_table %>%
-  glens_extended_table <- filtered_glens_input_table %>%
     rowwise() %>%
     mutate(
       dec = list(decide_label_for_target(Authors, rv$target_variants_norm, rv$author_match_regex)),
@@ -488,8 +487,8 @@ match_journals <- function(rv){
 
 plot_glens_table <- function(rv, output, session){
   if(nrow(rv$glens_year_filtered) <= 0){
-    output$log <- renderText({paste("plot_glens_table() - Warning: No data found for this year range.")})
-    warning("plot_glens_table() - Warning: No data found for this year range.")
+    output$log <- renderText({paste("plot_glens_table() - Warning: No data available for these filters!")})
+    warning("plot_glens_table() - Warning: No data available for these filters!")
     shinyjs::hide("sh_index")
     shinyjs::hide("summary_table")
     shinyjs::hide("acounts_plot")
@@ -1548,6 +1547,43 @@ server <- function(input, output, session) {
     )
   })
   
+  output$dynamic_author_filter <- renderUI({
+    req(input$author_list)
+    # 1. Get the raw text from the text area
+    raw_text <- input$author_list
+    # 2. If it's empty or NULL, don't show the panel
+    if (is.null(raw_text) || trimws(raw_text) == "") {
+      return(NULL)
+    }
+    # 3. Split by newline and remove any empty/blank lines
+    author_list <- strsplit(raw_text, "\n")[[1]]
+    author_list <- author_list[trimws(author_list) != ""]
+    # 4. If there is more than 1 valid author name, render the wellPanel
+    if (length(author_list) > 1) {
+      wellPanel(
+        tags$h5(icon("users-cog"), " Author Relationship Filter", class = "text-primary"),
+        tags$p("Filter the publication list based on how the selected authors interact.", class = "text-muted"),
+        
+        radioButtons(
+          inputId = "author_logic_gate",
+          label = NULL,
+          choices = c(
+            "Co-patriot/Collaborator (OR)" = "OR",
+            "Companion (AND)"              = "AND",
+            "Rival (XOR)"                  = "XOR",
+            "Ignore (NOR)"                 = "NOR",
+            "Divide & Exclude (NAND)"                = "NAND"
+          ),
+          selected = "OR",
+          width = "100%"
+        )
+      )
+    } else {
+      # If 1 or 0 authors, hide the panel
+      return(NULL)
+    }
+  })
+  
   #light to dark mode and vice versa
   observeEvent(input$theme_toggle, {
     shinyjs::toggleClass(selector = "body", class = "dark-mode")
@@ -1679,8 +1715,8 @@ server <- function(input, output, session) {
   })
   
   #Slider Event
-  observeEvent(c(input$selected_source, input$year_slider), {
-    req(rv$glens_etable_final, input$selected_source, input$year_slider)
+  observeEvent(c(input$selected_source, input$year_slider, input$author_list, input$author_logic_gate), {
+    req(rv$glens_etable_final, input$selected_source, input$year_slider, input$author_list, input$author_logic_gate)
     if(nrow(rv$glens_input_table)<=0){
       return()
     }
@@ -1703,6 +1739,7 @@ server <- function(input, output, session) {
     #   #   input$year_slider[1],
     #   #   input$year_slider[2]
     #   # ))
+    
     rv$glens_year_filtered <- rv$glens_etable_final %>%
       filter(
         Year >= input$year_slider[1],
@@ -1735,6 +1772,27 @@ server <- function(input, output, session) {
     output$log <- renderText({ rv$log_text })
     print(paste("(Slider:", input$year_slider[1], "-", input$year_slider[2],")","Filtered years to range...", min(rv$glens_year_filtered$Year), "and",max(rv$glens_year_filtered$Year)))
     # print(str(rv$glens_year_filtered$Year))
+    
+    raw_text <- input$author_list
+    # Only apply the logic gate if the user has actually typed something
+    if (!is.null(raw_text) && trimws(raw_text) != "") {
+      
+      # Parse the text box into a clean list of names
+      author_list <- strsplit(raw_text, "\n")[[1]]
+      author_list <- author_list[trimws(author_list) != ""]
+      
+      # Apply the logic gate function we built earlier
+      if (length(author_list) > 0) {
+        filtered_df <- apply_author_logic(
+          pubs_df          = rv$glens_year_filtered,
+          primary_regex    = rv$author_match_regex,
+          selected_authors = author_list, 
+          gate             = input$author_logic_gate        
+        )
+        # 3. Save the newly filtered data to your reactive variable
+        rv$glens_year_filtered <- filtered_df
+      }
+    }
     
     compute_indices(rv)
     

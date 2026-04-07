@@ -108,53 +108,77 @@ normalize_doi <- function(doi_or_url) {
 safe_fetch_with_backoff <- function(url, req_headers = NULL, max_retries = 3) {
   wait_time <- 2 
   
+  # OPTIMIZATION 1: Hoist header creation outside the loop (Local R)
+  # No need to rebuild the httr objects 3 times if we are retrying.
+  if (!is_WASM) {
+    hdrs <- httr::add_headers()
+    if (!is.null(req_headers)) {
+      hdrs <- do.call(httr::add_headers, as.list(req_headers))
+    }
+    ua <- httr::user_agent("R (httr)")
+  }
+  
   for (i in 1:max_retries) {
     txt <- NULL
     success <- FALSE
+    fatal_error <- FALSE # Flag to instantly kill the loop
     
     if (is_WASM) {
-      con <- NULL # Initialize outside tryCatch
+      con <- NULL 
       tryCatch({
         con <- url(url, headers = req_headers)
-        # BUG FIXED: Removed the buggy message() lines that crashed the script
-        lines <- readLines(con, warn = FALSE)
-        txt <- paste(lines, collapse = "\n")
+        # paste0 is slightly faster than paste
+        txt <- paste0(readLines(con, warn = FALSE), collapse = "\n")
         success <- TRUE
       }, error = function(e) {
-        # Let it fail silently, the loop will back off and retry
+        # OPTIMIZATION 2: WebR throws the HTTP status in the error string.
+        # If it's a client error (e.g., 404 Not Found, 400 Bad Request), DO NOT RETRY.
+        err_msg <- conditionMessage(e)
+        if (grepl("400|401|403|404", err_msg)) {
+          fatal_error <<- TRUE
+        }
       }, finally = {
-        # GUARANTEE the connection closes so WASM doesn't run out of memory
         if (!is.null(con) && inherits(con, "connection")) {
           try(close(con), silent = TRUE)
         }
       })
+      
     } else {
       # Standard local R (httr)
-      hdrs <- httr::add_headers()
-      if (!is.null(req_headers)) {
-        hdrs <- do.call(httr::add_headers, as.list(req_headers))
-      }
-      
-      res <- tryCatch(httr::GET(url, hdrs, httr::user_agent("R (httr)")), error = function(e) NULL)
+      res <- tryCatch(httr::GET(url, hdrs, ua), error = function(e) NULL)
       
       if (!is.null(res)) {
-        if (httr::status_code(res) == 200) {
+        status <- httr::status_code(res)
+        if (status == 200) {
           txt <- httr::content(res, as = "text", encoding = "UTF-8")
           success <- TRUE
-        } else if (httr::status_code(res) == 429) {
+        } else if (status == 429) {
           retry_header <- httr::headers(res)[["retry-after"]]
           if (!is.null(retry_header)) wait_time <- as.numeric(retry_header) + 1
+        } else if (status >= 400 && status < 500) {
+          # OPTIMIZATION 3: Local R fatal client error check
+          fatal_error <- TRUE
         }
       }
     }
     
-    if (success && !is.null(txt) && txt != "") return(txt)
+    # If successful, return the text immediately
+    if (success && !is.null(txt) && txt != "") {
+      return(txt)
+    }
     
+    # If the API explicitly told us the record doesn't exist, stop wasting time
+    if (fatal_error) {
+      break
+    }
+    
+    # If failed (Timeout, 429, 500, 502), wait and increase the backoff time
     if (i < max_retries) {
       Sys.sleep(wait_time)
       wait_time <- wait_time * 2 
     }
   }
+  
   return(NULL) 
 }
 
@@ -323,7 +347,7 @@ construct_author_list_from_ris <- function(ris){
 }
 
 doi2gscholarlens <- function(doi_input, write_file = NULL){
-  if(is.null(doi_input) || stringi::stri_length(doi_input) <= 0){
+  if(is.null(doi_input) || length(doi_input) == 0 || is.na(doi_input[1]) || stringi::stri_length(doi_input[1]) <= 0){
     warning("Empty DOI")
     return(NULL)
   }

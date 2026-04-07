@@ -33,17 +33,6 @@ future::plan(future::multicore)
 ui <- fluidPage(
   shinyjs::useShinyjs(),
   tags$head(
-    tags$script("
-      $(document).on('shiny:value', function(event) {
-        // Make sure 'log' matches the exact ID of your verbatimTextOutput
-        if (event.name === 'log') { 
-          setTimeout(function() {
-            var logBox = document.getElementById('log');
-            logBox.scrollTop = logBox.scrollHeight;
-          }, 50); // 50ms delay ensures the new text is rendered before scrolling
-        }
-      });
-    "),
     tags$style(HTML("
       @font-face {
         font-family: 'schibsted-grotesk';
@@ -192,47 +181,70 @@ ui <- fluidPage(
   color: #3498db;
 }
 
-/* Prevent the log from fading out while the server is busy */
-#log.recalculating {
-  opacity: 1 !important;
+/* The container for both the handle and the log */
+/* --- 1. LEFT SIDEBAR (Sticky removed to break the z-index trap!) --- */
+.left-sidebar-col {
+  height: 100vh !important;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 120px; /* Spacer so the log doesn't cover your final sidebar items */
+  overflow-y: auto; 
+}
+.left-sidebar-col::-webkit-scrollbar { display: none; }
+
+/* --- 2. LOG WRAPPER (Always hovering, z-index prioritized) --- */
+#log_wrapper {
+  position: fixed !important; 
+  bottom: 0 !important; 
+  z-index: 100000 !important; /* Forces it over the progress overlay natively */
+  background-color: #ffffff !important;
+  border: 1px solid #e3e3e3 !important;
+  border-radius: 8px 8px 0 0 !important; /* Flat bottom */
+  box-shadow: 0 -4px 15px rgba(0,0,0,0.1) !important;
+  display: flex;
+  flex-direction: column;
+  gap: 0 !important; 
+  overflow: hidden !important; 
 }
 
-/* The sticky container that floats at the bottom left */
-.floating-log-container {
-  position: fixed;           /* Detaches it from the page flow */
-  bottom: 20px;              /* 20px spacing from the bottom edge */
-  left: 20px;                /* 20px spacing from the left edge */
-  width: 23%;                /* Matches roughly the width of your sidebar */
-  min-width: 280px;          /* Prevents it from getting too squished on small screens */
-  z-index: 10000;             /* Ensures it stays on top of other scrolling content */
-  
-  /* Styling to match your custom cards */
-  background-color: white;
-  box-shadow: 0 -4px 15px rgba(0,0,0,0.15); /* Stronger shadow so it pops off the background */
-  border-radius: 10px;
-  border-top: 6px solid #f39c12; /* Orange accent */
-  padding: 15px;
+/* --- 3. PANEL HEADER (Drag Handle) --- */
+#log_header {
+  padding: 10px 15px;
+  background-color: #f5f5f5;
+  border-bottom: 1px solid #e3e3e3;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: ns-resize;
+  user-select: none;
+  margin: 0 !important;
+}
+.drag-grip {
+  width: 25px;
+  height: 2px;
+  background-color: #aaa;
+  box-shadow: 0 5px 0 #aaa, 0 -5px 0 #aaa;
 }
 
-/* The actual text output inside the container */
-.floating-log-container pre#log {
-  margin: 0;
-  border: none;
-  background-color: #f8f9fa; /* Light grey background for the text area */
-  
-  /* Scrollbar settings */
-  max-height: 25vh;          /* Takes up a max of 25% of the screen height */
-  overflow-y: auto;          /* Enables VERTICAL scrollbar when text overflows */
-  overflow-x: hidden;        /* Hides horizontal scroll */
-  
-  /* Text wrapping */
+/* --- 4. TEXT OUTPUT (Scrollable, size bounded) --- */
+#log {
+  width: 100% !important;
+  border: none !important;
+  background-color: #fafafa !important;
+  padding: 12px !important;
+  margin: 0 !important;
+  resize: none !important; 
+  min-height: 50px !important; 
+  max-height: 90vh !important;              
+  overflow-y: auto !important;  
+  overflow-x: hidden !important;
   white-space: pre-wrap !important;
   word-wrap: break-word !important;
+  font-family: monospace;
   font-size: 12px;
+  border-radius: 0 !important;
 }
-
-
-
+#log.recalculating { opacity: 1 !important; }
 
 /* --- FIX 2: Radio Button Alignment --- */
 #dynamic_source_ui .shiny-options-group {
@@ -411,7 +423,74 @@ ui <- fluidPage(
 }
 
       
-    "))
+    ")),
+    tags$script(HTML("
+     $(function() {
+        const log = document.getElementById('log');
+        const handle = document.getElementById('log_header');
+        let isResizing = false;
+        let startY, startHeight;
+
+        // 1. TOP-RESIZE LOGIC (Bounded to 85vh)
+        if(handle && log) {
+          handle.addEventListener('mousedown', function(e) {
+            isResizing = true;
+            startY = e.clientY;
+            startHeight = log.getBoundingClientRect().height;
+            document.body.style.cursor = 'ns-resize';
+            document.body.style.userSelect = 'none'; 
+          });
+
+          window.addEventListener('mousemove', function(e) {
+            if (!isResizing) return;
+            const newHeight = startHeight + (startY - e.clientY);
+            // Constrain manual resizing to 85% of screen height
+            const maxH = window.innerHeight * 0.85; 
+            log.style.height = Math.min(newHeight, maxH) + 'px';
+            log.scrollTop = log.scrollHeight; 
+          });
+
+          window.addEventListener('mouseup', function() {
+            if (isResizing) {
+              isResizing = false;
+              document.body.style.cursor = '';
+              document.body.style.userSelect = '';
+            }
+          });
+        }
+
+        // 2. AUTO-SCROLL ON NEW LOG MESSAGE
+        $(document).on('shiny:value', function(event) {
+          if (event.name === 'log') { 
+            setTimeout(function() {
+              if (log) log.scrollTop = log.scrollHeight; 
+            }, 10); 
+          }
+        });
+        
+        // 3. HOVER LOGIC: MIRROR THE SIDEBAR DIMENSIONS
+        const logWrapper = document.getElementById('log_wrapper');
+        const sidebar = document.querySelector('.left-sidebar-col');
+
+        if (logWrapper && sidebar) {
+          const syncSidebarSize = function() {
+            const sidebarRect = sidebar.getBoundingClientRect();
+            // Lock the wrapper to perfectly match the sidebar's screen coordinates
+            logWrapper.style.setProperty('width', sidebarRect.width + 'px', 'important');
+            logWrapper.style.setProperty('left', sidebarRect.left + 'px', 'important');
+          };
+
+          // Actively track the sidebar if it resizes
+          const sidebarObserver = new ResizeObserver(() => syncSidebarSize());
+          sidebarObserver.observe(sidebar);
+
+          // Sync on load, resize, and scroll to ensure it never misaligns
+          syncSidebarSize();
+          window.addEventListener('resize', syncSidebarSize, true);
+          window.addEventListener('scroll', syncSidebarSize, true);
+        }
+      });
+    ")),
   ),
   
   # 1. Custom Title Header with Settings & Dark Mode
@@ -430,6 +509,7 @@ ui <- fluidPage(
     style = "margin: 0;", 
     column(
       width = 3,
+      class = "left-sidebar-col",
       style = "padding: 0;", 
       
       # Section 1: Search
@@ -439,28 +519,10 @@ ui <- fluidPage(
         h4("Search & Identification", style = "margin-top: 0; font-weight: bold; font-size: 16px;"),
         textAreaInput("doi_text", "DOI input:", value = "", rows = 2, width = "100%"),
         textAreaInput("author_list",  "Author Name List :", value = "", rows = 2, width = "100%"),
-        wellPanel(
-          tags$h5(icon("users-cog"), " Author Relationship Filter", class = "text-primary"),
-          tags$p("Filter the publication list based on how the selected authors interact.", class = "text-muted"),
-          
-          radioButtons(
-            inputId = "author_logic_gate",
-            label = NULL, # Label hidden since we have the h5 title
-            choices = c(
-              "Co-patriot/Collaborator (OR)" = "OR",
-              "Companion (AND)"              = "AND",
-              "Rival (XOR)"                  = "XOR",
-              "Ignore (NOR)"                 = "NOR",
-              "Divide (NAND)"                = "NAND"
-            ),
-            selected = "OR",
-            width = "100%"
-          )
-        ),
+        uiOutput("dynamic_author_filter"),
         textAreaInput("orcid_text", "ORCID input:", value = "", rows = 2, width = "100%"),
         actionButton("submit_button", "Run GScholarLENS for DOI", class = "btn-primary", style = "width: 100%; font-weight: bold; margin-top: 10px; background-color: #4B8BBE; border: none;")
       ),
-      
       # Section 2: Timeline
       tags$div(
         class = "custom-card",
@@ -478,17 +540,14 @@ ui <- fluidPage(
       ),
       
       # Section 4: Log Output 
-      tags$div(
-        class = "floating-log-container",
-        
-        # Log Header
-        tags$div(
-          style = "display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;",
-          h4("Log", style = "margin: 0; font-weight: bold; font-size: 16px;")
-        ),
-        
-        # The Log Output
-        verbatimTextOutput("log"),
+      tags$div(id = "log_wrapper",
+               # A proper panel header that ALSO acts as your drag handle
+               tags$div(id = "log_header",
+                        tags$span("Execution Log", style = "font-weight: bold; color: #333;"),
+                        tags$div(class = "drag-grip") # The visual drag lines
+               ),
+               # The actual log output
+               verbatimTextOutput("log")
       )
     ),
     
@@ -584,7 +643,7 @@ ui <- fluidPage(
               )
             ),
             
-            # --- NEW: Cancel Button ---
+            # --- Cancel Button ---
             actionButton(
               inputId = "cancel_button", 
               label = "Cancel Processing", 

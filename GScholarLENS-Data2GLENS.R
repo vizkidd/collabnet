@@ -191,26 +191,40 @@ apply_author_logic <- function(pubs_df, primary_regex, selected_authors, gate) {
     return(pubs_df)
   }
   
-  # Escape special characters in the selected names and collapse into an OR regex
-  selected_regex <- paste(gsub("([.|()\\^{}+$*?]|\\[|\\])", "\\\\\\1", selected_authors), collapse = "|")
+  # Clean list and remove empty strings
+  selected_authors <- selected_authors[trimws(selected_authors) != ""]
+  if (length(selected_authors) == 0) return(pubs_df)
   
+  # Escape special characters in names
+  escaped_authors <- gsub("([.|()\\^{}+$*?]|\\[|\\])", "\\\\\\1", selected_authors)
+  
+  # Create a boolean matrix: rows = publications, cols = selected authors
+  match_matrix <- sapply(escaped_authors, function(rgx) {
+    grepl(rgx, pubs_df$Authors, ignore.case = TRUE)
+  })
+  
+  # Safely handle single-row or single-column matrix collapses
+  if (!is.matrix(match_matrix)) {
+    match_matrix <- matrix(match_matrix, nrow = nrow(pubs_df), ncol = length(escaped_authors))
+  }
+  
+  N <- length(escaped_authors)
+  
+  # Add counts to the dataframe temporarily and filter safely using case_when
   pubs_df %>%
-    mutate(
-      has_primary   = grepl(primary_regex, Authors, ignore.case = TRUE),
-      has_secondary = grepl(selected_regex, Authors, ignore.case = TRUE)
-    ) %>%
+    mutate(match_counts = rowSums(match_matrix)) %>%
     filter(
       case_when(
-        gate == "OR"   ~ has_primary | has_secondary,                  # Co-patriot
-        gate == "AND"  ~ has_primary & has_secondary,                  # Companion
-        gate == "XOR"  ~ xor(has_primary, has_secondary),              # Rival
-        gate == "NOR"  ~ !(has_primary | has_secondary),               # Ignore
-        gate == "NAND" ~ !(has_primary & has_secondary),               # Divide
-        TRUE           ~ TRUE # Fallback
+        is.null(gate)  ~ TRUE,
+        gate == "OR"   ~ match_counts > 0,  # Co-patriot: Has AT LEAST 1 of the selected authors
+        gate == "AND"  ~ match_counts == N, # Companion: Has ALL of the selected authors
+        gate == "XOR"  ~ match_counts == 1, # Rival: Has EXACTLY 1 of the selected authors (never together)
+        gate == "NOR"  ~ match_counts == 0, # Ignore: Has NONE of the selected authors
+        gate == "NAND" ~ match_counts < N,  # Divide: NEVER has all of them together (can have some, or none)
+        TRUE           ~ TRUE
       )
     ) %>%
-    # Clean up the temporary boolean columns
-    select(-has_primary, -has_secondary)
+    select(-match_counts) # Clean up the temporary column
 }
 
 # -----------------------------
