@@ -182,28 +182,28 @@ ui <- fluidPage(
 }
 
 /* The container for both the handle and the log */
-/* --- 1. LEFT SIDEBAR (Sticky removed to break the z-index trap!) --- */
+/* --- 1. LEFT SIDEBAR (Now stretches naturally with page) --- */
 .left-sidebar-col {
-  height: 100vh !important;
+  height: auto !important;   /* Changed from 100vh */
+  min-height: 100vh;         /* Ensures it at least fills the screen */
   display: flex;
   flex-direction: column;
-  padding-bottom: 120px; /* Spacer so the log doesn't cover your final sidebar items */
-  overflow-y: auto; 
+  padding-bottom: 150px;     /* Extra space at bottom so log doesn't cover last inputs */
+  overflow: visible !important; /* Removes the inner scrollbar */
 }
-.left-sidebar-col::-webkit-scrollbar { display: none; }
 
-/* --- 2. LOG WRAPPER (Always hovering, z-index prioritized) --- */
+/* --- 2. LOG WRAPPER (Stays fixed to viewport, not sidebar) --- */
 #log_wrapper {
   position: fixed !important; 
   bottom: 0 !important; 
-  z-index: 100000 !important; /* Forces it over the progress overlay natively */
+  /* Z-index high enough to beat the progress overlay (usually 1050 in Bootstrap) */
+  z-index: 10000 !important; 
   background-color: #ffffff !important;
   border: 1px solid #e3e3e3 !important;
-  border-radius: 8px 8px 0 0 !important; /* Flat bottom */
+  border-radius: 8px 8px 0 0 !important;
   box-shadow: 0 -4px 15px rgba(0,0,0,0.1) !important;
   display: flex;
   flex-direction: column;
-  gap: 0 !important; 
   overflow: hidden !important; 
 }
 
@@ -229,20 +229,15 @@ ui <- fluidPage(
 /* --- 4. TEXT OUTPUT (Scrollable, size bounded) --- */
 #log {
   width: 100% !important;
-  border: none !important;
-  background-color: #fafafa !important;
-  padding: 12px !important;
-  margin: 0 !important;
-  resize: none !important; 
-  min-height: 50px !important; 
-  max-height: 90vh !important;              
+  max-height: 85vh !important;
+  min-height: 30px !important;
   overflow-y: auto !important;  
-  overflow-x: hidden !important;
   white-space: pre-wrap !important;
   word-wrap: break-word !important;
   font-family: monospace;
   font-size: 12px;
-  border-radius: 0 !important;
+  border: none !important;
+  margin: 0 !important;
 }
 #log.recalculating { opacity: 1 !important; }
 
@@ -425,41 +420,59 @@ ui <- fluidPage(
       
     ")),
     tags$script(HTML("
-     $(function() {
+    $(function() {
         const log = document.getElementById('log');
         const handle = document.getElementById('log_header');
+        const logWrapper = document.getElementById('log_wrapper');
+        const sidebar = document.querySelector('.left-sidebar-col');
+        
         let isResizing = false;
         let startY, startHeight;
-
-        // 1. TOP-RESIZE LOGIC (Bounded to 85vh)
+    
+        // 1. RESIZE LOGIC
         if(handle && log) {
           handle.addEventListener('mousedown', function(e) {
             isResizing = true;
             startY = e.clientY;
             startHeight = log.getBoundingClientRect().height;
             document.body.style.cursor = 'ns-resize';
-            document.body.style.userSelect = 'none'; 
           });
 
           window.addEventListener('mousemove', function(e) {
             if (!isResizing) return;
             const newHeight = startHeight + (startY - e.clientY);
-            // Constrain manual resizing to 85% of screen height
             const maxH = window.innerHeight * 0.85; 
             log.style.height = Math.min(newHeight, maxH) + 'px';
-            log.scrollTop = log.scrollHeight; 
           });
 
           window.addEventListener('mouseup', function() {
-            if (isResizing) {
-              isResizing = false;
-              document.body.style.cursor = '';
-              document.body.style.userSelect = '';
-            }
+            isResizing = false;
+            document.body.style.cursor = '';
           });
         }
 
-        // 2. AUTO-SCROLL ON NEW LOG MESSAGE
+        // 2. POSITION SYNC (Horizontal only)
+        if (logWrapper && sidebar) {
+          const syncPosition = function() {
+            const rect = sidebar.getBoundingClientRect();
+            // We match the sidebar's left position and width
+            logWrapper.style.left = rect.left + 'px';
+            logWrapper.style.width = rect.width + 'px';
+          };
+
+          // Watch for sidebar size changes (e.g. window resizing)
+          const observer = new ResizeObserver(syncPosition);
+          observer.observe(sidebar);
+          
+          // Initial sync
+          syncPosition();
+          
+          // Also sync on scroll to handle any weird layout shifts
+          window.addEventListener('scroll', syncPosition);
+          window.addEventListener('resize', syncPosition);
+        }
+        
+        // 3. AUTO-SCROLL ON NEW LOG MESSAGE
         $(document).on('shiny:value', function(event) {
           if (event.name === 'log') { 
             setTimeout(function() {
@@ -467,28 +480,6 @@ ui <- fluidPage(
             }, 10); 
           }
         });
-        
-        // 3. HOVER LOGIC: MIRROR THE SIDEBAR DIMENSIONS
-        const logWrapper = document.getElementById('log_wrapper');
-        const sidebar = document.querySelector('.left-sidebar-col');
-
-        if (logWrapper && sidebar) {
-          const syncSidebarSize = function() {
-            const sidebarRect = sidebar.getBoundingClientRect();
-            // Lock the wrapper to perfectly match the sidebar's screen coordinates
-            logWrapper.style.setProperty('width', sidebarRect.width + 'px', 'important');
-            logWrapper.style.setProperty('left', sidebarRect.left + 'px', 'important');
-          };
-
-          // Actively track the sidebar if it resizes
-          const sidebarObserver = new ResizeObserver(() => syncSidebarSize());
-          sidebarObserver.observe(sidebar);
-
-          // Sync on load, resize, and scroll to ensure it never misaligns
-          syncSidebarSize();
-          window.addEventListener('resize', syncSidebarSize, true);
-          window.addEventListener('scroll', syncSidebarSize, true);
-        }
       });
     ")),
   ),

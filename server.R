@@ -739,7 +739,7 @@ plot_glens_table <- function(rv, output, session){
     output$log <- renderText({ rv$log_text })
     warning("plot_glens_table() - Warning: Need more than one group and atleast 1 paper with 1 citation per-group for plotting distribution.")
     shinyjs::hide("cdist_plot")
-    return()
+    # return()
   }
   
   # p_citesdist <- ggplot(df_plot, aes(x = position_rank, y = Citations, fill = position_rank, group=position_rank, colour = Qscore,size=Adjusted_Citations, text = paste0(
@@ -843,7 +843,11 @@ plot_glens_table <- function(rv, output, session){
   
   total_pubs <- nrow(df_plot)
   
-  pub_pdata <- df_plot %>% group_by(position_rank) %>% count() %>% rowwise() %>% mutate(pcontrib=(n/total_pubs) * 100) %>% ungroup()
+  pub_pdata <- df_plot %>% 
+    group_by(position_rank) %>% 
+    count() %>% 
+    ungroup() %>% 
+    mutate(pcontrib = if (is.na(total_pubs) || total_pubs == 0) 0 else (n / total_pubs) * 100)
   print(pub_pdata)
   
   # output$aperc_plot <- renderPlotly(({
@@ -896,7 +900,16 @@ plot_glens_table <- function(rv, output, session){
     ))
   }
   
+  # print("HERE1")
   req(pub_pdata)
+  # print("HERE2")
+  
+  if(nrow(pub_pdata) <= 0){
+    shinyjs::hide("aperc_plot")
+    shinyjs::hide("cperc_plot")
+    # return()
+  }
+  
   aperc_proxy <- plotlyProxy("aperc_plot", session)
   
   n <- length(all_positions)
@@ -904,7 +917,12 @@ plot_glens_table <- function(rv, output, session){
   # 1. Calculate values
   aperc_vals <- sapply(all_positions, function(pos) {
     i <- which(pub_pdata$position_rank == pos)
-    if (length(i) == 1) pub_pdata$pcontrib[i] else 0
+    
+    # Extract value if it exists, otherwise default to 0
+    val <- if (length(i) == 1) pub_pdata$pcontrib[i] else 0
+    
+    # Final safety net to strip any lingering NAs or NaNs
+    if (is.na(val) || is.nan(val)) 0 else val
   })
   
   # Normalize to 100%
@@ -980,7 +998,12 @@ plot_glens_table <- function(rv, output, session){
   
   total_cites <- sum(df_plot$Citations)
   
-  cites_pdata <- df_plot %>% group_by(position_rank) %>% summarise(TotalCitations=sum(Citations)) %>% rowwise() %>% mutate(pcontrib=(TotalCitations/total_cites) * 100) %>% ungroup()
+  cites_pdata <- df_plot %>% 
+    group_by(position_rank) %>% 
+    summarise(TotalCitations = sum(Citations), .groups = 'drop') %>% 
+    # Safely check for NA first, and use the double || 
+    mutate(pcontrib = if (is.na(total_cites) || total_cites == 0) 0 else (TotalCitations / total_cites) * 100)
+  
   # print(cites_pdata)
   
   req(cites_pdata)
@@ -991,8 +1014,20 @@ plot_glens_table <- function(rv, output, session){
   # 1. Map the citation data to match the order of all_positions
   cperc_vals <- sapply(all_positions, function(pos) {
     idx <- which(cites_pdata$position_rank == pos)
-    if (length(idx) == 1) cites_pdata$pcontrib[idx] else 0
+    
+    # Extract value if it exists, otherwise default to 0
+    val <- if (length(idx) == 1) cites_pdata$pcontrib[idx] else 0
+    
+    # Final safety net to strip any lingering NAs or NaNs before Plotly gets it
+    if (is.na(val) || is.nan(val)) 0 else val
   })
+  
+  print("HERE3")
+  print(cites_pdata)
+  print(cperc_vals)
+  print(n)
+  print(all_positions)
+  print("HERE4")
   
   # Ensure total is 100% (Safety check)
   if(sum(cperc_vals) > 0) {
@@ -1716,7 +1751,12 @@ server <- function(input, output, session) {
   
   #Slider Event
   observeEvent(c(input$selected_source, input$year_slider, input$author_list, input$author_logic_gate), {
-    req(rv$glens_etable_final, input$selected_source, input$year_slider, input$author_list, input$author_logic_gate)
+    req(rv$glens_etable_final, input$selected_source, input$year_slider, input$author_list)
+    if(isTRUE(is.null(input$author_logic_gate))){
+      author_logic_gate <- "OR"
+    }else{
+      author_logic_gate <- input$author_logic_gate
+    }
     if(nrow(rv$glens_input_table)<=0){
       return()
     }
@@ -1787,7 +1827,7 @@ server <- function(input, output, session) {
           pubs_df          = rv$glens_year_filtered,
           primary_regex    = rv$author_match_regex,
           selected_authors = author_list, 
-          gate             = input$author_logic_gate        
+          gate             = author_logic_gate        
         )
         # 3. Save the newly filtered data to your reactive variable
         rv$glens_year_filtered <- filtered_df
