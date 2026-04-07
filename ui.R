@@ -24,8 +24,8 @@ suppressPackageStartupMessages(require(xfun))
 is_WASM <- grepl(pattern="wasm",x=Sys.info()["machine"])
 # # use a multisession plan so futures run in background R sessions
 # if(!is_WASM){
-#   future::plan(future::multisession)
-future::plan(future::multicore)
+  future::plan(future::multisession)
+# future::plan(future::multicore)
 # }else{
 #   future::plan(future::sequential)
 # }
@@ -620,7 +620,7 @@ ui <- fluidPage(
                        tags$label("DOI / ORCID Resolver", class = "api-progress-label"),
                        shinyWidgets::progressBar(id = "prog_doi", title = "0%", value = 0, total = 100, status = "warning")
               ),
-              tags$div(class = "api-progress-wrapper",
+              tags$div(id = "scopus_bar_container", class = "api-progress-wrapper",
                        tags$label("Scopus API", class = "api-progress-label"),
                        shinyWidgets::progressBar(id = "prog_scopus", title = "0%", value = 0, total = 100, status = "info")
               ),

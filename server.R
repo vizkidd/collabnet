@@ -25,13 +25,14 @@ suppressPackageStartupMessages(require(httr))
 suppressPackageStartupMessages(require(xml2))
 suppressPackageStartupMessages(require(httr2))
 suppressPackageStartupMessages(require(jsonlite))
+suppressPackageStartupMessages(require(parallel))
 
 is_WASM <- grepl(pattern="wasm",x=Sys.info()["machine"])
 
 # use a multisession plan so futures run in background R sessions
 # if(!is_WASM){
-#   future::plan(future::multisession)
-future::plan(future::multicore)
+  future::plan(future::multisession)
+# future::plan(future::multicore)
 # }else{
 #   future::plan(future::sequential)
 # }
@@ -370,62 +371,6 @@ compute_indices <- function(rv) {
 }
 
 match_journals <- function(rv){
-  # jcr_base <- "2024-JCR_IMPACT_FACTOR"
-  # jcr_file_xlsx <- paste0(jcr_base, ".xlsx")
-  # jcr_file_xls  <- paste0(jcr_base, ".xls")
-  # jcr_file_csv  <- paste0(jcr_base, ".csv")
-  # 
-  # jcr_path <- NULL
-  # if (file.exists(jcr_file_xlsx)) jcr_path <- jcr_file_xlsx
-  # if (is.null(jcr_path) && file.exists(jcr_file_xls)) jcr_path <- jcr_file_xls
-  # if (is.null(jcr_path) && file.exists(jcr_file_csv)) jcr_path <- jcr_file_csv
-  # 
-  # if (is.null(jcr_path)) {
-  #   warning("Cannot find '2024-JCR_IMPACT_FACTOR(.xlsx/.csv)' in working directory.\n")
-  #   # jcr_path <- readline(prompt = "Enter full path to JCR file (xlsx or csv): ")
-  #   # jcr_path <- str_trim(jcr_path)
-  #   warning("JCR file not found. Exiting.")
-  #   return()
-  # } else {
-  #   cat("Found JCR file:", jcr_path, "\n")
-  # }
-  # jcr <- read_jcr(jcr_path)
-  # 
-  # # If JIF columns exist, ensure numeric
-  # if ("JIF" %in% names(jcr)) jcr$JIF <- suppressWarnings(as.numeric(jcr$JIF))
-  # if ("JIF5Years" %in% names(jcr)) jcr$JIF5Years <- suppressWarnings(as.numeric(jcr$JIF5Years))
-  # 
-  # need_cols <- c("Title","Authors","Adjusted_Citations","Journal",
-  #                "First_Author","Second_Author","Co_Author","Corresponding_Author")
-  # missing_cols <- setdiff(need_cols, names(rv$glens_etable_final))
-  # if (length(missing_cols) > 0) {
-  #   warning(paste("Author-level file missing columns:", paste(missing_cols, collapse = ", ")))
-  #   return()
-  # }
-  # 
-  # unique_journals <- unique(rv$glens_etable_final$Journal)
-  # print(cat("Unique journals to match:", length(unique_journals), "\n"))
-  # 
-  # jcr$Name_norm <- sapply(jcr$Name, function(x) normalize_journal(x))
-  # rv$glens_etable_final$Name_norm <- sapply(rv$glens_etable_final$Journal, function(x) normalize_journal(x))
-  # 
-  # jcr_names_norm <- jcr |>
-  #   select(Name, Name_norm, JIF5Years, Qscore) 
-  # 
-  # match_idx <- unique(
-  #   bind_rows(
-  #     future_sapply(
-  #       seq_len(length(unique_journals)),
-  #       getExcelColumns,
-  #       unique_journals = unique_journals,
-  #       jsonData = jcr_names_norm,
-  #       simplify = FALSE,
-  #       future.packages = c("stringr", "dplyr")
-  #     )
-  #   )
-  # )
-  # 
-  # jcr_matched <- inner_join(jcr,match_idx)
   
   need_cols <- c("Title","Authors","Adjusted_Citations","Journal",
                  "First_Author","Second_Author","Co_Author","Corresponding_Author")
@@ -436,9 +381,12 @@ match_journals <- function(rv){
   }
   
   unique_journals <- unique(rv$glens_etable_final$Journal)
-  print(cat("Unique journals to match:", length(unique_journals), "\n"))
+  cat("Unique journals to match:", length(unique_journals), "\n")
   
   rv$glens_etable_final$Name_norm <- sapply(rv$glens_etable_final$Journal, function(x) normalize_journal(x))
+  
+  # Note: This assumes 'jcr' and 'jcr_names_norm' are loaded in your global environment 
+  # since the reading code was commented out!
   
   match_idx <- unique(
     bind_rows(
@@ -448,17 +396,63 @@ match_journals <- function(rv){
         unique_journals = unique_journals,
         jsonData = jcr_names_norm,
         simplify = FALSE,
-        future.packages = c("stringr", "dplyr")
+        future.packages = c("stringr", "dplyr"),
+        # EXPLICITLY pass the large object and the function
+        future.globals = c("jcr_names_norm", "getExcelColumns"),
+        future.seed = TRUE
       )
     )
   )
+  print("HERE0")
+  # Safely handle the case where absolutely NO journals were matched in pass 1
+  if (nrow(match_idx) > 0) {
+    jcr_matched <- inner_join(jcr_names_norm, match_idx, by = c("Name_norm", "Qscore", "JIF5Years"))
+    print(str(match_idx))
+    print(str(jcr_matched))
+    print("HERE0.1")  
+  } else {
+    jcr_matched <- jcr[0, ] # Creates an empty df that still has the Qscore column
+    print("HERE0.2")
+  }
   
-  jcr_matched <- inner_join(jcr,match_idx)
+  # # Clean up old columns just in case
+  rv$glens_etable_final$Qscore <- NULL
+  rv$glens_etable_final$JIF5Years <- NULL
+  print("HERE1")
+  print(str(rv$glens_etable_final))
+  df_auth_joined <- left_join(rv$glens_etable_final, jcr_matched, by = c("Name_norm"))
+  print("HERE2")
   
-  rv$glens_etable_final[c("Qscore", "JIF5Years")] <- NULL
-  df_auth_joined <- left_join(rv$glens_etable_final, jcr_matched, by = c("Name_norm"))#, relationship = "many-to-many") 
-  df_auth_joined <- df_auth_joined |> rename("User_Journal" = Journal.x) |> rename("JCR_Journal" = Journal.y)
+  # --- 1. Handle Journal Naming ---
+  if ("Journal.x" %in% names(df_auth_joined)) {
+    df_auth_joined <- df_auth_joined %>% rename("User_Journal" = Journal.x)
+  } else if ("Journal" %in% names(df_auth_joined) && !"User_Journal" %in% names(df_auth_joined)) {
+    df_auth_joined <- df_auth_joined %>% rename("User_Journal" = Journal)
+  }
   
+  if ("Journal.y" %in% names(df_auth_joined)) {
+    df_auth_joined <- df_auth_joined %>% rename("JCR_Journal" = Journal.y)
+  } else if (!"JCR_Journal" %in% names(df_auth_joined)) {
+    df_auth_joined$JCR_Journal <- NA_character_
+  }
+  
+  # --- 2. CRITICAL FIX: Resolve Qscore .x and .y collisions ---
+  if ("Qscore.x" %in% names(df_auth_joined) && "Qscore.y" %in% names(df_auth_joined)) {
+    df_auth_joined <- df_auth_joined %>%
+      mutate(Qscore = coalesce(Qscore.y, Qscore.x)) %>% # Prefer new match (.y), fallback to old (.x)
+      select(-Qscore.x, -Qscore.y)                      # Remove the messy collision columns
+  } else if (!"Qscore" %in% names(df_auth_joined)) {
+    df_auth_joined$Qscore <- NA_character_
+  }
+  
+  # --- 3. Resolve JIF5Years .x and .y collisions ---
+  if ("JIF5Years.x" %in% names(df_auth_joined) && "JIF5Years.y" %in% names(df_auth_joined)) {
+    df_auth_joined <- df_auth_joined %>%
+      mutate(JIF5Years = coalesce(JIF5Years.y, JIF5Years.x)) %>%
+      select(-JIF5Years.x, -JIF5Years.y)
+  }
+  print(str(df_auth_joined))
+  print("HERE3")
   # For any unmatched journals, try a fallback: look for exact substring match in Name
   unmatched <- which(is.na(df_auth_joined$JCR_Journal))
   if (length(unmatched) > 0) {
@@ -467,23 +461,142 @@ match_journals <- function(rv){
       jn <- df_auth_joined$Name_norm[i]
       if (is.na(jn) || nchar(jn) < 3) next
       hits <- grep(jn, jcr_names_norm$Name_norm, value = TRUE)
-      # print(hits)
+      
       if (length(hits) == 1) {
         idx <- which(jcr_names_norm$Name_norm == hits)[1]
-        df_auth_joined$JCR_Journal[i] <- jcr$Name[idx]
-        df_auth_joined$Qscore[i] <- jcr$Qscore[idx]
-        # df_auth_joined$ISSN[i] <- if ("ISSN" %in% names(jcr)) jcr$ISSN[idx] else NA_character_
-        # df_auth_joined$EISSN[i] <- if ("EISSN" %in% names(jcr)) jcr$EISSN[idx] else NA_character_
+        df_auth_joined$JCR_Journal[i] <- jcr_names_norm$Name[idx]
+        df_auth_joined$Qscore[i] <- as.character(jcr_names_norm$Qscore[idx])
       }
     }
   }
-  
-  # If still many unmatched, notify user (they can inspect sortedfile.csv)
+  print("HERE4")
+  # CRITICAL FIX 2: Convert all remaining NAs to "Unranked" so dplyr plotting doesn't crash
+  df_auth_joined <- df_auth_joined %>%
+    mutate(Qscore = if_else(is.na(Qscore), "Unranked", as.character(Qscore)))
+  print("HERE5")
   n_unmatched <- length(which(is.na(df_auth_joined$JCR_Journal)))
-  print(paste("Number of unmatched journal rows:", n_unmatched, "\n"))
+  cat("Number of unmatched journal rows:", n_unmatched, "\n")
+  print("HERE6")
   rv$glens_etable_final <- df_auth_joined
-  
+  print(str(rv$glens_etable_final))
+  print("HERE6.1")
 }
+
+# match_journals <- function(rv){
+#   # jcr_base <- "2024-JCR_IMPACT_FACTOR"
+#   # jcr_file_xlsx <- paste0(jcr_base, ".xlsx")
+#   # jcr_file_xls  <- paste0(jcr_base, ".xls")
+#   # jcr_file_csv  <- paste0(jcr_base, ".csv")
+#   # 
+#   # jcr_path <- NULL
+#   # if (file.exists(jcr_file_xlsx)) jcr_path <- jcr_file_xlsx
+#   # if (is.null(jcr_path) && file.exists(jcr_file_xls)) jcr_path <- jcr_file_xls
+#   # if (is.null(jcr_path) && file.exists(jcr_file_csv)) jcr_path <- jcr_file_csv
+#   # 
+#   # if (is.null(jcr_path)) {
+#   #   warning("Cannot find '2024-JCR_IMPACT_FACTOR(.xlsx/.csv)' in working directory.\n")
+#   #   # jcr_path <- readline(prompt = "Enter full path to JCR file (xlsx or csv): ")
+#   #   # jcr_path <- str_trim(jcr_path)
+#   #   warning("JCR file not found. Exiting.")
+#   #   return()
+#   # } else {
+#   #   cat("Found JCR file:", jcr_path, "\n")
+#   # }
+#   # jcr <- read_jcr(jcr_path)
+#   # 
+#   # # If JIF columns exist, ensure numeric
+#   # if ("JIF" %in% names(jcr)) jcr$JIF <- suppressWarnings(as.numeric(jcr$JIF))
+#   # if ("JIF5Years" %in% names(jcr)) jcr$JIF5Years <- suppressWarnings(as.numeric(jcr$JIF5Years))
+#   # 
+#   # need_cols <- c("Title","Authors","Adjusted_Citations","Journal",
+#   #                "First_Author","Second_Author","Co_Author","Corresponding_Author")
+#   # missing_cols <- setdiff(need_cols, names(rv$glens_etable_final))
+#   # if (length(missing_cols) > 0) {
+#   #   warning(paste("Author-level file missing columns:", paste(missing_cols, collapse = ", ")))
+#   #   return()
+#   # }
+#   # 
+#   # unique_journals <- unique(rv$glens_etable_final$Journal)
+#   # print(cat("Unique journals to match:", length(unique_journals), "\n"))
+#   # 
+#   # jcr$Name_norm <- sapply(jcr$Name, function(x) normalize_journal(x))
+#   # rv$glens_etable_final$Name_norm <- sapply(rv$glens_etable_final$Journal, function(x) normalize_journal(x))
+#   # 
+#   # jcr_names_norm <- jcr |>
+#   #   select(Name, Name_norm, JIF5Years, Qscore) 
+#   # 
+#   # match_idx <- unique(
+#   #   bind_rows(
+#   #     future_sapply(
+#   #       seq_len(length(unique_journals)),
+#   #       getExcelColumns,
+#   #       unique_journals = unique_journals,
+#   #       jsonData = jcr_names_norm,
+#   #       simplify = FALSE,
+#   #       future.packages = c("stringr", "dplyr")
+#   #     )
+#   #   )
+#   # )
+#   # 
+#   # jcr_matched <- inner_join(jcr,match_idx)
+#   
+#   need_cols <- c("Title","Authors","Adjusted_Citations","Journal",
+#                  "First_Author","Second_Author","Co_Author","Corresponding_Author")
+#   missing_cols <- setdiff(need_cols, names(rv$glens_etable_final))
+#   if (length(missing_cols) > 0) {
+#     warning(paste("Author-level file missing columns:", paste(missing_cols, collapse = ", ")))
+#     return()
+#   }
+#   
+#   unique_journals <- unique(rv$glens_etable_final$Journal)
+#   print(cat("Unique journals to match:", length(unique_journals), "\n"))
+#   
+#   rv$glens_etable_final$Name_norm <- sapply(rv$glens_etable_final$Journal, function(x) normalize_journal(x))
+#   
+#   match_idx <- unique(
+#     bind_rows(
+#       future_sapply(
+#         seq_len(length(unique_journals)),
+#         getExcelColumns,
+#         unique_journals = unique_journals,
+#         jsonData = jcr_names_norm,
+#         simplify = FALSE,
+#         future.packages = c("stringr", "dplyr")
+#       )
+#     )
+#   )
+#   
+#   jcr_matched <- inner_join(jcr,match_idx)
+#   
+#   rv$glens_etable_final[c("Qscore", "JIF5Years")] <- NULL
+#   df_auth_joined <- left_join(rv$glens_etable_final, jcr_matched, by = c("Name_norm"))#, relationship = "many-to-many") 
+#   df_auth_joined <- df_auth_joined |> rename("User_Journal" = Journal.x) |> rename("JCR_Journal" = Journal.y)
+#   
+#   # For any unmatched journals, try a fallback: look for exact substring match in Name
+#   unmatched <- which(is.na(df_auth_joined$JCR_Journal))
+#   if (length(unmatched) > 0) {
+#     cat("Trying fallback substring match for", length(unmatched), "journals...\n")
+#     for (i in unmatched) {
+#       jn <- df_auth_joined$Name_norm[i]
+#       if (is.na(jn) || nchar(jn) < 3) next
+#       hits <- grep(jn, jcr_names_norm$Name_norm, value = TRUE)
+#       # print(hits)
+#       if (length(hits) == 1) {
+#         idx <- which(jcr_names_norm$Name_norm == hits)[1]
+#         df_auth_joined$JCR_Journal[i] <- jcr$Name[idx]
+#         df_auth_joined$Qscore[i] <- jcr$Qscore[idx]
+#         # df_auth_joined$ISSN[i] <- if ("ISSN" %in% names(jcr)) jcr$ISSN[idx] else NA_character_
+#         # df_auth_joined$EISSN[i] <- if ("EISSN" %in% names(jcr)) jcr$EISSN[idx] else NA_character_
+#       }
+#     }
+#   }
+#   
+#   # If still many unmatched, notify user (they can inspect sortedfile.csv)
+#   n_unmatched <- length(which(is.na(df_auth_joined$JCR_Journal)))
+#   print(paste("Number of unmatched journal rows:", n_unmatched, "\n"))
+#   rv$glens_etable_final <- df_auth_joined
+#   
+# }
 
 plot_glens_table <- function(rv, output, session){
   if(nrow(rv$glens_year_filtered) <= 0){
@@ -494,8 +607,8 @@ plot_glens_table <- function(rv, output, session){
     shinyjs::hide("acounts_plot")
     shinyjs::hide("ccounts_plot")
     shinyjs::hide("cdist_plot")
-    shinyjs::hide("aprec_plot")
-    shinyjs::hide("cprec_plot")
+    shinyjs::hide("aperc_plot")
+    shinyjs::hide("cperc_plot")
     shinyjs::hide("extended_table")
     return()
   }
@@ -848,7 +961,7 @@ plot_glens_table <- function(rv, output, session){
     count() %>% 
     ungroup() %>% 
     mutate(pcontrib = if (is.na(total_pubs) || total_pubs == 0) 0 else (n / total_pubs) * 100)
-  print(pub_pdata)
+  # print(pub_pdata)
   
   # output$aperc_plot <- renderPlotly(({
   #   # auth_pplot <- ggplot(
@@ -1022,12 +1135,12 @@ plot_glens_table <- function(rv, output, session){
     if (is.na(val) || is.nan(val)) 0 else val
   })
   
-  print("HERE3")
-  print(cites_pdata)
-  print(cperc_vals)
-  print(n)
-  print(all_positions)
-  print("HERE4")
+  # print("HERE3")
+  # print(cites_pdata)
+  # print(cperc_vals)
+  # print(n)
+  # print(all_positions)
+  # print("HERE4")
   
   # Ensure total is 100% (Safety check)
   if(sum(cperc_vals) > 0) {
@@ -1119,24 +1232,27 @@ render_skeleton_plots <- function(rv, output){
   df_ordered_debug$position_rank[which(df_ordered_debug$position_rank == 2)] <- "Second Author"
   df_ordered_debug$position_rank[which(df_ordered_debug$position_rank == 3)] <- "Co-Author"
   df_ordered_debug$position_rank[which(df_ordered_debug$position_rank == 4)] <- "Corresponding Author"
-  
+  print("HERE8.1")
+  print(str(df_ordered_debug))
   agg_first <- make_agg(df_ordered_debug, "First_Author", "First Author")
   agg_second <- make_agg(df_ordered_debug, "Second_Author", "Second Author")
   agg_co <- make_agg(df_ordered_debug, "Co_Author", "Co-Author")
   agg_cor <- make_agg(df_ordered_debug, "Corresponding_Author", "Corresponding Author")
-  
+  print("HERE8.2")
   agg_all <- bind_rows(agg_first, agg_second, agg_co, agg_cor)
   
   # Ensure all quartiles present per position (fill zeros)
   all_positions <- c("First Author","Second Author","Co-Author","Corresponding Author")
   all_quartiles <- c("Q1","Q2","Q3","Q4", "NA")
+  print("HERE8.3")
   full_grid <- expand.grid(Position = all_positions, Qscore = all_quartiles, stringsAsFactors = FALSE)
+  print("HERE8.4")
   agg_all <- full_grid %>%
     left_join(agg_all, by = c("Position","Qscore")) %>%
     mutate(Count = tidyr::replace_na(Count, 0L),
            SumCitations = tidyr::replace_na(SumCitations, 0.0))
   
-  
+  print("HERE9")
   # ---------------------------
   # Plotting parameters (colors + alpha per quartile)
   # ---------------------------
@@ -1169,9 +1285,11 @@ render_skeleton_plots <- function(rv, output){
   # Alpha values so Q1 most opaque and Q4 faint
   quartile_alpha <- c("Q1" = 0.9, "Q2" = 0.70, "Q3" = 0.50, "Q4" = 0.30, "NA" = 0.1)
   
+  print("HERE10")
   # Order positions for plotting (Left to right as in your image: First, Second, Co, Corresponding)
   agg_all$Position <- factor(agg_all$Position, levels = all_positions)
   agg_all$Qscore <- factor(agg_all$Qscore, levels = all_quartiles)
+  print("HERE11")
   agg_all <- agg_all %>%
     group_by(Position) %>%
     mutate(Total_Position = sum(Count, na.rm = TRUE)) %>%
@@ -1180,11 +1298,12 @@ render_skeleton_plots <- function(rv, output){
     group_by(Position) %>%
     mutate(Total_Citations = sum(SumCitations, na.rm = TRUE)) %>%
     ungroup()
+  print("HERE1.1")
   agg_all <- agg_all %>%
     group_by(Qscore) %>%
     mutate(Total_QCitations = sum(SumCitations, na.rm = TRUE)) %>%
     ungroup()
-  
+  print("HERE1.2")
   agg_all <- agg_all %>%
     mutate(
       Position = factor(Position, levels = all_positions),
@@ -1543,7 +1662,7 @@ server <- function(input, output, session) {
     glens_year_filtered = data.frame(),
     summary_table = data.frame(),
     scopus_df = data.frame(),
-    # scopus_future = future({}),
+    scopus_future_list = list(),
     wos_df = data.frame(),
     semantic_df = data.frame(),
     sh_index = 0,
@@ -1606,7 +1725,7 @@ server <- function(input, output, session) {
             "Co-patriot/Collaborator (OR)" = "OR",
             "Companion (AND)"              = "AND",
             "Rival (XOR)"                  = "XOR",
-            "Ignore (NOR)"                 = "NOR",
+            "Ignore All (NOR)"                 = "NOR",
             "Divide & Exclude (NAND)"                = "NAND"
           ),
           selected = "OR",
@@ -1630,19 +1749,7 @@ server <- function(input, output, session) {
       updateActionButton(session, "theme_toggle", label = "🌙 Dark Mode", icon = icon("moon", lib = "font-awesome"))
     }
   })
-  
-  observeEvent(input$cancel_button, {
-    rv$is_cancelled <- TRUE
-    print("HERE1")
-    # Immediately hide the overlay and re-enable the UI
-    shinyjs::hide("progress_overlay")
-    shinyjs::enable(id = "submit_button")
-    
-    # Update logs
-    rv$log_text <- paste0("Process cancelled by user.\n")
-    output$log <- renderText({ rv$log_text })
-  })
-  
+
   observeEvent(input$settings_btn, {
     # Check file existence first to set badge states
     has_scopus <- fs::file_exists(file.path("keys","scopus.key"))
@@ -1719,7 +1826,13 @@ server <- function(input, output, session) {
   
   # SCOPUS save handlers (repeat for WoS and Semantic)
   observeEvent(input$save_scopus, {
-    req(input$scopus_key)
+    # req(input$scopus_key)
+    if(is.null(input$scopus_key) || stringi::stri_isempty(input$scopus_key)){
+      if(fs::file_exists(file.path("keys","scopus.key")))
+        fs::file_delete(file.path("keys","scopus.key"))
+      removeModal()
+      return()
+    }
     raw_key <- charToRaw(trimws(input$scopus_key))
     # print(input$scopus_key)
     # print(raw_key)
@@ -1731,8 +1844,13 @@ server <- function(input, output, session) {
     removeModal()
   })
   observeEvent(input$save_wos, {
-    fs::dir_create("keys")
-    req(input$wos_key)
+    # req(input$wos_key)
+    if(is.null(input$wos_key) || stringi::stri_isempty(input$wos_key)){
+      if(fs::file_exists(file.path("keys","wos.key")))
+        fs::file_delete(file.path("keys","wos.key"))
+      removeModal()
+      return()
+    }
     raw_key <- charToRaw(trimws(input$wos_key))
     encrypted_wos <- sodium::data_encrypt(raw_key, key=sha256(glens_env$privkey_dec))
     saveRDS(encrypted_wos, file = file.path("keys","wos.key"))
@@ -1740,8 +1858,14 @@ server <- function(input, output, session) {
     removeModal()
   })
   observeEvent(input$save_semantic, {
-    fs::dir_create("keys")
-    req(input$semantic_key)
+    # fs::dir_create("keys")
+    # req(input$semantic_key)
+    if(is.null(input$semantic_key) || stringi::stri_isempty(input$semantic_key)){
+      if(fs::file_exists(file.path("keys","semantic.key")))
+        fs::file_delete(file.path("keys","semantic.key"))
+      removeModal()
+      return()
+    }
     raw_key <- charToRaw(trimws(input$semantic_key))
     encrypted_semantic <- sodium::data_encrypt(raw_key, key=sha256(glens_env$privkey_dec))
     saveRDS(encrypted_semantic, file = file.path("keys","semantic.key"))
@@ -1751,147 +1875,164 @@ server <- function(input, output, session) {
   
   #Slider Event
   observeEvent(c(input$selected_source, input$year_slider, input$author_list, input$author_logic_gate), {
-    req(rv$glens_etable_final, input$selected_source, input$year_slider, input$author_list)
-    if(isTRUE(is.null(input$author_logic_gate))){
-      author_logic_gate <- "OR"
-    }else{
-      author_logic_gate <- input$author_logic_gate
-    }
-    if(nrow(rv$glens_input_table)<=0){
-      return()
-    }
-    if(is.na(input$year_slider[1]) || is.na(input$year_slider[2])){
-      return()
-    }
-    if(rv$is_glens_exec){
-      warning("input$year_slider - Warning: Executing.")
-      return()
-    }
-    shinyjs::disable(id="year_slider")
-    # print("Changed range...")
-    # output$log <- renderText("Changed range...")
-    # extend_input_table(rv)
-    # rv$glens_year_filtered <- rv$glens_etable_final %>%
-    #   filter(Year >= input$year_slider[1]) %>%
-    #   filter(Year <= input$year_slider[2])
-    #   # filter(dplyr::between(
-    #   #   Year,
-    #   #   input$year_slider[1],
-    #   #   input$year_slider[2]
-    #   # ))
-    
-    rv$glens_year_filtered <- rv$glens_etable_final %>%
-      filter(
-        Year >= input$year_slider[1],
-        Year <= input$year_slider[2],
-        Source == input$selected_source # The new source-based filter logic
-      )
-    
-    # print("rv$glens_etable_final===>")
-    # print(rv$glens_etable_final %>%
-    #         filter(Year >= input$year_slider[1],
-    #                Year <= input$year_slider[2]))
-    if(nrow(rv$glens_year_filtered) <= 0){
-      output$log <- renderText({paste("input$year_slider - Warning: No data found for this year range.")})
-      warning("input$year_slider - Warning: No data found for this year range.")
-      shinyjs::hide("sh_index")
-      shinyjs::hide("summary_table")
-      shinyjs::hide("acounts_plot")
-      shinyjs::hide("ccounts_plot")
-      shinyjs::hide("cdist_plot")
-      shinyjs::hide("aprec_plot")
-      shinyjs::hide("cprec_plot")
-      shinyjs::hide("extended_table")
-      shinyjs::enable(id="year_slider")
-      return()
-    }
-    
-    rv$log_text <- paste("(Slider:", input$year_slider[1], "-", input$year_slider[2],")","Filtered years to range...", min(rv$glens_year_filtered$Year), "and",max(rv$glens_year_filtered$Year)
-    )
-    
-    output$log <- renderText({ rv$log_text })
-    print(paste("(Slider:", input$year_slider[1], "-", input$year_slider[2],")","Filtered years to range...", min(rv$glens_year_filtered$Year), "and",max(rv$glens_year_filtered$Year)))
-    # print(str(rv$glens_year_filtered$Year))
-    
-    raw_text <- input$author_list
-    # Only apply the logic gate if the user has actually typed something
-    if (!is.null(raw_text) && trimws(raw_text) != "") {
+    withCallingHandlers({
+      req(rv$glens_etable_final, input$selected_source, input$year_slider, input$author_list)
       
-      # Parse the text box into a clean list of names
-      author_list <- strsplit(raw_text, "\n")[[1]]
-      author_list <- author_list[trimws(author_list) != ""]
-      
-      # Apply the logic gate function we built earlier
-      if (length(author_list) > 0) {
-        filtered_df <- apply_author_logic(
-          pubs_df          = rv$glens_year_filtered,
-          primary_regex    = rv$author_match_regex,
-          selected_authors = author_list, 
-          gate             = author_logic_gate        
-        )
-        # 3. Save the newly filtered data to your reactive variable
-        rv$glens_year_filtered <- filtered_df
+      if(isTRUE(is.null(input$author_logic_gate))){
+        author_logic_gate <- "OR"
+      }else{
+        author_logic_gate <- input$author_logic_gate
       }
-    }
-    
-    compute_indices(rv)
-    
-    # output$extended_table <- renderTable(rv$glens_year_filtered, striped = TRUE)
-    output$summary_table <- renderTable(rv$summary_table, striped = TRUE)
-    # output$extended_table <- DT::renderDataTable({
-    #   datatable(
-    #     rv$glens_year_filtered,
-    #     options = list(
-    #       scrollY = "600px",
-    #       scrollX = TRUE,
-    #       paging = TRUE
-    #     )
-    #   )
-    # })
-    output$extended_table <- DT::renderDataTable({
-      datatable(
-        rv$glens_year_filtered,
-        extensions = 'Buttons', # 1. Load the extension
-        options = list(
-          scrollY = "600px",
-          scrollX = TRUE,
-          paging = TRUE,
-          dom = 'Blfrtip',       # 2. Add 'B' to the layout (B = Buttons)
-          lengthMenu = list(c(10, 25, 50, 100, -1), c('10', '25', '50', '100', 'All')),
-          buttons = c('copy', 'csv', 'excel', 'pdf', 'print') # 3. Define buttons
-        )
-      )
-    })
-    
-    output$sh_index <- renderUI({
-      # Only render if sh_index exists and is not NULL
-      req(rv$sh_index) 
+      if(nrow(rv$glens_input_table)<=0){
+        return()
+      }
+      if(is.na(input$year_slider[1]) || is.na(input$year_slider[2])){
+        return()
+      }
+      if(rv$is_glens_exec){
+        warning("input$year_slider - Warning: Executing.")
+        return()
+      }
+      shinyjs::disable(id="year_slider")
+      # print("Changed range...")
+      # output$log <- renderText("Changed range...")
+      # extend_input_table(rv)
+      # rv$glens_year_filtered <- rv$glens_etable_final %>%
+      #   filter(Year >= input$year_slider[1]) %>%
+      #   filter(Year <= input$year_slider[2])
+      #   # filter(dplyr::between(
+      #   #   Year,
+      #   #   input$year_slider[1],
+      #   #   input$year_slider[2]
+      #   # ))
       
-      tags$div(
-        class = "sh-index-container", # Uses the CSS class for the badge look
-        style = "display: inline-flex; align-items: baseline; background-color: #f0f7ff; 
-             padding: 10px 18px; border-radius: 8px; border: 1px solid #cce4fc; 
-             margin-top: 5px;",
-        
-        # Label part
-        tags$span(
-          "Sh-Index", 
-          style = "color: #4a5568; font-size: 13px; font-weight: 600; text-transform: uppercase; 
-               letter-spacing: 0.5px; margin-right: 12px;"
-        ),
-        
-        # Value part (Large and Bold)
-        tags$span(
-          rv$sh_index, 
-          style = "color: #4B8BBE; font-size: 26px; font-weight: 800; line-height: 1;"
+      rv$glens_year_filtered <- rv$glens_etable_final %>%
+        filter(
+          Year >= input$year_slider[1],
+          Year <= input$year_slider[2],
+          Source == input$selected_source # The new source-based filter logic
         )
-      )
+      
+      # print("rv$glens_etable_final===>")
+      # print(rv$glens_etable_final %>%
+      #         filter(Year >= input$year_slider[1],
+      #                Year <= input$year_slider[2]))
+      if(nrow(rv$glens_year_filtered) <= 0){
+        output$log <- renderText({paste("input$year_slider - Warning: No data found for this year range.")})
+        warning("input$year_slider - Warning: No data found for this year range.")
+        shinyjs::hide("sh_index")
+        shinyjs::hide("summary_table")
+        shinyjs::hide("acounts_plot")
+        shinyjs::hide("ccounts_plot")
+        shinyjs::hide("cdist_plot")
+        shinyjs::hide("aperc_plot")
+        shinyjs::hide("cperc_plot")
+        shinyjs::hide("extended_table")
+        shinyjs::enable(id="year_slider")
+        return()
+      }
+      
+      rv$log_text <- paste(rv$log_text,paste("(Slider:", input$year_slider[1], "-", input$year_slider[2],")","Filtered years to range...", min(rv$glens_year_filtered$Year), "and",max(rv$glens_year_filtered$Year)
+      ), sep="\n")
+      
+      output$log <- renderText({ rv$log_text })
+      print(paste("(Slider:", input$year_slider[1], "-", input$year_slider[2],")","Filtered years to range...", min(rv$glens_year_filtered$Year), "and",max(rv$glens_year_filtered$Year)))
+      # print(str(rv$glens_year_filtered$Year))
+      
+      raw_text <- input$author_list
+      # Only apply the logic gate if the user has actually typed something
+      if (!is.null(raw_text) && trimws(raw_text) != "") {
+        
+        # Parse the text box into a clean list of names
+        author_list <- strsplit(raw_text, "\n")[[1]]
+        author_list <- author_list[trimws(author_list) != ""]
+        
+        # Apply the logic gate function we built earlier
+        if (length(author_list) > 0) {
+          filtered_df <- apply_author_logic(
+            pubs_df          = rv$glens_year_filtered,
+            primary_regex    = rv$author_match_regex,
+            selected_authors = author_list, 
+            gate             = author_logic_gate        
+          )
+          # 3. Save the newly filtered data to your reactive variable
+          rv$glens_year_filtered <- filtered_df
+        }
+      }
+      
+      compute_indices(rv)
+      
+      # output$extended_table <- renderTable(rv$glens_year_filtered, striped = TRUE)
+      output$summary_table <- renderTable(rv$summary_table, striped = TRUE)
+      # output$extended_table <- DT::renderDataTable({
+      #   datatable(
+      #     rv$glens_year_filtered,
+      #     options = list(
+      #       scrollY = "600px",
+      #       scrollX = TRUE,
+      #       paging = TRUE
+      #     )
+      #   )
+      # })
+      output$extended_table <- DT::renderDataTable({
+        datatable(
+          rv$glens_year_filtered,
+          extensions = 'Buttons', # 1. Load the extension
+          options = list(
+            scrollY = "600px",
+            scrollX = TRUE,
+            paging = TRUE,
+            dom = 'Blfrtip',       # 2. Add 'B' to the layout (B = Buttons)
+            lengthMenu = list(c(10, 25, 50, 100, -1), c('10', '25', '50', '100', 'All')),
+            buttons = c('copy', 'csv', 'excel', 'pdf', 'print') # 3. Define buttons
+          )
+        )
+      })
+      
+      output$sh_index <- renderUI({
+        # Only render if sh_index exists and is not NULL
+        req(rv$sh_index) 
+        
+        tags$div(
+          class = "sh-index-container", # Uses the CSS class for the badge look
+          style = "display: inline-flex; align-items: baseline; background-color: #f0f7ff; 
+               padding: 10px 18px; border-radius: 8px; border: 1px solid #cce4fc; 
+               margin-top: 5px;",
+          
+          # Label part
+          tags$span(
+            "Sh-Index", 
+            style = "color: #4a5568; font-size: 13px; font-weight: 600; text-transform: uppercase; 
+                 letter-spacing: 0.5px; margin-right: 12px;"
+          ),
+          
+          # Value part (Large and Bold)
+          tags$span(
+            rv$sh_index, 
+            style = "color: #4B8BBE; font-size: 26px; font-weight: 800; line-height: 1;"
+          )
+        )
+      })
+      
+      plot_glens_table(rv, output, session)
+      
+      shinyjs::enable(id="year_slider")
+      # --- VERBOSE ERROR/WARNING HANDLERS ---
+    }, warning = function(w) {
+      message("\n[!] WARNING in observeEvent(): ", conditionMessage(w))
+      invokeRestart("muffleWarning") # Prevents R from printing the warning twice
+    }, error = function(e) {
+      if (inherits(e, "shiny.silent.error") || inherits(e, "validation")) {
+        return()
+      }
+      message("\n[X] ERROR in observeEvent(): ", conditionMessage(e))
+      message("Traceback:")
+      print(sys.calls())
+      stop(e) # Re-throw the error so the app stops safely
     })
-    
-    plot_glens_table(rv, output, session)
-    
-    shinyjs::enable(id="year_slider")
+  
   })
+  
   #Submit Button Event
   observeEvent(input$submit_button, {   # same as bindEvent(input$submit_button)
     # basic input guard
@@ -1903,7 +2044,12 @@ server <- function(input, output, session) {
     # rv$scopus_df <- NULL
     # rv$wos_df <- NULL
     # rv$semantic_df <- NULL
-
+    
+    # Reset the UI Progress Bars to 0%
+    shinyWidgets::updateProgressBar(session, id = "prog_doi", value = 0, 
+                                    title = "DOI / ORCID Resolver: 0%", status = "info")
+    shinyWidgets::updateProgressBar(session, id = "prog_scopus", value = 0, 
+                                    title = "Scopus API: 0%", status = "info")
     
     # check_orcid_input <- F
     # input_is_orcid <- F
@@ -1922,7 +2068,21 @@ server <- function(input, output, session) {
     shinyjs::disable(id = "submit_button")
     shinyjs::hide(id="year_slider")
     shinyjs::show("progress_overlay")
-    
+  
+    observeEvent(input$cancel_button, {
+      rv$is_cancelled <- TRUE
+      print("HERE1")
+      removeModal()
+      
+      # Immediately hide the overlay and re-enable the UI
+      shinyjs::hide("progress_overlay")
+      shinyjs::enable(id = "submit_button")
+      
+      # Update logs
+      rv$log_text <- paste(rv$log_text, paste0("Process cancelled by user.\n"),sep="\n")
+      output$log <- renderText({ rv$log_text })
+    })
+      
     if (is.null(input$doi_text) || stringi::stri_isempty(input$doi_text)) {
       rv$log_text <- paste(rv$log_text, "No DOIs provided in Input.\n")
       #INPUT IS PROLLY ORCID
@@ -1943,465 +2103,288 @@ server <- function(input, output, session) {
     # }
     
     doi_lines <- c()
-    print(orcid_list)
+    # print(orcid_list)
     if(length(orcid_list) == 1 && stringi::stri_isempty(orcid_list)){
       orcid_list<- list()
     }
-    # if(input_is_orcid){
-    if(length(orcid_list) > 0){
-      rv$log_text <- paste(rv$log_text, "ORC-ID(s) provided as input\n")
+    
+    # Ensure lists are clean and empty strings are removed
+    orcid_list <- orcid_list[trimws(orcid_list) != ""]
+    doi_lines <- doi_lines[trimws(doi_lines) != ""]
+    
+    # We use a reactiveValues object to safely track progress across all async streams on the main thread
+    progress_state <- reactiveValues(orcid_done = 0, doi_done = 0, scopus_done = 0, doi_found = 0)
+    
+    # ==============================================================================
+    # PHASE 1: ORCID -> DOI EXTRACTION (ASYNC)
+    # ==============================================================================
+    
+    if (length(orcid_list) > 0) {
+      rv$log_text <- paste(rv$log_text, sprintf("Processing %d ORC-ID(s)...\n", length(orcid_list)))
       output$log <- renderText({rv$log_text})
       
-      # "api."(input$orcid_text)
-      # "0000-0002-2861-7446" #test orcid
-      user_agent_str = paste0("R (", R.version$version.string, ")")
-      
-      orcid2doi_table <- dplyr::bind_rows(sapply(seq_len(length(orcid_list)), function(x){
-        print(str_split(orcid_list[x],"-")[[1]])
-        if(length(str_split(orcid_list[x],"-")[[1]]) != 4){
-          rv$log_text <- paste(rv$log_text, "Malformed ORCID:", orcid_list[x], "\n")
-          output$log <- renderText({rv$log_text})
-          # shinyjs::enable(id = "submit_button")
-          return()
-        }
-        xml_txt <- NULL
-        clean_orcid <- trimws(as.character(orcid_list[x]))
-        target_url <- paste0("https://pub.orcid.org/v3.0/", clean_orcid, "/works")
-        if(!is_WASM){
-          # 1. Build the httr2 request
-          req <- request(target_url) %>%
-            req_headers(Accept = "application/xml") %>%
-            req_timeout(60) %>%
-            req_error(is_error = ~ FALSE) # CRITICAL: Prevents R from halting on 404/500 errors
+      # Stream 1: Fetch all ORCIDs in parallel
+      orcid_promises <- lapply(orcid_list, function(orcid_str) {
+        future({
+          clean_orcid <- trimws(orcid_str)
+          if (length(strsplit(clean_orcid, "-")[[1]]) != 4) return(list(error = "Malformed ORCID"))
           
-          # 2. Perform the request, safely catching total network disconnections
-          res <- tryCatch(req_perform(req), error = function(e) e)
+          target_url <- paste0("https://pub.orcid.org/v3.0/", clean_orcid, "/works")
           
-          # 3. Check if 'res' is a valid httr2 response AND has a 200 OK status
-          if (inherits(res, "httr2_response") && resp_status(res) == 200) {
-            
-            # Extract as text (httr2 defaults to UTF-8 automatically)
-            xml_txt <- resp_body_string(res)
-            
-          } else {
-            
-            # 1. Safely determine the status code (or note if it was a connection drop)
-            status_val <- if (inherits(res, "httr2_response")) {
-              resp_status(res) 
-            } else {
-              "Network/Connection Error"
-            }
-            
-            # 2. Safely extract the response body OR the error message
-            res_val <- if (inherits(res, "httr2_response")) {
-              # If it's a 401/404, get the body to see the API's complaint
-              resp_body_string(res) 
-            } else if (inherits(res, "condition")) {
-              # If the internet dropped, get the curl error message
-              conditionMessage(res) 
-            } else {
-              as.character(res)
-            }
-            
-            # 3. Update the Shiny log
-            rv$log_text <- paste(
-              rv$log_text, 
-              "Couldn't find ORC-ID:", clean_orcid,
-              "\nStatus:", status_val,
-              "\n---"
-            )
-            output$log <- renderText({rv$log_text})
-            return()
-          }
-        }else{ #If WASM using JS fetch()
+          # Use base R connection to avoid httr2 serialization/timeout issues inside futures
           res <- tryCatch({
-            # Open a connection, passing the Accept header as a named character vector
             con <- url(target_url, headers = c(Accept = "application/xml"))
-            
-            # Read the lines, close the connection, and collapse into a single string
             lines <- readLines(con, warn = FALSE)
             close(con)
             paste(lines, collapse = "\n")
           }, error = function(e) {
-            # If the connection fails, close it safely just in case and return the error
             if (exists("con")) try(close(con), silent = TRUE)
             return(e)
           })
           
-          # Handle the result
-          if (inherits(res, "error")) {
-            error_msg <- conditionMessage(res)
-            rv$log_text <- paste(rv$log_text, "\nNetwork Error for ORC-ID:", clean_orcid, "\nDetails:", error_msg)
-            output$log <- renderText({rv$log_text})
-            return()
-          } else {
-            # Success! 'res' is pure character text containing your XML
-            xml_txt <- res
-            message("Successfully fetched XML!")
-          }
-        }
-        
-        xml_vec <- xml2::read_xml(xml_txt)
-        
-        xml_vec_ns <- xml2::xml_ns(xml_vec)
-        
-        xml_groups <- xml2::xml_find_all(xml_vec, ".//activities:group", xml_vec_ns)
-        # print(length(xml_vec))
-        # print(length(xml_groups))
-        
-        orcid_df <- purrr::map_dfr(xml_groups, function(g) {
-          tibble(
-            source_name = xtext(g, ".//common:source-name", xml_vec_ns),
-            title = xtext(g, ".//common:title", xml_vec_ns),
-            external_id_value = xtext(g, ".//common:external-id-value", xml_vec_ns),
-            external_id_url = xtext(g, ".//common:external-id-url", xml_vec_ns),
-            last_modified_date = xtext(g, ".//common:last-modified-date", xml_vec_ns),
-            journal_title = xtext(g, ".//work:journal-title", xml_vec_ns),
-            work_type = xtext(g, ".//work:type", xml_vec_ns)
-          )
-        })
-        
-        # print(colnames(orcid_df))
-        # print(head(orcid_df))
-        
-        #FETCHING SCOPUS
-        scopus_df <- data.frame()
-        if(fs::file_exists(file.path("keys","scopus.key"))){
-          try({
-            glens_env$scopus_key <- sodium::data_decrypt(readRDS(file.path("keys","scopus.key")), key=sha256(glens_env$privkey_dec))
-            #Get SCOPUS Data using orcid if SCOPUS API key is provided
-            # scopus_df <- get_complete_scopus_data(trimws(rawToChar(glens_env$scopus_key)), orcid_list[x], rv, session) %>% dplyr::distinct() %>% dplyr::mutate(Source="SCOPUS")
-            scopus_df <- get_complete_scopus_data(trimws(rawToChar(glens_env$scopus_key)), orcid_list[x], rv, output, session) 
-            # print(colnames(scopus_df))
-            # print(head(scopus_df))
+          if (inherits(res, "error")) return(list(error = conditionMessage(res)))
+          
+          # Parse XML safely inside the worker
+          xml_vec <- xml2::read_xml(res)
+          xml_vec_ns <- xml2::xml_ns(xml_vec)
+          xml_groups <- xml2::xml_find_all(xml_vec, ".//activities:group", xml_vec_ns)
+          
+          # Extract DOI details (assuming xtext is available)
+          orcid_df <- purrr::map_dfr(xml_groups, function(g) {
+            tibble::tibble(
+              source_name = xtext(g, ".//common:source-name", xml_vec_ns),
+              title = xtext(g, ".//common:title", xml_vec_ns),
+              external_id_value = xtext(g, ".//common:external-id-value", xml_vec_ns),
+              external_id_url = xtext(g, ".//common:external-id-url", xml_vec_ns),
+              last_modified_date = xtext(g, ".//common:last-modified-date", xml_vec_ns),
+              journal_title = xtext(g, ".//work:journal-title", xml_vec_ns),
+              work_type = xtext(g, ".//work:type", xml_vec_ns)
+            )
           })
-        }
-        rv$scopus_df <- scopus_df
-        
-        return(orcid_df)
-      }, simplify = F))
+          orcid_df$orcid <- clean_orcid
+          return(list(df = orcid_df, error = NULL))
+        }, globals = c("xtext", "orcid_str")) %...>% (function(res) {
+          # Resolves on main thread
+          if (rv$is_cancelled) return(NULL)
+          
+          progress_state$orcid_done <- progress_state$orcid_done + 1
+          if (!is.null(res$error)) {
+            rv$log_text <- paste(rv$log_text, "ORCID Error:", res$error, "\n")
+            output$log <- renderText({rv$log_text})
+          }
+          return(res$df)
+        })
+      })
       
-      # print(orcid2doi_table)
-      
-      
-      
-      if(nrow(orcid2doi_table) <= 0){
-        rv$log_text <-  paste(rv$log_text, "\nError: Could not find data for OCR-ID(s).")
-        output$log <- renderText({ rv$log_text })
-        shinyjs::enable(id = "submit_button")
-        shinyjs::hide("progress_overlay")
-        rv$is_glens_exec <- F
-        return()
-      }
-      orcid2doi_table[is.na(orcid2doi_table$external_id_url), c("external_id_url")] <- orcid2doi_table[is.na(orcid2doi_table$external_id_url), c("external_id_value")]
-      doi_lines <- c(doi_lines, orcid2doi_table$external_id_url) #strsplit("DOIs from the API", "\n")[[1]]
+      master_orcid_promise <- promise_all(.list = orcid_promises)
+    } else {
+      # Fallback: if no ORCIDs were provided, resolve immediately to an empty list
+      master_orcid_promise <- promise_resolve(list())
+    }
+    
+    
+    # ==============================================================================
+    # PHASE 2: LAUNCH SCOPUS IMMEDIATELY (Doesn't wait for ORCID extraction)
+    # ==============================================================================
+    scopus_count <- length(orcid_list)
+    has_scopus_key <- fs::file_exists(file.path("keys","scopus.key"))
+    if (has_scopus_key) {
+      shinyjs::show("scopus_bar_container")
+      scopus_key_val <- trimws(rawToChar(sodium::data_decrypt(readRDS(file.path("keys","scopus.key")), key=openssl::sha256(glens_env$privkey_dec))))
+      rv$log_text <- paste(rv$log_text, "Found Scopus API key!.\n")
     }else{
-      rv$scopus_df <- NULL
-      rv$wos_df <- NULL
-      rv$semantic_df <- NULL
+      shinyjs::hide("scopus_bar_container")
+      rv$log_text <- paste(rv$log_text, "No Scopus key found. Skipping Scopus.\n")
     }
     
-    
-    if (!is.null(input$doi_text) && !stringi::stri_isempty(input$doi_text)) {
-      rv$log_text <- paste(rv$log_text, "DOI(s) provided as input.\n")
-      doi_lines <- c(doi_lines, strsplit(input$doi_text, "\n")[[1]])
-    }
-    
-    if(length(doi_lines) <= 0){
-      rv$log_text <- paste(rv$log_text, "Cannot fetch DOI(s) for any input.\n")
-      output$log <- renderText({rv$log_text})
-      shinyjs::enable(id = "submit_button")
-      shinyjs::hide("progress_overlay")
-      rv$is_glens_exec <- F
-      return()
-    }
-    doi_lines <- trimws(doi_lines)
-    doi_lines <- doi_lines[doi_lines != ""]   # drop empty lines
-    doi_count <- length(doi_lines)
-    if (doi_count == 0) {
-      rv$log_text <- paste(rv$log_text, "No DOIs provided.")
-      output$log <- renderText({rv$log_text})
-      rv$is_glens_exec <- F
-      return()
-    } 
+    rv$log_text <- paste(rv$log_text, "Launching Scopus fetching in parallel...\n")
     output$log <- renderText({rv$log_text})
     
-    
-    # progress object for UI (non-blocking)
-    # progress <- Progress$new(session, min = 0, max = doi_count)
-    # progress$set(message = "Calculation in progress", detail = "Starting...", value = 0)
-    
-    # reactive storage (local to this observer) to accumulate rows as they finish
-    # glens_input_table <- data.frame()
-    # glens_etable_final <- data.frame()
-    accumulated <- list()        # list of data.frames
-    processed_counter <- 0L
-    found_counter <- 0L
-    
-    # control how often to update the log to avoid UI spamming:
-    # either update every `update_every_n` DOIs, or when > update_every_secs elapsed.
-    update_every_n <- 5      # change to control frequency (e.g. 1 => every DOI)
-    update_every_secs <- 2   # minimum seconds between log updates
-    last_log_time <- Sys.time()
-    
-# helper to possibly update the log (throttled)
-    # maybe_update_log <- function() {
-    #   now <- Sys.time()
-    #   if ((processed_counter %% update_every_n == 0L) ||
-    #       as.numeric(difftime(now, last_log_time, units = "secs")) >= update_every_secs ||
-    #       processed_counter == doi_count) {
-    #     # update text
-    #     output$log <- renderText({
-    #       sprintf("Processed %d/%d DOIs — found %d result rows so far",
-    #               processed_counter, doi_count, found_counter)
-    #     })
-    #     last_log_time <<- now
-    #   }
-    # }
-    
-    maybe_update_log <- function() {
-      now <- Sys.time()
-      if ((processed_counter %% update_every_n == 0L) ||
-          as.numeric(difftime(now, last_log_time, units = "secs")) >= update_every_secs ||
-          processed_counter == doi_count) {
-        
-        rv$log_text <- paste0(rv$log_text, sprintf("Processed %d/%d DOIs — found %d result rows so far\n",
-                                                   processed_counter, doi_count, found_counter))
-        output$log <- renderText({ rv$log_text })
-        last_log_time <<- now
-      }
-    }
-    
-    # create a promise for each DOI using future()
-    promises_list <- lapply(seq_along(doi_lines), function(i) {
-      doi <- doi_lines[i]
+    # --- STREAM B: PARALLEL SCOPUS PROCESSING ---
+    scopus_promises <- lapply(seq_along(orcid_list), function(i) {
+      orcid_target <- orcid_list[i]
       
-      # create a future that executes doi2gscholarlens(doi) in another R session
+      # 1. Handle missing key gracefully & update progress bar
+      if (!has_scopus_key) {
+        progress_state$scopus_done <- progress_state$scopus_done + 1
+        pct <- round((progress_state$scopus_done / max(1, scopus_count)) * 100)
+        shinyWidgets::updateProgressBar(
+          session, id = "prog_scopus", value = progress_state$scopus_done, total = max(1, scopus_count),
+          title = sprintf("Scopus Skipped (No Key): %d%%", pct), status = "warning"
+        )
+        return(promise_resolve(NULL))
+      }
+      
+      # 2. Launch the Future Worker
       future({
+        tryCatch({ 
+          get_complete_scopus_data(scopus_key_val, orcid_target) 
+        }, error = function(e) list(error = conditionMessage(e)))
+      }, 
+      globals = c("get_complete_scopus_data", "scopus_key_val", "orcid_target"),
+      packages = c("dplyr", "httr", "jsonlite", "tidyr", "purrr") 
+      ) %...>% (function(res) {
         
-        # run the DOI lookup (this happens in the future worker)
-        # protect the call with try to return NULL on error instead of stopping everything
-        tryCatch({
-          return(doi2gscholarlens(doi))
-        }, error = function(e) {
-          # return a simple data.frame or NULL — we use NULL below to indicate failure / no data
-          print(paste("ERROR:",e))
-          # NULL
+        if (rv$is_cancelled) return(NULL)
+        
+        # 3. INCREMENT PROGRESS BAR
+        progress_state$scopus_done <- progress_state$scopus_done + 1
+        pct <- round((progress_state$scopus_done / max(1, scopus_count)) * 100)
+        shinyWidgets::updateProgressBar(
+          session, id = "prog_scopus", value = progress_state$scopus_done, total = max(1, scopus_count),
+          title = sprintf("Scopus: %d%% (%d/%d)", pct, progress_state$scopus_done, scopus_count),
+          status = if(pct == 100) "success" else "info"
+        )
+        
+        # 4. Check error
+        if (is.list(res) && !is.null(res$error)) {
+          rv$log_text <- paste(rv$log_text, "\nScopus Error for", orcid_target, ":", res$error)
+          output$log <- renderText({rv$log_text})
           return(NULL)
-        })
-      }) %...>% (function(res_df) {
-        
-        if (rv$is_cancelled) {
-          return(NULL) # Skip processing this resolved future
         }
-        # this runs on the main R session when the future resolves
-        # print(res_df)
-        processed_counter <<- processed_counter + 1L
-        if (!is.null(res_df) && nrow(res_df) > 0) {
-          accumulated[[length(accumulated) + 1]] <<- res_df
-          found_counter <<- found_counter + nrow(res_df)
-          # output$log <- renderText(paste("Found",found_counter,"DOIs"))
-        }
-        # increment the progress bar (non-blocking)
-        # progress$inc(1)
-        # maybe_update_log()
-        # print("HERE1")
-        pct <- round((processed_counter / doi_count) * 100)
-        shinyWidgets::updateProgressBar(
-          session, 
-          id = "prog_doi", 
-          value = processed_counter, 
-          total = doi_count,
-          title = sprintf("Processing: %d%% (%d/%d DOIs)", pct, processed_counter, doi_count),
-          status = if(pct == 100) "success" else "warning" # Turns green when finished
-        )
-        maybe_update_log()
         
-        # resolve to something useful for the final aggregator
-        list(index = i, doi = doi, result = res_df)
-      }) %...!% (function(err){
-        
-        if (rv$is_cancelled) {
-          return(NULL) # Skip processing this resolved future
-        }
-        # on future error: increment processed and progress, update log if needed
-        processed_counter <<- processed_counter + 1L
-        
-        pct <- round((processed_counter / doi_count) * 100)
-        shinyWidgets::updateProgressBar(
-          session, 
-          id = "prog_doi", 
-          value = processed_counter, 
-          total = doi_count,
-          title = sprintf("Processing: %d%% (%d/%d DOIs) [Errors detected]", pct, processed_counter, doi_count),
-          status = "danger" # Turns red if an error occurs
-        )
-        # progress$inc(1)
-        maybe_update_log()
-        # return a list showing error
-        list(index = i, doi = doi, result = NULL, error = conditionMessage(err))
+        return(res) 
       })
     })
     
-    # Use promise_all to wait until all DOI futures finish.
-    # promise_all accepts a named list; using .list argument
-    promise_all(.list = promises_list) %...>% (function(all_results) {
-      if (rv$is_cancelled) {
-        return(NULL) # Skip processing this resolved future
+    # Wrap all Scopus promises into one master promise
+    master_scopus_promise <- promise_all(.list = scopus_promises)
+    
+    
+    # ==============================================================================
+    # PHASE 3: WAIT FOR ORCIDS -> THEN LAUNCH DOI
+    # ==============================================================================
+    # Notice we assign this to `master_doi_promise`
+    master_doi_promise <- master_orcid_promise %...>% (function(orcid_results) {
+      if (rv$is_cancelled) return(NULL)
+      
+      # 1. Combine DOIs extracted from ORCIDs with manually typed DOIs
+      extracted_orcid_dfs <- purrr::compact(orcid_results) 
+      if (length(extracted_orcid_dfs) > 0) {
+        orcid_combo <- dplyr::bind_rows(extracted_orcid_dfs)
+        missing_url <- is.na(orcid_combo$external_id_url)
+        orcid_combo[missing_url, "external_id_url"] <- orcid_combo[missing_url, "external_id_value"]
+        doi_lines <<- unique(c(doi_lines, orcid_combo$external_id_url))
       }
       
-      multi_merge_tbl <- data.frame()
+      doi_lines <<- doi_lines[!is.na(doi_lines) & trimws(doi_lines) != ""]
+      doi_count <- length(doi_lines)
       
-      # all_results is a list of resolved values from each DOI promise
-      # combine accumulated results (we also have them in accumulated list)
-      # glens_input_table <- data.frame()
-      accumulated_df <- data.frame()
-      if (length(accumulated) > 0) {
-        accumulated_df <- unique(bind_rows(accumulated)) %>% dplyr::mutate(Source="DOI/ORCID")
-      } 
+      rv$log_text <- paste(rv$log_text, sprintf("Extracted %d total DOIs. Launching DOIs...\n", doi_count))
+      output$log <- renderText({rv$log_text})
       
-      # print(colnames(rv$scopus_df))
-      # # print(head(rv$scopus_df))
-      # print(nrow(rv$scopus_df))
-      # print(colnames(accumulated_df))
-      # # print(head(accumulated_df))
-      # print(nrow(accumulated_df))
+      # --- STREAM A: PARALLEL DOI PROCESSING ---
+      doi_promises <- lapply(seq_along(doi_lines), function(i) {
+        doi_target <- doi_lines[i]
+        future({
+          tryCatch({ doi2gscholarlens(doi_target) }, error = function(e) NULL)
+        }) %...>% (function(res_df) {
+          if (rv$is_cancelled) return(NULL)
+          
+          progress_state$doi_done <- progress_state$doi_done + 1
+          pct <- round((progress_state$doi_done / max(1, doi_count)) * 100)
+          
+          shinyWidgets::updateProgressBar(
+            session, id = "prog_doi", value = progress_state$doi_done, total = max(1, doi_count),
+            title = sprintf("DOI: %d%% (%d/%d)", pct, progress_state$doi_done, doi_count),
+            status = if(pct == 100) "success" else "warning"
+          )
+          return(res_df)
+        })
+      })
       
-      # saveRDS(rv$scopus_df, file="scopus.rds")
-      # saveRDS(accumulated_df, file="accumulated_df.rds")
-      # rv$scopus_df <- future::value(rv$scopus_future) # %>% dplyr::distinct() %>% dplyr::mutate(Source="SCOPUS")
+      # RETURN the resolved DOI promises to `master_doi_promise`
+      return(promise_all(.list = doi_promises))
+    })
+    
+    promise_all(
+      dois = master_doi_promise,
+      scopus = master_scopus_promise
+    ) %...>% (function(results) {
+      if (rv$is_cancelled) return(NULL)
       
-      if(nrow(rv$scopus_df) > 0){
-        multi_merge_tbl <- dplyr::bind_rows(rv$scopus_df %>% dplyr::distinct() %>% dplyr::mutate(Source="SCOPUS"), accumulated_df)
-      }
+      # Merge DOIs
+      accumulated_df <- dplyr::bind_rows(purrr::compact(results$dois))
+      if (nrow(accumulated_df) > 0) accumulated_df <- accumulated_df %>% dplyr::distinct() %>% dplyr::mutate(Source = "DOI/ORCID")
       
-      rv$glens_input_table <- multi_merge_tbl
+      # Merge Scopus
+      rv$scopus_df <- dplyr::bind_rows(purrr::compact(results$scopus))
+      if (nrow(rv$scopus_df) > 0) rv$scopus_df <- rv$scopus_df %>% dplyr::distinct() %>% dplyr::mutate(Source = "SCOPUS")
+      
+      # Final Table
+      rv$glens_input_table <- dplyr::bind_rows(accumulated_df, rv$scopus_df)
+      
+      rv$log_text <- paste(rv$log_text, sprintf("\nDone. Found %d total records.\n", nrow(rv$glens_input_table)))
+      output$log <- renderText(rv$log_text)
       
       output$dynamic_source_ui <- renderUI({
         req(rv$glens_input_table)
-        
-        # Extracts unique values from the 'Source' column (e.g., SCOPUS, DOI/ORCID)
-        available_sources <- unique(rv$glens_input_table$Source)
-        
-        # Fallback if no sources are found yet
-        if (is.null(available_sources) || length(available_sources) == 0) {
-          return(p("No sources identified yet.", style = "color: #888; font-style: italic;"))
-        }
-        # available_sources <- c("SCOPUS", "DOI/ORCID", "Web of Science", "Semantic Scholar")
         available_sources <- levels(factor(rv$glens_input_table$Source))
-        
-        radioButtons("selected_source", 
-                     label = NULL, 
-                     choices = available_sources, 
-                     selected = available_sources[1], # Default selection
-                     inline = FALSE)     # Stacked vertically for better sidebar fit
-        
+        if (length(available_sources) == 0) return(p("No sources identified yet.", style = "color: #888;"))
+        radioButtons("selected_source", label = NULL, choices = available_sources, selected = available_sources[1], inline = FALSE)
       })
       
-      # final, guaranteed log update
-      rv$log_text <- paste(rv$log_text,sprintf("Done. Processed %d DOIs. Found %d result rows.", doi_count, found_counter))
-      output$log <- renderText({
-        rv$log_text
-      })
-      
-      # print(glens_input_table)
-      # output$data_table <- renderTable(glens_input_table, striped = TRUE)
-      
-      #SCRIPT 2 STARTS HERE
-      # target_variants <- unlist(stringr::str_split(input$author_list, "\\|"))
-      target_variants <- unlist(stringr::str_split(input$author_list, "\n"))
-      target_variants <- str_trim(target_variants)
+      # --- SCRIPTS 2 & 3: STATS & PLOTTING ---
+      target_variants <- stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n")))
       target_variants <- target_variants[target_variants != ""]
       
-      # print(colnames(rv$glens_input_table))
-      
-      # Normalize variants
-      rv$target_variants_norm <- list()
-      for (v in target_variants) {
+      rv$target_variants_norm <- lapply(setNames(target_variants, target_variants), function(v) {
         vn <- normalize_name(v)
-        parts <- extract_parts(vn)
-        rv$target_variants_norm[[v]] <- list(norm = vn, parts = parts)
-      }
+        list(norm = vn, parts = extract_parts(vn))
+      })
       rv$author_match_regex <- build_name_regex_for_variants(target_variants)
       
-      # print(target_variants)
-      # print(rv$target_variants_norm)
-      
       extend_input_table(rv)
-      
-      # print(colnames(rv$glens_etable_final)) #DEBUG
-      # print(nrow(rv$glens_etable_final)) #DEBUG
-      
       rv$glens_year_filtered <- rv$glens_etable_final
       
-      if(nrow(rv$glens_year_filtered) <= 0){
-        #No names were matched. return
-        output$log <- renderText(sprintf("No names were matched."))
-        shinyjs::enable(id = "submit_button")
+      if (nrow(rv$glens_year_filtered) <= 0) {
+        output$log <- renderText("No names were matched.")
+        shinyjs::enable("submit_button")
         shinyjs::hide("progress_overlay")
-        # progress$close()
         return()
       }
       
       compute_indices(rv)
       
-      # output$extended_table <- renderTable(rv$glens_year_filtered, striped = TRUE)
       output$summary_table <- renderTable(rv$summary_table, striped = TRUE)
-      output$sh_index <-  renderUI({
-        HTML(paste("<b>Sh-Index:</b>", rv$sh_index))
-      })
+      output$sh_index <- renderUI(HTML(paste("<b>Sh-Index:</b>", rv$sh_index)))
       output$extended_table <- DT::renderDataTable({
-        datatable(
-          rv$glens_year_filtered,
-          options = list(
-            scrollY = "600px",
-            scrollX = TRUE,
-            paging = TRUE
-          )
-        )
+        DT::datatable(rv$glens_year_filtered, options = list(scrollY = "600px", scrollX = TRUE, paging = TRUE))
       })
       
-      # min_year <- min(as.numeric(glens_extended_table$Year))
-      # max_year <- max(as.numeric(glens_extended_table$Year))
-      min_year <- min(as.numeric(rv$glens_etable_final$Year))
-      max_year <- max(as.numeric(rv$glens_etable_final$Year))
-      # print(output)
-      # print(c(min_year,max_year))
-      # print(input$year_slider)
-      updateSliderInput(session, "year_slider", value = c(min_year,max_year),min = min_year, max=max_year)
-      shinyjs::show(id="year_slider")
-      
-      #SCRIPT3 Starts here
+      print(str(jcr_names_norm))
+      # 1. Match Journals and create Qscore FIRST
       match_journals(rv)
+      print("HERE7")
+      print(str(rv$glens_etable_final))
+      print(str(rv$glens_year_filtered))
+      
       rv$glens_year_filtered <- rv$glens_etable_final
+      
+      # 2. Update the Slider SECOND (now it's safe to trigger observers)
+      min_year <- min(as.numeric(rv$glens_year_filtered$Year), na.rm = TRUE)
+      max_year <- max(as.numeric(rv$glens_year_filtered$Year), na.rm = TRUE)
+      if (is.finite(min_year) && is.finite(max_year)) {
+        updateSliderInput(session, "year_slider", value = c(min_year, max_year), min = min_year, max = max_year)
+        shinyjs::show("year_slider")
+      }
+      print("HERE8")
+      # 3. Render the initial plots
       render_skeleton_plots(rv, output)
       plot_glens_table(rv, output, session)
-      rv$is_glens_exec <- F   
-      shinyjs::delay(1500, shinyjs::hide("progress_overlay"))
-      #Enable button after all 3 script flows end
-      shinyjs::enable(id = "submit_button")
-      # progress$close()
-      # NULL
       
-      # print(rv)
-      return(NULL)
+      rv$is_glens_exec <- FALSE   
+      shinyjs::delay(1500, shinyjs::hide("progress_overlay"))
+      shinyjs::enable("submit_button")
+      
     }) %...!% (function(err) {
-      if (rv$is_cancelled) {
-        return(NULL) # Skip processing this resolved future
-      }
-      # overall failure handler
-      # progress$close()
+      if (rv$is_cancelled) return(NULL)
       shinyWidgets::updateProgressBar(session, id = "prog_doi", value = 100, status = "danger", title = "Process Failed!")
-      print(conditionMessage(err))
-      output$log <- renderText(sprintf("Failed: %s", conditionMessage(err)))
+      output$log <- renderText(sprintf("Failed in DOI/Scopus Processing: %s", conditionMessage(err)))
       shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
-      shinyjs::enable(id = "submit_button")
-      # NULL
-      return(NULL)
+      shinyjs::enable("submit_button")
     })
     
-    # immediately show a short message so user sees something while promises run
-    output$log <- renderText(sprintf("Started processing %d DOIs...", doi_count))
-  })
+  }) #observeEVENT(submit_button)
   
 }

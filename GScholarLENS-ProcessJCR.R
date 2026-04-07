@@ -4,8 +4,8 @@ suppressPackageStartupMessages(require(future))
 # is_WASM <- grepl(pattern="wasm",x=Sys.info()["machine"])
 # # use a multisession plan so futures run in background R sessions
 # if(!is_WASM){
-#   future::plan(future::multisession)
-future::plan(future::multicore)
+  future::plan(future::multisession)
+# future::plan(future::multicore)
 # }else{
 #   future::plan(future::sequential)
 # }
@@ -73,8 +73,10 @@ jcr <- read_jcr(jcr_path)
 if ("JIF" %in% names(jcr)) jcr$JIF <- suppressWarnings(as.numeric(jcr$JIF))
 if ("JIF5Years" %in% names(jcr)) jcr$JIF5Years <- suppressWarnings(as.numeric(jcr$JIF5Years))
 
-jcr$Name_norm <- sapply(jcr$Name, function(x) normalize_journal(x))
+jcr$Name_norm <- unname(sapply(jcr$Name, function(x) normalize_journal(x)))
 # rv$glens_etable_final$Name_norm <- sapply(rv$glens_etable_final$Journal, function(x) normalize_journal(x))
 
 jcr_names_norm <- jcr |>
   select(Name, Name_norm, JIF5Years, Qscore) 
+
+# print(str(jcr_names_norm))

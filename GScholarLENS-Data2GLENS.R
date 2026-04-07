@@ -184,32 +184,91 @@ decide_label_for_target <- function(author_field, target_variants_norm, author_r
   list(label=label, matched_token=toks$clean[idx])
 }
 
+# apply_author_logic <- function(pubs_df, primary_regex, selected_authors, gate) {
+#   
+#   # Failsafe: If no data, return as-is
+#   if (nrow(pubs_df) == 0) return(pubs_df)
+#   
+#   # Clean list and remove empty strings
+#   if (is.null(selected_authors)) selected_authors <- character(0)
+#   selected_authors <- selected_authors[trimws(selected_authors) != ""]
+#   
+#   # 1. DYNAMIC TARGET POOL
+#   # If NOR or NAND, take ALL authors into account (Primary + Selected)
+#   # Otherwise, just use the selected secondary authors
+#   if (!is.null(gate) && gate %in% c("NOR", "NAND")) {
+#     target_authors <- unique(c(primary_regex, selected_authors))
+#   } else {
+#     target_authors <- unique(selected_authors)
+#   }
+#   
+#   # If no targets exist for the current gate, skip filtering
+#   if (length(target_authors) == 0) return(pubs_df)
+#   
+#   # 2. Escape special characters in names
+#   escaped_authors <- gsub("([.|()\\^{}+$*?]|\\[|\\])", "\\\\\\1", target_authors)
+#   
+#   # 3. Create a boolean matrix based on our dynamic target_authors
+#   match_matrix <- sapply(escaped_authors, function(rgx) {
+#     grepl(rgx, pubs_df$Authors, ignore.case = TRUE)
+#   })
+#   
+#   # Safely handle single-row or single-column matrix collapses
+#   if (!is.matrix(match_matrix)) {
+#     match_matrix <- matrix(match_matrix, nrow = nrow(pubs_df), ncol = length(escaped_authors))
+#   }
+#   
+#   N <- length(escaped_authors)
+#   
+#   # 4. Filter using the logic gates
+#   pubs_df %>%
+#     mutate(
+#       match_counts = rowSums(match_matrix),
+#       # Optional: Count the actual number of authors printed on the paper
+#       total_paper_authors = stringr::str_count(Authors, ",") + 1
+#     ) %>%
+#     filter(
+#       case_when(
+#         is.null(gate)  ~ TRUE,
+#         gate == "OR"   ~ match_counts > 0,  # Has AT LEAST 1 of the secondary authors
+#         gate == "AND"  ~ match_counts == N, # Has ALL of the secondary authors
+#         gate == "XOR"  ~ match_counts == 1, # Has EXACTLY 1 of the secondary authors
+#         
+#         # NOR & NAND now evaluate against ALL authors (Primary + Secondary)
+#         gate == "NOR"  ~ match_counts == 0, # Has NONE of the primary or secondary authors
+#         gate == "NAND" ~ match_counts < N,  # NEVER has ALL of them together
+#         TRUE           ~ TRUE
+#       )
+#     ) %>%
+#     select(-match_counts, -total_paper_authors) # Clean up the temporary columns
+# }
+
 apply_author_logic <- function(pubs_df, primary_regex, selected_authors, gate) {
-  
+
   # Failsafe: If no data or no secondary authors selected, return as-is
   if (nrow(pubs_df) == 0 || is.null(selected_authors) || length(selected_authors) == 0) {
     return(pubs_df)
   }
-  
+
   # Clean list and remove empty strings
   selected_authors <- selected_authors[trimws(selected_authors) != ""]
   if (length(selected_authors) == 0) return(pubs_df)
-  
+
   # Escape special characters in names
   escaped_authors <- gsub("([.|()\\^{}+$*?]|\\[|\\])", "\\\\\\1", selected_authors)
-  
+
   # Create a boolean matrix: rows = publications, cols = selected authors
   match_matrix <- sapply(escaped_authors, function(rgx) {
     grepl(rgx, pubs_df$Authors, ignore.case = TRUE)
   })
-  
+
   # Safely handle single-row or single-column matrix collapses
   if (!is.matrix(match_matrix)) {
     match_matrix <- matrix(match_matrix, nrow = nrow(pubs_df), ncol = length(escaped_authors))
   }
-  
+
   N <- length(escaped_authors)
-  
+
   # Add counts to the dataframe temporarily and filter safely using case_when
   pubs_df %>%
     mutate(match_counts = rowSums(match_matrix)) %>%
