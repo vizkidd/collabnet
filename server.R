@@ -14,6 +14,7 @@ suppressPackageStartupMessages(require(tibble))
 suppressPackageStartupMessages(require(scales))
 suppressPackageStartupMessages(require(stringdist))
 suppressPackageStartupMessages(require(future.apply))
+suppressPackageStartupMessages(require(future.callr))
 suppressPackageStartupMessages(require(tidyr))
 suppressPackageStartupMessages(require(DT))
 suppressPackageStartupMessages(require(sodium))
@@ -25,14 +26,16 @@ suppressPackageStartupMessages(require(httr))
 suppressPackageStartupMessages(require(xml2))
 suppressPackageStartupMessages(require(httr2))
 suppressPackageStartupMessages(require(jsonlite))
+suppressPackageStartupMessages(require(ipc))
 suppressPackageStartupMessages(require(parallel))
 
 is_WASM <- grepl(pattern="wasm",x=Sys.info()["machine"])
 
 # use a multisession plan so futures run in background R sessions
 # if(!is_WASM){
-  future::plan(future::multisession)
-# future::plan(future::multicore)
+  # future::plan(future::multisession)
+# future::plan(future.callr::callr)
+future::plan(future::multicore)
 # }else{
 #   future::plan(future::sequential)
 # }
@@ -598,10 +601,646 @@ match_journals <- function(rv){
 #   
 # }
 
-plot_glens_table <- function(rv, output, session){
-  if(nrow(rv$glens_year_filtered) <= 0){
-    output$log <- renderText({paste(rv$log, "plot_glens_table() - Warning: No data available for these filters!", sep="\n")})
-    warning("plot_glens_table() - Warning: No data available for these filters!")
+# plot_glens_table <- function(rv, output, session){
+#   if(nrow(rv$glens_year_filtered) <= 0){
+#     output$log <- renderText({paste(rv$log, "plot_glens_table() - Warning: No data available for these filters!", sep="\n")})
+#     warning("plot_glens_table() - Warning: No data available for these filters!")
+#     shinyjs::hide("sh_index")
+#     shinyjs::hide("summary_table")
+#     shinyjs::hide("acounts_plot")
+#     shinyjs::hide("ccounts_plot")
+#     shinyjs::hide("cdist_plot")
+#     shinyjs::hide("aperc_plot")
+#     shinyjs::hide("cperc_plot")
+#     shinyjs::hide("network_filtered")
+#     shinyjs::hide("extended_table")
+#     return()
+#   }
+#   
+#   # Render Filtered Subset Network
+#   output$network_filtered <- renderVisNetwork({
+#     req(rv$glens_year_filtered) # Assuming this is your filtered reactive variable
+#     
+#     net_data <- build_collaboration_network(rv$glens_year_filtered, rv$author_list)
+#     
+#     visNetwork(net_data$nodes, net_data$edges, width = "100%", height = "500px") %>%
+#       visNodes(font = list(size = 14)) %>%
+#       visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = TRUE) %>%
+#       # visPhysics(solver = "forceAtlas2Based", forceAtlas2Based = list(gravitationalConstant = -50)) %>%
+#       visIgraphLayout(layout = "layout_with_fr") %>%
+#       visOptions(highlightNearest = list(enabled = TRUE, degree = 1), nodesIdSelection = TRUE) %>%
+#       # visLegend() %>%
+#       addFontAwesome()
+#   })
+#   
+#   shinyjs::show("acounts_plot")
+#   shinyjs::show("ccounts_plot")
+#   shinyjs::show("cdist_plot")
+#   shinyjs::show("aperc_plot")
+#   shinyjs::show("cperc_plot")
+#   shinyjs::show("network_filtered")
+#   
+#   df_ordered_debug <- rv$glens_year_filtered %>%
+#     mutate(position_rank = case_when(
+#       as.numeric(First_Author) == 1 ~ 1L,
+#       as.numeric(Second_Author) == 1 ~ 2L,
+#       as.numeric(Co_Author) == 1 ~ 3L,
+#       as.numeric(Corresponding_Author) == 1 ~ 4L,
+#       TRUE ~ 99L
+#     )) %>%
+#     mutate(adj_cit_for_sort = ifelse(is.na(Adjusted_Citations), -Inf, Adjusted_Citations)) %>%
+#     arrange(position_rank, desc(adj_cit_for_sort)) %>%
+#     select(-adj_cit_for_sort)  
+#   
+#   df_ordered_debug$position_rank[which(df_ordered_debug$position_rank == 1)] <- "First Author"
+#   df_ordered_debug$position_rank[which(df_ordered_debug$position_rank == 2)] <- "Second Author"
+#   df_ordered_debug$position_rank[which(df_ordered_debug$position_rank == 3)] <- "Co-Author"
+#   df_ordered_debug$position_rank[which(df_ordered_debug$position_rank == 4)] <- "Corresponding Author"
+#   
+#   agg_first <- make_agg(df_ordered_debug, "First_Author", "First Author")
+#   agg_second <- make_agg(df_ordered_debug, "Second_Author", "Second Author")
+#   agg_co <- make_agg(df_ordered_debug, "Co_Author", "Co-Author")
+#   agg_cor <- make_agg(df_ordered_debug, "Corresponding_Author", "Corresponding Author")
+#   
+#   agg_all <- bind_rows(agg_first, agg_second, agg_co, agg_cor)
+#   
+#   # Ensure all quartiles present per position (fill zeros)
+#   all_positions <- c("First Author","Second Author","Co-Author","Corresponding Author")
+#   all_quartiles <- c("Q1","Q2","Q3","Q4", "NA")
+#   full_grid <- expand.grid(Position = all_positions, Qscore = all_quartiles, stringsAsFactors = FALSE)
+#   agg_all <- full_grid %>%
+#     left_join(agg_all, by = c("Position","Qscore")) %>%
+#     mutate(Count = tidyr::replace_na(Count, 0L),
+#            SumCitations = tidyr::replace_na(SumCitations, 0.0))
+#   
+#   # ---------------------------
+#   # Plotting parameters (colors + alpha per quartile)
+#   # ---------------------------
+#   # Base colors per quartile (Q1 -> rich color, Q4 -> light)
+#   # quartile_colors <- c("Q1" = "#2E8B57",  # greenish (co-author in your sample used green)
+#   #                      "Q2" = "#4B8BBE",  # blue-ish
+#   #                      "Q3" = "#B66BA4",  # purple-ish
+#   #                      "Q4" = "#D6A77A")  # tan (light)
+#   position_colors <- c("First Author" = "#D6A77A",  # greenish (co-author in your sample used green)
+#                        "Second Author" = "#B66BA4",  # blue-ish
+#                        "Co-Author" = "#2E8B57",  # purple-ish
+#                        "Corresponding Author" = "#4B8BBE")  # tan (light)
+#   position_border_colors <- c(
+#     "First Author" = "#ff9f40ff",
+#     "Second Author" = "#9966ffff",
+#     "Co-Author" = "#4bc093ff",
+#     "Corresponding Author" = "#36a2ebff"
+#   )
+#   
+#   # Alpha values so Q1 most opaque and Q4 faint
+#   quartile_alpha <- c("Q1" = 0.9, "Q2" = 0.70, "Q3" = 0.50, "Q4" = 0.30, "NA" = 0.1)
+#   
+#   # Order positions for plotting (Left to right as in your image: First, Second, Co, Corresponding)
+#   agg_all$Position <- factor(agg_all$Position, levels = all_positions)
+#   agg_all$Qscore <- factor(agg_all$Qscore, levels = all_quartiles)
+#   agg_all <- agg_all %>%
+#     group_by(Position) %>%
+#     mutate(Total_Position = sum(Count, na.rm = TRUE)) %>%
+#     ungroup()
+#   agg_all <- agg_all %>%
+#     group_by(Position) %>%
+#     mutate(Total_Citations = sum(SumCitations, na.rm = TRUE)) %>%
+#     ungroup()
+#   agg_all <- agg_all %>%
+#     group_by(Qscore) %>%
+#     mutate(Total_QCitations = sum(SumCitations, na.rm = TRUE)) %>%
+#     ungroup()
+#   
+#   agg_all <- agg_all %>%
+#     mutate(
+#       Position = factor(Position, levels = all_positions),
+#       Qscore   = factor(Qscore, levels = all_quartiles)
+#     ) %>%
+#     arrange(Qscore, Position)
+#   
+#   # print(agg_all)
+#   
+#   # ---------------------------
+#   # Create stacked bar chart for Counts
+#   # ---------------------------
+#   # p_counts <- ggplot(agg_all, aes(x = Position, y = Count, fill = Position, color = Position, alpha = Qscore, group = Qscore, text = paste(
+#   #   "Position:", Position,
+#   #   "<br>Quartile:", Qscore,
+#   #   "<br>Count:", Count,
+#   #   "<br>Total:", Total_Position
+#   #   # "<br>Author Name:", matched_token
+#   #   # "<br>Citations:", SumCitations
+#   # ))) +
+#   #   geom_bar(stat = "identity", size = 0.25) +
+#   #   scale_colour_manual(
+#   #     values = position_border_colors,
+#   #     guide = "none"          # hide border legend
+#   #   ) +
+#   #   # #scale_fill_manual(values = quartile_colors, name = "Qscore") +
+#   #   scale_fill_manual(values = position_colors, 
+#   #                     # name = "Position"
+#   #                     guide = "none"
+#   #   ) +
+#   #   scale_alpha_manual(values = quartile_alpha,
+#   #                      # name = "Journal Rank"
+#   #                      guide = "none"
+#   #   ) +
+#   #   theme_minimal(base_size = 12) +
+#   #   labs(title = "Publication Count based on Authorship with Journal Rank Categorization",
+#   #        y = NULL, x = NULL) +
+#   #   theme(
+#   #     plot.title = element_text(hjust = 0.5, face = "bold"),
+#   #     axis.text.x = element_text(angle = 15, hjust = 1)
+#   #   ) + 
+#   #   scale_color_manual(values = position_colors)
+#   # # +
+#   # # geom_text(aes(label = Count), position = position_stack(vjust = 0.5), size = 3, color = "black")
+#   # # geom_text(data = dplyr::filter(agg_all, Count > 0),aes(label = Count), position = position_stack(vjust = 0.5), size = 3, color = "black")
+#   
+#   # p_counts
+#   # output$acounts_plot <- renderPlotly({ plotly::ggplotly(p_counts, tooltip = "text") %>%
+#   # plotly::layout(showlegend = FALSE, transition = list(duration = 500))  }) #%>% toWebGL()
+#   # ---- animate update via plotlyProxy ----
+#   acounts_proxy <- plotlyProxy("acounts_plot", session)
+#   acounts_proxy_data <- lapply(all_quartiles, function(q) {
+#     agg_all %>%
+#       filter(Qscore == q) %>%
+#       arrange(Position) %>%
+#       pull(Count)
+#   })
+#   
+#   plotlyProxyInvoke(
+#     acounts_proxy,
+#     "restyle",
+#     list(
+#       # y = list(agg_all$Counts)
+#       y=acounts_proxy_data
+#     )
+#   )
+#   
+#   # ---------------------------
+#   # Create stacked bar chart for Sum of Adjusted Citations
+#   # ---------------------------
+#   # p_cites <- ggplot(agg_all, aes(x = Position, y = SumCitations, fill = Position, color = Position, alpha = Qscore, group=Qscore, text = paste(
+#   #   "Position:", Position,
+#   #   "<br>Position Citations:", Total_Citations,
+#   #   "<br>Quartile:", Qscore,
+#   #   "<br>Quartile Citations:", Total_QCitations
+#   #   # "<br>Citations:", SumCitations
+#   # ))) +
+#   #   geom_bar(stat = "identity", size = 0.25) +
+#   #   scale_colour_manual(
+#   #     values = position_border_colors,
+#   #     guide = "none"          # hide border legend
+#   #   ) +
+#   #   # scale_fill_manual(values = quartile_colors, name = "Quartile") +
+#   #   scale_fill_manual(values = position_colors, 
+#   #                     # name = "Position"
+#   #                     guide = "none"
+#   #   ) +
+#   #   scale_alpha_manual(values = quartile_alpha, 
+#   #                      name = "Journal Rank"
+#   #                      # guide = "none"
+#   #   ) +
+#   #   theme_minimal(base_size = 12) +
+#   #   labs(title = "Citation Count based on Authorship with Journal Rank Categorization",
+#   #        y = NULL, x = NULL) +
+#   #   theme(
+#   #     plot.title = element_text(hjust = 0.5, face = "bold"),
+#   #     axis.text.x = element_text(angle = 15, hjust = 1)
+#   #   ) #+
+#   # # geom_text(aes(label = ifelse(SumCitations==0, "", round(SumCitations, 0))), position = position_stack(vjust = 0.5), size = 3, color = "black")
+#   # # geom_text(data = dplyr::filter(agg_all, Count > 0), aes(label = ifelse(SumCitations==0, "", round(SumCitations, 0))), position = position_stack(vjust = 0.5), size = 3, color = "black")
+#   
+#   # p_cites
+#   # output$ccounts_plot <- renderPlotly({ plotly::ggplotly(p_cites, tooltip = "text") %>%
+#   # plotly::layout(showlegend = FALSE, transition = list(duration = 500))}) # %>% toWebGL() 
+#   ccounts_proxy <- plotlyProxy("ccounts_plot", session)
+#   ccounts_proxy_data <- lapply(all_quartiles, function(q) {
+#     agg_all %>%
+#       filter(Qscore == q) %>%
+#       arrange(Position) %>%
+#       pull(SumCitations)
+#   })
+#   
+#   plotlyProxyInvoke(
+#     ccounts_proxy,
+#     "restyle",
+#     list(
+#       # y = list(agg_all$Counts)
+#       y=ccounts_proxy_data
+#     )
+#   )
+#   
+#   stats_by_position <- df_ordered_debug %>%
+#     group_by(position_rank) %>%
+#     summarise(
+#       min  = min(Citations, na.rm = TRUE),
+#       q25  = quantile(Citations, 0.25, na.rm = TRUE),
+#       med  = median(Citations, na.rm = TRUE),
+#       mean = mean(Citations, na.rm = TRUE),
+#       q75  = quantile(Citations, 0.75, na.rm = TRUE),
+#       max  = max(Citations, na.rm = TRUE),
+#       .groups = "drop",
+#     )
+#   
+#   df_plot <- df_ordered_debug %>%
+#     left_join(stats_by_position, by = "position_rank")
+#   
+#   df_plot <- df_plot %>%
+#     mutate(
+#       position_rank = factor(position_rank),
+#       Qscore = factor(Qscore),
+#       Adjusted_Citations = as.numeric(Adjusted_Citations),
+#       Citations = as.numeric(Citations)
+#     )
+#   
+#   group_counts <- df_plot %>%
+#     count(position_rank)
+#   
+#   # print(df_plot)
+#   # print(df_plot[,c("Adjustment_Weights","Adjusted_Citations","position_rank", "JIF5Years", "Qscore")]) #"matched_token"
+#   # print(colnames(df_plot))
+#   # print(nrow(df_plot))
+#   # print(group_counts)
+#   
+#   if(nrow(df_plot) <= 1 || all(group_counts$n <= 1) || all(df_plot$Citations == 0)){
+#     rv$log_text <- paste(
+#       rv$log_text,
+#       "plot_glens_table() - Warning: Need more than one group and atleast 1 paper with 1 citation per-group for plotting distribution.",
+#       sep = "\n"
+#     )
+#     # output$log <- renderText({ rv$log_text })
+#     warning("plot_glens_table() - Warning: Need more than one group and atleast 1 paper with 1 citation per-group for plotting distribution.")
+#     shinyjs::hide("cdist_plot")
+#     # return()
+#   }
+#   
+#   # p_citesdist <- ggplot(df_plot, aes(x = position_rank, y = Citations, fill = position_rank, group=position_rank, colour = Qscore,size=Adjusted_Citations, text = paste0(
+#   #   "<b>Position:</b> ", position_rank,
+#   #   "<br><b>Citations:</b> ", Citations,
+#   #   "<br><b>Qscore:</b> ", Qscore,
+#   #   "<br><b>Author Count:</b> ", Author_Count,
+#   #   "<br><b>Adjustment Weight:</b> ", Adjustment_Weights,
+#   #   "<br><b>Adjusted Citations:</b> ", Adjusted_Citations,
+#   #   "<br><b>Min:</b> ", min,
+#   #   "<br><b>25%:</b> ", q25,
+#   #   "<br><b>Median:</b> ", med,
+#   #   "<br><b>Mean:</b> ", round(mean, 1),
+#   #   "<br><b>75%:</b> ", q75,
+#   #   "<br><b>Max:</b> ", max
+#   # ))) +     geom_violin(alpha = 0.5) +     geom_point(position = position_jitter(seed = 1, width = 0.2)) +     theme(legend.position = "none") + scale_colour_manual(
+#   #   values = position_border_colors,
+#   #   guide = "none"          # hide border legend
+#   # ) +
+#   #   scale_y_continuous(
+#   #     trans = "log1p"
+#   #   ) +
+#   #   scale_fill_manual(values = position_colors, 
+#   #                     # name = "Position"
+#   #                     guide = "none"
+#   #   ) +
+#   #   theme_minimal(base_size = 12) +
+#   #   labs(title = "Citation Distribution based on Authorship (Log Scale)",
+#   #        y = "log(1 + Citations)", x = NULL) +
+#   #   theme(
+#   #     plot.title = element_text(hjust = 0.5, face = "bold"),
+#   #     axis.text.x = element_text(angle = 15, hjust = 1)
+#   #   )
+#   # 
+#   # # p_citesdist
+#   # output$cdist_plot <- renderPlotly({ plotly::ggplotly(p_citesdist, tooltip = "text") %>%
+#   #   plotly::layout(showlegend = FALSE, transition = list(duration = 500)) }) # %>% toWebGL() 
+#   # --- function to build hover text identical to ggplot's text ---
+#   make_dist_hover_text <- function(df) {
+#     return(paste0(
+#       "<b>Position:</b> ", df$position_rank,
+#       "<br><b>Citations:</b> ", df$Citations,
+#       "<br><b>Qscore:</b> ", df$Qscore,
+#       "<br><b>Author Count:</b> ", df$Author_Count,
+#       "<br><b>Adjustment Weight:</b> ", df$Adjustment_Weights,
+#       "<br><b>Adjusted Citations:</b> ", df$Adjusted_Citations,
+#       "<br><b>Min:</b> ", df$min,
+#       "<br><b>25%:</b> ", df$q25,
+#       "<br><b>Median:</b> ", df$med,
+#       "<br><b>Mean:</b> ", round(df$mean, 1),
+#       "<br><b>75%:</b> ", df$q75,
+#       "<br><b>Max:</b> ", df$max
+#     ))
+#   }
+#   
+#   cdist_proxy <- plotlyProxy("cdist_plot", session)
+#   for (i in seq_along(all_positions)) {
+#     pos <- all_positions[i]
+#     rows <- which(df_plot$position_rank == pos)
+#     
+#     # Violin y-values (log1p transform to match ggplot scale)
+#     y_violin <- if (length(rows) > 0) log1p(df_plot$Citations[rows]) else numeric(0)
+#     x_violin <- rep(i, length(y_violin))
+#     
+#     # Scatter x/y/text/marker.size (jitter x around i)
+#     n <- length(rows)
+#     if (n > 0) {
+#       x_scatter <- i + runif(n, -0.18, 0.18)         # jitter around i
+#       y_scatter <- log1p(df_plot$Citations[rows]) 
+#       text_scatter <- make_dist_hover_text(df_plot[rows, , drop = FALSE])
+#       size_scatter <- (scale(df_plot$Adjusted_Citations[rows]) * 10) + 15   # maybe scale this if too large
+#     } else {
+#       x_scatter <- numeric(0); y_scatter <- numeric(0); text_scatter <- character(0); size_scatter <- numeric(0)
+#     }
+#     
+#     # Violin trace index = (i - 1) * 2   (0-based indices)
+#     violin_trace_idx <- (i - 1) * 2
+#     # Scatter trace index = (i - 1) * 2 + 1
+#     scatter_trace_idx <- (i - 1) * 2 + 1
+#     
+#     # print("x_violin")
+#     # print(x_violin)
+#     # print("y_violin")
+#     # print(y_violin)
+#     
+#     # Update violin 'y' (restyle)
+#     # Note: plotlyProxyInvoke expects values for the trace; we pass y as a list of values for that trace
+#     plotlyProxyInvoke(cdist_proxy, "restyle", list(x=list(x_violin),y = list(y_violin)), list(violin_trace_idx))
+#     
+#     # Update scatter x, y, text, marker.size
+#     # For nested properties like marker.size use named element `marker.size` in the props list
+#     cdist_proxy_data <- list(
+#       x = list(x_scatter),
+#       y = list(y_scatter),
+#       text = list(text_scatter),
+#       `marker.size` = list(size_scatter)
+#     )
+#     plotlyProxyInvoke(cdist_proxy, "restyle", cdist_proxy_data, list(scatter_trace_idx))
+#     
+#   } #End - for
+#   
+#   total_pubs <- nrow(df_plot)
+#   
+#   pub_pdata <- df_plot %>% 
+#     group_by(position_rank) %>% 
+#     count() %>% 
+#     ungroup() %>% 
+#     mutate(pcontrib = if (is.na(total_pubs) || total_pubs == 0) 0 else (n / total_pubs) * 100)
+#   # print(pub_pdata)
+#   
+#   # output$aperc_plot <- renderPlotly(({
+#   #   # auth_pplot <- ggplot(
+#   #   #   pub_pdata,
+#   #   #   aes(
+#   #   #     x = "Publications",
+#   #   #     y = pcontrib,
+#   #   #     fill = position_rank,
+#   #   #     colour = position_rank,
+#   #   #     text = paste0(
+#   #   #       "<b>Position:</b> ", position_rank,
+#   #   #       "<br><b>Contribution %:</b> ", pcontrib
+#   #   #     )
+#   #   #   )
+#   #   # ) +
+#   #   #   geom_bar(
+#   #   #     stat = "identity",
+#   #   #     width = 0.3,
+#   #   #     size = 0.6,
+#   #   #     alpha = 0.7
+#   #   #   ) +
+#   #   #   coord_flip() + 
+#   #   #   scale_fill_manual(values = position_colors, guide = "none") +
+#   #   #   scale_colour_manual(values = position_border_colors, guide = "none") +
+#   #   #   theme_minimal(base_size = 12) +
+#   #   #   labs(
+#   #   #     title = "Author Contribution in % based on Authorship",
+#   #   #     x = NULL,
+#   #   #     y = NULL, #"Contribution (%)",
+#   #   #     fill = "Position"
+#   #   #   ) +
+#   #   #   theme(
+#   #   #     # axis.text.x = element_blank(),
+#   #   #     # axis.ticks.x = element_blank(),
+#   #   #     axis.text.y = element_blank(),
+#   #   #     plot.title = element_text(hjust = 0.5, face = "bold")
+#   #   #   )
+#   #   # 
+#   #   # # auth_pplot
+#   #   # plotly::ggplotly(auth_pplot, tooltip = "text") %>%
+#   #   #   plotly::layout(showlegend = FALSE)  
+#   #   
+#   # }))
+#   
+#   make_perc_hover_text <- function(df) {
+#     return(paste0(
+#       "<b>Position:</b> ", df$position_rank,
+#       "<br><b>Contribution %:</b> ", df$pcontrib
+#     ))
+#   }
+#   
+#   # print("HERE1")
+#   req(pub_pdata)
+#   # print("HERE2")
+#   
+#   if(nrow(pub_pdata) <= 0){
+#     shinyjs::hide("aperc_plot")
+#     shinyjs::hide("cperc_plot")
+#     # return()
+#   }
+#   
+#   aperc_proxy <- plotlyProxy("aperc_plot", session)
+#   
+#   n <- length(all_positions)
+#   
+#   # 1. Calculate values
+#   aperc_vals <- sapply(all_positions, function(pos) {
+#     i <- which(pub_pdata$position_rank == pos)
+#     
+#     # Extract value if it exists, otherwise default to 0
+#     val <- if (length(i) == 1) pub_pdata$pcontrib[i] else 0
+#     
+#     # Final safety net to strip any lingering NAs or NaNs
+#     if (is.na(val) || is.nan(val)) 0 else val
+#   })
+#   
+#   # Normalize to 100%
+#   if(sum(aperc_vals) > 0) {
+#     aperc_vals <- (aperc_vals / sum(aperc_vals)) * 100
+#   }
+#   
+#   # 2. Prepare the lists for restyle
+#   # Restyle expects a list where each element corresponds to a trace
+#   # Each element itself must be a list containing the data point(s)
+#   aperc_x_list <- lapply(aperc_vals, function(v) list(v)) 
+#   # print("aperc_x_list")
+#   # print(aperc_x_list)
+#   aperc_y_list <- lapply(seq_len(n), function(i) list("Publications"))
+#   # print("aperc_y_list")
+#   # print(aperc_y_list)
+#   aperc_text_list <- lapply(seq_len(n), function(i) {
+#     list(paste0(
+#       "<b>Position:</b> ", all_positions[i],
+#       "<br><b>Contribution %:</b> ", round(aperc_vals[i], 1), "%"
+#     ))
+#   })
+#   
+#   # 3. Execute Invoke
+#   plotlyProxyInvoke(
+#     aperc_proxy,
+#     "restyle",
+#     list(
+#       x = unname(aperc_x_list),
+#       y = unname(aperc_y_list),
+#       text = unname(aperc_text_list),
+#       textposition = rep(list("inside"), n)
+#     ),
+#     as.list(0:(n - 1)) # Trace indices
+#   )
+#   
+#   # if (!is.null(rv$aperc_plot)) {
+#   #   pb <- plotly_build(rv$aperc_plot)
+#   #   cat("---- TRACE DEBUG ----\n")
+#   #   for (i in seq_along(pb$x$data)) {
+#   #     cat(
+#   #       "Trace", i-1,
+#   #       "| name:", pb$x$data[[i]]$name,
+#   #       "| x:", paste(pb$x$data[[i]]$x, collapse=","),
+#   #       "| y:", paste(pb$x$data[[i]]$y, collapse=","),
+#   #       "\n"
+#   #     )
+#   #   }
+#   # }
+#   
+#   #   for (i in seq_along(all_positions)) {
+#   #     # trace index is 0-based
+#   #     trace_idx <- i - 1
+#   #     
+#   #     plotlyProxyInvoke(
+#   #       aperc_proxy, "restyle",
+#   #       # set a single x value and the shared y category for this trace
+#   #       list(
+#   #         x = list(pub_pdata$pcontrib[i]),                         # ONE value per trace
+#   #         # y = list("Publications"),                  # same category for all traces
+#   #         text = list(
+#   #           paste0(
+#   #             "<b>Position:</b> ", all_positions[i],
+#   #             "<br><b>Contribution %:</b> ", round(aperc_vals[i], 1)
+#   #           )
+#   #         ),
+#   #         textposition = list("inside")              # place text inside each segment
+#   #       ),
+#   #       trace_idx
+#   #     )
+#   #   }
+#   # # }, once = TRUE)
+#   
+#   total_cites <- sum(df_plot$Citations)
+#   
+#   cites_pdata <- df_plot %>% 
+#     group_by(position_rank) %>% 
+#     summarise(TotalCitations = sum(Citations), .groups = 'drop') %>% 
+#     # Safely check for NA first, and use the double || 
+#     mutate(pcontrib = if (is.na(total_cites) || total_cites == 0) 0 else (TotalCitations / total_cites) * 100)
+#   
+#   # print(cites_pdata)
+#   
+#   req(cites_pdata)
+#   cperc_proxy <- plotlyProxy("cperc_plot", session)
+#   
+#   n <- length(all_positions)
+#   
+#   # 1. Map the citation data to match the order of all_positions
+#   cperc_vals <- sapply(all_positions, function(pos) {
+#     idx <- which(cites_pdata$position_rank == pos)
+#     
+#     # Extract value if it exists, otherwise default to 0
+#     val <- if (length(idx) == 1) cites_pdata$pcontrib[idx] else 0
+#     
+#     # Final safety net to strip any lingering NAs or NaNs before Plotly gets it
+#     if (is.na(val) || is.nan(val)) 0 else val
+#   })
+#   
+#   # print("HERE3")
+#   # print(cites_pdata)
+#   # print(cperc_vals)
+#   # print(n)
+#   # print(all_positions)
+#   # print("HERE4")
+#   
+#   # Ensure total is 100% (Safety check)
+#   if(sum(cperc_vals) > 0) {
+#     cperc_vals <- (cperc_vals / sum(cperc_vals)) * 100
+#   }
+#   
+#   # 2. Build the List-of-Lists (Unnamed)
+#   cperc_x_list <- lapply(cperc_vals, function(v) list(v))
+#   cperc_y_list <- lapply(seq_len(n), function(i) list("Citations"))
+#   cperc_text_list <- lapply(seq_len(n), function(i) {
+#     list(paste0(
+#       "<b>Position:</b> ", all_positions[i],
+#       "<br><b>Contribution %:</b> ", round(cperc_vals[i], 1), "%"
+#     ))
+#   })
+#   
+#   # 3. Single Update Call
+#   plotlyProxyInvoke(
+#     cperc_proxy,
+#     "restyle",
+#     list(
+#       x = unname(cperc_x_list),
+#       y = unname(cperc_y_list),
+#       text = unname(cperc_text_list),
+#       textposition = rep(list("inside"), n)
+#     ),
+#     as.list(0:(n - 1))
+#   )# End - for
+#   
+#   print(cites_pdata)
+#   print(sum(cites_pdata$pcontrib))
+#   # print(str(cperc_proxy))
+#   
+#   # cites_pplot <- ggplot(
+#   #   cites_pdata,
+#   #   aes(
+#   #     x = "Publications",
+#   #     y = pcontrib,
+#   #     fill = position_rank,
+#   #     colour = position_rank,
+#   #     text = paste0(
+#   #       "<b>Position:</b> ", position_rank,
+#   #       "<br><b>Contribution %:</b> ", pcontrib
+#   #     )
+#   #   )
+#   # ) +
+#   #   geom_bar(
+#   #     stat = "identity",
+#   #     width = 0.3,
+#   #     size = 0.6,
+#   #     alpha = 0.7
+#   #   ) +
+#   #   coord_flip() + 
+#   #   scale_fill_manual(values = position_colors, guide = "none") +
+#   #   scale_colour_manual(values = position_border_colors, guide = "none") +
+#   #   theme_minimal(base_size = 12) +
+#   #   labs(
+#   #     title = "Citation Contribution in % based on Authorship",
+#   #     x = NULL,
+#   #     y = NULL, #"Contribution (%)",
+#   #     fill = "Position"
+#   #   ) +
+#   #   theme(
+#   #     # axis.text.x = element_blank(),
+#   #     # axis.ticks.x = element_blank(),
+#   #     axis.text.y = element_blank(),
+#   #     plot.title = element_text(hjust = 0.5, face = "bold")
+#   #   )
+#   # 
+#   # cites_pplot
+#   # plotly::ggplotly(cites_pplot, tooltip = "text") %>%
+#   #   plotly::layout(showlegend = FALSE)
+# } #End - Plotting
+
+plot_glens_table <- function(rv,session){
+  req(rv$glens_year_filtered, nrow(rv$glens_year_filtered) > 0)
+  if(is.null(rv$glens_year_filtered) || nrow(rv$glens_year_filtered) <= 0){
+    rv$log_text <- paste(rv$log_text, "Warning: No data available for these filters!\n", sep="")
+    warning("Warning: No data available for these filters!")
     shinyjs::hide("sh_index")
     shinyjs::hide("summary_table")
     shinyjs::hide("acounts_plot")
@@ -609,31 +1248,16 @@ plot_glens_table <- function(rv, output, session){
     shinyjs::hide("cdist_plot")
     shinyjs::hide("aperc_plot")
     shinyjs::hide("cperc_plot")
+    shinyjs::hide("network_filtered")
     shinyjs::hide("extended_table")
-    return()
+    return() # Stop execution here
   }
-  
-  # Render Filtered Subset Network
-  output$network_filtered <- renderVisNetwork({
-    req(rv$glens_year_filtered) # Assuming this is your filtered reactive variable
-    
-    net_data <- build_collaboration_network(rv$glens_year_filtered, rv$author_list)
-    
-    visNetwork(net_data$nodes, net_data$edges, width = "100%", height = "500px") %>%
-      visNodes(font = list(size = 14)) %>%
-      visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = TRUE) %>%
-      # visPhysics(solver = "forceAtlas2Based", forceAtlas2Based = list(gravitationalConstant = -50)) %>%
-      visIgraphLayout(layout = "layout_with_fr") %>%
-      visOptions(highlightNearest = list(enabled = TRUE, degree = 1), nodesIdSelection = TRUE) %>%
-      # visLegend() %>%
-      addFontAwesome()
-  })
-  
   shinyjs::show("acounts_plot")
   shinyjs::show("ccounts_plot")
   shinyjs::show("cdist_plot")
   shinyjs::show("aperc_plot")
   shinyjs::show("cperc_plot")
+  shinyjs::show("network_filtered")
   
   df_ordered_debug <- rv$glens_year_filtered %>%
     mutate(position_rank = case_when(
@@ -668,14 +1292,6 @@ plot_glens_table <- function(rv, output, session){
     mutate(Count = tidyr::replace_na(Count, 0L),
            SumCitations = tidyr::replace_na(SumCitations, 0.0))
   
-  # ---------------------------
-  # Plotting parameters (colors + alpha per quartile)
-  # ---------------------------
-  # Base colors per quartile (Q1 -> rich color, Q4 -> light)
-  # quartile_colors <- c("Q1" = "#2E8B57",  # greenish (co-author in your sample used green)
-  #                      "Q2" = "#4B8BBE",  # blue-ish
-  #                      "Q3" = "#B66BA4",  # purple-ish
-  #                      "Q4" = "#D6A77A")  # tan (light)
   position_colors <- c("First Author" = "#D6A77A",  # greenish (co-author in your sample used green)
                        "Second Author" = "#B66BA4",  # blue-ish
                        "Co-Author" = "#2E8B57",  # purple-ish
@@ -713,50 +1329,9 @@ plot_glens_table <- function(rv, output, session){
     ) %>%
     arrange(Qscore, Position)
   
-  # print(agg_all)
-  
-  # ---------------------------
-  # Create stacked bar chart for Counts
-  # ---------------------------
-  # p_counts <- ggplot(agg_all, aes(x = Position, y = Count, fill = Position, color = Position, alpha = Qscore, group = Qscore, text = paste(
-  #   "Position:", Position,
-  #   "<br>Quartile:", Qscore,
-  #   "<br>Count:", Count,
-  #   "<br>Total:", Total_Position
-  #   # "<br>Author Name:", matched_token
-  #   # "<br>Citations:", SumCitations
-  # ))) +
-  #   geom_bar(stat = "identity", size = 0.25) +
-  #   scale_colour_manual(
-  #     values = position_border_colors,
-  #     guide = "none"          # hide border legend
-  #   ) +
-  #   # #scale_fill_manual(values = quartile_colors, name = "Qscore") +
-  #   scale_fill_manual(values = position_colors, 
-  #                     # name = "Position"
-  #                     guide = "none"
-  #   ) +
-  #   scale_alpha_manual(values = quartile_alpha,
-  #                      # name = "Journal Rank"
-  #                      guide = "none"
-  #   ) +
-  #   theme_minimal(base_size = 12) +
-  #   labs(title = "Publication Count based on Authorship with Journal Rank Categorization",
-  #        y = NULL, x = NULL) +
-  #   theme(
-  #     plot.title = element_text(hjust = 0.5, face = "bold"),
-  #     axis.text.x = element_text(angle = 15, hjust = 1)
-  #   ) + 
-  #   scale_color_manual(values = position_colors)
-  # # +
-  # # geom_text(aes(label = Count), position = position_stack(vjust = 0.5), size = 3, color = "black")
-  # # geom_text(data = dplyr::filter(agg_all, Count > 0),aes(label = Count), position = position_stack(vjust = 0.5), size = 3, color = "black")
-  
-  # p_counts
-  # output$acounts_plot <- renderPlotly({ plotly::ggplotly(p_counts, tooltip = "text") %>%
-  # plotly::layout(showlegend = FALSE, transition = list(duration = 500))  }) #%>% toWebGL()
   # ---- animate update via plotlyProxy ----
   acounts_proxy <- plotlyProxy("acounts_plot", session)
+  
   acounts_proxy_data <- lapply(all_quartiles, function(q) {
     agg_all %>%
       filter(Qscore == q) %>%
@@ -764,66 +1339,69 @@ plot_glens_table <- function(rv, output, session){
       pull(Count)
   })
   
+  # 1. Format the data explicitly as a list of traces for the 'animate' method
+  acounts_animate_payload <- lapply(acounts_proxy_data, function(y_vals) {
+    list(y = y_vals)
+  })
+  
+  # 2. Invoke 'animate' with transition settings
   plotlyProxyInvoke(
     acounts_proxy,
-    "restyle",
+    "animate",
+    # Argument 1: The new data
     list(
-      # y = list(agg_all$Counts)
-      y=acounts_proxy_data
+      data = acounts_animate_payload,
+      traces = as.list(0:(length(all_quartiles) - 1)) # Explicitly tell it which traces to map to
+    ),
+    
+    # Argument 2: The animation settings
+    list(
+      transition = list(
+        duration = 200,               # 800 milliseconds (0.8 seconds)
+        easing = "cubic-in-out"       # Starts slow, speeds up, ends slow
+      ),
+      frame = list(
+        duration = 200,
+        redraw = FALSE                # Set to FALSE for smoother SVG morphing
+      )
     )
   )
   
-  # ---------------------------
-  # Create stacked bar chart for Sum of Adjusted Citations
-  # ---------------------------
-  # p_cites <- ggplot(agg_all, aes(x = Position, y = SumCitations, fill = Position, color = Position, alpha = Qscore, group=Qscore, text = paste(
-  #   "Position:", Position,
-  #   "<br>Position Citations:", Total_Citations,
-  #   "<br>Quartile:", Qscore,
-  #   "<br>Quartile Citations:", Total_QCitations
-  #   # "<br>Citations:", SumCitations
-  # ))) +
-  #   geom_bar(stat = "identity", size = 0.25) +
-  #   scale_colour_manual(
-  #     values = position_border_colors,
-  #     guide = "none"          # hide border legend
-  #   ) +
-  #   # scale_fill_manual(values = quartile_colors, name = "Quartile") +
-  #   scale_fill_manual(values = position_colors, 
-  #                     # name = "Position"
-  #                     guide = "none"
-  #   ) +
-  #   scale_alpha_manual(values = quartile_alpha, 
-  #                      name = "Journal Rank"
-  #                      # guide = "none"
-  #   ) +
-  #   theme_minimal(base_size = 12) +
-  #   labs(title = "Citation Count based on Authorship with Journal Rank Categorization",
-  #        y = NULL, x = NULL) +
-  #   theme(
-  #     plot.title = element_text(hjust = 0.5, face = "bold"),
-  #     axis.text.x = element_text(angle = 15, hjust = 1)
-  #   ) #+
-  # # geom_text(aes(label = ifelse(SumCitations==0, "", round(SumCitations, 0))), position = position_stack(vjust = 0.5), size = 3, color = "black")
-  # # geom_text(data = dplyr::filter(agg_all, Count > 0), aes(label = ifelse(SumCitations==0, "", round(SumCitations, 0))), position = position_stack(vjust = 0.5), size = 3, color = "black")
-  
-  # p_cites
-  # output$ccounts_plot <- renderPlotly({ plotly::ggplotly(p_cites, tooltip = "text") %>%
-  # plotly::layout(showlegend = FALSE, transition = list(duration = 500))}) # %>% toWebGL() 
   ccounts_proxy <- plotlyProxy("ccounts_plot", session)
+  
   ccounts_proxy_data <- lapply(all_quartiles, function(q) {
     agg_all %>%
       filter(Qscore == q) %>%
       arrange(Position) %>%
-      pull(SumCitations)
+      pull(Count)
   })
   
+  # 1. Format the data explicitly as a list of traces for the 'animate' method
+  ccounts_animate_payload <- lapply(ccounts_proxy_data, function(y_vals) {
+    list(y = y_vals)
+  })
+  
+  # 2. Invoke 'animate' with transition settings
   plotlyProxyInvoke(
     ccounts_proxy,
-    "restyle",
+    "animate",
+    
+    # Argument 1: The new data
     list(
-      # y = list(agg_all$Counts)
-      y=ccounts_proxy_data
+      data = ccounts_animate_payload,
+      traces = as.list(0:(length(all_quartiles) - 1)) # Explicitly tell it which traces to map to
+    ),
+    
+    # Argument 2: The animation settings
+    list(
+      transition = list(
+        duration = 200,               # 800 milliseconds (0.8 seconds)
+        easing = "cubic-in-out"       # Starts slow, speeds up, ends slow
+      ),
+      frame = list(
+        duration = 200,
+        redraw = FALSE                # Set to FALSE for smoother SVG morphing
+      )
     )
   )
   
@@ -853,59 +1431,19 @@ plot_glens_table <- function(rv, output, session){
   group_counts <- df_plot %>%
     count(position_rank)
   
-  # print(df_plot)
-  # print(df_plot[,c("Adjustment_Weights","Adjusted_Citations","position_rank", "JIF5Years", "Qscore")]) #"matched_token"
-  # print(colnames(df_plot))
-  # print(nrow(df_plot))
-  # print(group_counts)
-  
   if(nrow(df_plot) <= 1 || all(group_counts$n <= 1) || all(df_plot$Citations == 0)){
     rv$log_text <- paste(
       rv$log_text,
       "plot_glens_table() - Warning: Need more than one group and atleast 1 paper with 1 citation per-group for plotting distribution.",
       sep = "\n"
     )
+    
     # output$log <- renderText({ rv$log_text })
     warning("plot_glens_table() - Warning: Need more than one group and atleast 1 paper with 1 citation per-group for plotting distribution.")
     shinyjs::hide("cdist_plot")
     # return()
   }
   
-  # p_citesdist <- ggplot(df_plot, aes(x = position_rank, y = Citations, fill = position_rank, group=position_rank, colour = Qscore,size=Adjusted_Citations, text = paste0(
-  #   "<b>Position:</b> ", position_rank,
-  #   "<br><b>Citations:</b> ", Citations,
-  #   "<br><b>Qscore:</b> ", Qscore,
-  #   "<br><b>Author Count:</b> ", Author_Count,
-  #   "<br><b>Adjustment Weight:</b> ", Adjustment_Weights,
-  #   "<br><b>Adjusted Citations:</b> ", Adjusted_Citations,
-  #   "<br><b>Min:</b> ", min,
-  #   "<br><b>25%:</b> ", q25,
-  #   "<br><b>Median:</b> ", med,
-  #   "<br><b>Mean:</b> ", round(mean, 1),
-  #   "<br><b>75%:</b> ", q75,
-  #   "<br><b>Max:</b> ", max
-  # ))) +     geom_violin(alpha = 0.5) +     geom_point(position = position_jitter(seed = 1, width = 0.2)) +     theme(legend.position = "none") + scale_colour_manual(
-  #   values = position_border_colors,
-  #   guide = "none"          # hide border legend
-  # ) +
-  #   scale_y_continuous(
-  #     trans = "log1p"
-  #   ) +
-  #   scale_fill_manual(values = position_colors, 
-  #                     # name = "Position"
-  #                     guide = "none"
-  #   ) +
-  #   theme_minimal(base_size = 12) +
-  #   labs(title = "Citation Distribution based on Authorship (Log Scale)",
-  #        y = "log(1 + Citations)", x = NULL) +
-  #   theme(
-  #     plot.title = element_text(hjust = 0.5, face = "bold"),
-  #     axis.text.x = element_text(angle = 15, hjust = 1)
-  #   )
-  # 
-  # # p_citesdist
-  # output$cdist_plot <- renderPlotly({ plotly::ggplotly(p_citesdist, tooltip = "text") %>%
-  #   plotly::layout(showlegend = FALSE, transition = list(duration = 500)) }) # %>% toWebGL() 
   # --- function to build hover text identical to ggplot's text ---
   make_dist_hover_text <- function(df) {
     return(paste0(
@@ -937,7 +1475,7 @@ plot_glens_table <- function(rv, output, session){
     n <- length(rows)
     if (n > 0) {
       x_scatter <- i + runif(n, -0.18, 0.18)         # jitter around i
-      y_scatter <- log1p(df_plot$Citations[rows]) 
+      y_scatter <- log1p(df_plot$Citations[rows])
       text_scatter <- make_dist_hover_text(df_plot[rows, , drop = FALSE])
       size_scatter <- (scale(df_plot$Adjusted_Citations[rows]) * 10) + 15   # maybe scale this if too large
     } else {
@@ -970,6 +1508,7 @@ plot_glens_table <- function(rv, output, session){
     
   } #End - for
   
+  
   total_pubs <- nrow(df_plot)
   
   pub_pdata <- df_plot %>% 
@@ -978,49 +1517,6 @@ plot_glens_table <- function(rv, output, session){
     ungroup() %>% 
     mutate(pcontrib = if (is.na(total_pubs) || total_pubs == 0) 0 else (n / total_pubs) * 100)
   # print(pub_pdata)
-  
-  # output$aperc_plot <- renderPlotly(({
-  #   # auth_pplot <- ggplot(
-  #   #   pub_pdata,
-  #   #   aes(
-  #   #     x = "Publications",
-  #   #     y = pcontrib,
-  #   #     fill = position_rank,
-  #   #     colour = position_rank,
-  #   #     text = paste0(
-  #   #       "<b>Position:</b> ", position_rank,
-  #   #       "<br><b>Contribution %:</b> ", pcontrib
-  #   #     )
-  #   #   )
-  #   # ) +
-  #   #   geom_bar(
-  #   #     stat = "identity",
-  #   #     width = 0.3,
-  #   #     size = 0.6,
-  #   #     alpha = 0.7
-  #   #   ) +
-  #   #   coord_flip() + 
-  #   #   scale_fill_manual(values = position_colors, guide = "none") +
-  #   #   scale_colour_manual(values = position_border_colors, guide = "none") +
-  #   #   theme_minimal(base_size = 12) +
-  #   #   labs(
-  #   #     title = "Author Contribution in % based on Authorship",
-  #   #     x = NULL,
-  #   #     y = NULL, #"Contribution (%)",
-  #   #     fill = "Position"
-  #   #   ) +
-  #   #   theme(
-  #   #     # axis.text.x = element_blank(),
-  #   #     # axis.ticks.x = element_blank(),
-  #   #     axis.text.y = element_blank(),
-  #   #     plot.title = element_text(hjust = 0.5, face = "bold")
-  #   #   )
-  #   # 
-  #   # # auth_pplot
-  #   # plotly::ggplotly(auth_pplot, tooltip = "text") %>%
-  #   #   plotly::layout(showlegend = FALSE)  
-  #   
-  # }))
   
   make_perc_hover_text <- function(df) {
     return(paste0(
@@ -1088,81 +1584,28 @@ plot_glens_table <- function(rv, output, session){
     as.list(0:(n - 1)) # Trace indices
   )
   
-  # if (!is.null(rv$aperc_plot)) {
-  #   pb <- plotly_build(rv$aperc_plot)
-  #   cat("---- TRACE DEBUG ----\n")
-  #   for (i in seq_along(pb$x$data)) {
-  #     cat(
-  #       "Trace", i-1,
-  #       "| name:", pb$x$data[[i]]$name,
-  #       "| x:", paste(pb$x$data[[i]]$x, collapse=","),
-  #       "| y:", paste(pb$x$data[[i]]$y, collapse=","),
-  #       "\n"
-  #     )
-  #   }
-  # }
-  
-  #   for (i in seq_along(all_positions)) {
-  #     # trace index is 0-based
-  #     trace_idx <- i - 1
-  #     
-  #     plotlyProxyInvoke(
-  #       aperc_proxy, "restyle",
-  #       # set a single x value and the shared y category for this trace
-  #       list(
-  #         x = list(pub_pdata$pcontrib[i]),                         # ONE value per trace
-  #         # y = list("Publications"),                  # same category for all traces
-  #         text = list(
-  #           paste0(
-  #             "<b>Position:</b> ", all_positions[i],
-  #             "<br><b>Contribution %:</b> ", round(aperc_vals[i], 1)
-  #           )
-  #         ),
-  #         textposition = list("inside")              # place text inside each segment
-  #       ),
-  #       trace_idx
-  #     )
-  #   }
-  # # }, once = TRUE)
-  
   total_cites <- sum(df_plot$Citations)
-  
   cites_pdata <- df_plot %>% 
     group_by(position_rank) %>% 
     summarise(TotalCitations = sum(Citations), .groups = 'drop') %>% 
     # Safely check for NA first, and use the double || 
     mutate(pcontrib = if (is.na(total_cites) || total_cites == 0) 0 else (TotalCitations / total_cites) * 100)
-  
   # print(cites_pdata)
-  
   req(cites_pdata)
   cperc_proxy <- plotlyProxy("cperc_plot", session)
-  
   n <- length(all_positions)
-  
   # 1. Map the citation data to match the order of all_positions
   cperc_vals <- sapply(all_positions, function(pos) {
     idx <- which(cites_pdata$position_rank == pos)
-    
     # Extract value if it exists, otherwise default to 0
     val <- if (length(idx) == 1) cites_pdata$pcontrib[idx] else 0
-    
     # Final safety net to strip any lingering NAs or NaNs before Plotly gets it
     if (is.na(val) || is.nan(val)) 0 else val
   })
-  
-  # print("HERE3")
-  # print(cites_pdata)
-  # print(cperc_vals)
-  # print(n)
-  # print(all_positions)
-  # print("HERE4")
-  
   # Ensure total is 100% (Safety check)
   if(sum(cperc_vals) > 0) {
     cperc_vals <- (cperc_vals / sum(cperc_vals)) * 100
   }
-  
   # 2. Build the List-of-Lists (Unnamed)
   cperc_x_list <- lapply(cperc_vals, function(v) list(v))
   cperc_y_list <- lapply(seq_len(n), function(i) list("Citations"))
@@ -1172,7 +1615,6 @@ plot_glens_table <- function(rv, output, session){
       "<br><b>Contribution %:</b> ", round(cperc_vals[i], 1), "%"
     ))
   })
-  
   # 3. Single Update Call
   plotlyProxyInvoke(
     cperc_proxy,
@@ -1185,51 +1627,11 @@ plot_glens_table <- function(rv, output, session){
     ),
     as.list(0:(n - 1))
   )# End - for
-  
   print(cites_pdata)
   print(sum(cites_pdata$pcontrib))
   # print(str(cperc_proxy))
-  
-  # cites_pplot <- ggplot(
-  #   cites_pdata,
-  #   aes(
-  #     x = "Publications",
-  #     y = pcontrib,
-  #     fill = position_rank,
-  #     colour = position_rank,
-  #     text = paste0(
-  #       "<b>Position:</b> ", position_rank,
-  #       "<br><b>Contribution %:</b> ", pcontrib
-  #     )
-  #   )
-  # ) +
-  #   geom_bar(
-  #     stat = "identity",
-  #     width = 0.3,
-  #     size = 0.6,
-  #     alpha = 0.7
-  #   ) +
-  #   coord_flip() + 
-  #   scale_fill_manual(values = position_colors, guide = "none") +
-  #   scale_colour_manual(values = position_border_colors, guide = "none") +
-  #   theme_minimal(base_size = 12) +
-  #   labs(
-  #     title = "Citation Contribution in % based on Authorship",
-  #     x = NULL,
-  #     y = NULL, #"Contribution (%)",
-  #     fill = "Position"
-  #   ) +
-  #   theme(
-  #     # axis.text.x = element_blank(),
-  #     # axis.ticks.x = element_blank(),
-  #     axis.text.y = element_blank(),
-  #     plot.title = element_text(hjust = 0.5, face = "bold")
-  #   )
-  # 
-  # cites_pplot
-  # plotly::ggplotly(cites_pplot, tooltip = "text") %>%
-  #   plotly::layout(showlegend = FALSE)
-} #End - Plotting
+  #End - Plotting
+}
 
 render_skeleton_plots <- function(rv, output){
   df_ordered_debug <- rv$glens_year_filtered %>%
@@ -1420,6 +1822,8 @@ render_skeleton_plots <- function(rv, output){
     rv$acounts_plotly
   })
   
+  print("HERE1.3")
+  
   output$ccounts_plot <- renderPlotly({
     # p_cites <- ggplot(agg_all, aes(x = Position, y = SumCitations, fill = Position, color = Position, alpha = Qscore, group=Qscore, text = paste(
     #   "Position:", Position,
@@ -1497,6 +1901,7 @@ render_skeleton_plots <- function(rv, output){
     rv$ccounts_plotly
   })
   
+  print("HERE1.4")
   # p_citesdist <- ggplot(df_plot, aes(x = position_rank, y = Citations, fill = position_rank, group=position_rank, colour = Qscore,size=Adjusted_Citations, text = paste0(
   #   "<b>Position:</b> ", position_rank,
   #   "<br><b>Citations:</b> ", Citations,
@@ -1599,6 +2004,8 @@ render_skeleton_plots <- function(rv, output){
     rv$cdist_plotly
   })
   
+  print("HERE1.5")
+  
   output$aperc_plot <- renderPlotly({
     p <- plot_ly()
     
@@ -1640,6 +2047,8 @@ render_skeleton_plots <- function(rv, output){
     )
   })
   
+  print("HERE1.6")
+  
   output$cperc_plot <- renderPlotly({
     p <- plot_ly()
     for (pos in all_positions) {
@@ -1669,6 +2078,7 @@ render_skeleton_plots <- function(rv, output){
     )
   })
   
+  print("HERE1.7")
 } # End - Plot skeleton renders
 
 server <- function(input, output, session) {
@@ -1700,16 +2110,88 @@ server <- function(input, output, session) {
   shinyjs::hide("cdist_plot")
   shinyjs::hide("aperc_plot")
   shinyjs::hide("cperc_plot")
+  shinyjs::hide("network_filtered")
+  shinyjs::hide("network_full")
   shinyjs::hide("extended_table")
-  shinyjs::hide("progress_overlay") # Reveal the bar
-  # shinyWidgets::updateProgressBar(
-  #   session, 
-  #   value = 0, 
-  #   total = doi_count,
-  #   title = sprintf("Starting calculation for %d DOIs...", doi_count)
-  # )
+  shinyjs::hide("progress_overlay") 
+  
+  # Try VFS first. If it fails or doesn't exist, fall back to what's already in glens_env
+  get_resolved_key <- function(filename, env_fallback) {
+    path <- file.path("keys", filename)
+    message(paste("Looking for key:", path))
+    if (fs::file_exists(path)) {
+      tryCatch({
+        dec <- sodium::data_decrypt(readRDS(path), key=openssl::sha256(glens_env$privkey_dec))
+        return(trimws(rawToChar(dec)))
+      }, error = function(e) return(env_fallback)) # Fallback on decrypt error
+    }
+    return(env_fallback) # Fallback if file is missing (WebR refresh)
+  }
+  
+  # --- 1. Scopus ---
+  glens_env$scopus_key <- get_resolved_key("scopus.key", glens_env$scopus_key)
+  if (!is.null(glens_env$scopus_key) && glens_env$scopus_key != "") {
+    shinyjs::show("scopus_bar_container")
+  } else {
+    shinyjs::hide("scopus_bar_container")
+  }
+  # --- 2. Web of Science ---
+  glens_env$wos_key <- get_resolved_key("wos.key", glens_env$wos_key)
+  if (!is.null(glens_env$wos_key) && glens_env$wos_key != "") {
+    shinyjs::show("wos_bar_container")
+  } else {
+    shinyjs::hide("wos_bar_container")
+  }
+  # --- 3. Semantic Scholar ---
+  glens_env$semantic_key <- get_resolved_key("semantic.key", glens_env$semantic_key)
+  if (!is.null(glens_env$semantic_key) && glens_env$semantic_key != "") {
+    shinyjs::show("semantic_bar_container")
+  } else {
+    shinyjs::hide("semantic_bar_container")
+  }
+  # --- 4. Crossref ---
+  glens_env$crossref_key  <- get_resolved_key("crossref.key", glens_env$crossref_key)
+  if (!is.null(glens_env$crossref_key) && glens_env$crossref_key != "") {
+    shinyjs::show("crossref_bar_container")
+  } else {
+    shinyjs::hide("crossref_bar_container")
+  }
+  # --- 5. OpenCitations ---
+  glens_env$opencites_key <- get_resolved_key("opencites.key", glens_env$opencites_key)
+  if (!is.null(glens_env$opencites_key) && glens_env$opencites_key != "") {
+    shinyjs::show("opencites_bar_container")
+  } else {
+    shinyjs::hide("opencites_bar_container")
+  }
+
   output$log <- renderText({
     rv$log_text
+  })
+  
+  
+  # Render Filtered Subset Network
+  output$network_filtered <- renderVisNetwork({
+    req(rv$glens_year_filtered, nrow(rv$glens_year_filtered) > 0) # Assuming this is your filtered reactive variable
+    net_data <- build_collaboration_network(rv$glens_year_filtered, rv$author_list)
+    
+    visNetwork(net_data$nodes, net_data$edges, width = "100%", height = "500px") %>%
+      visNodes(font = list(size = 14)) %>%
+      visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = TRUE) %>%
+      # visPhysics(solver = "forceAtlas2Based", forceAtlas2Based = list(gravitationalConstant = -50)) %>%
+      visIgraphLayout(layout = "layout_with_fr") %>%
+      visOptions(highlightNearest = list(enabled = TRUE, degree = 1), nodesIdSelection = TRUE) %>%
+      # visLegend() %>%
+      addFontAwesome()
+  })
+  
+  observeEvent(input$browser_stored_keys, {
+    keys <- input$browser_stored_keys
+    
+    if (!is.null(keys$scopus_key) && keys$scopus_key != "") glens_env$scopus_key <- keys$scopus_key
+    if (!is.null(keys$wos_key) && keys$wos_key != "") glens_env$wos_key <- keys$wos_key
+    if (!is.null(keys$semantic_key) && keys$semantic_key != "") glens_env$semantic_key <- keys$semantic_key
+    if (!is.null(keys$crossref_key) && keys$crossref_key != "") glens_env$crossref_key <- keys$crossref_key
+    if (!is.null(keys$opencites_key) && keys$opencites_key != "") glens_env$opencites_key <- keys$opencites_key
   })
   
   # output$log <- renderText({
@@ -1745,7 +2227,7 @@ server <- function(input, output, session) {
             "Co-patriot/Collaborator (OR)" = "OR",
             "Companion (AND)"              = "AND",
             "Rival (XOR)"                  = "XOR",
-            "Ignore All (NOR)"                 = "NOR",
+            "Ignore (NOR)"                 = "NOR",
             "Divide & Exclude (NAND)"                = "NAND"
           ),
           selected = "OR",
@@ -1769,88 +2251,209 @@ server <- function(input, output, session) {
       updateActionButton(session, "theme_toggle", label = "🌙 Dark Mode", icon = icon("moon", lib = "font-awesome"))
     }
   })
-
-  observeEvent(input$settings_btn, {
-    # Check file existence first to set badge states
-    has_scopus <- fs::file_exists(file.path("keys","scopus.key"))
-    has_wos <- fs::file_exists(file.path("keys","wos.key"))
-    has_semantic <- fs::file_exists(file.path("keys","semantic.key"))
+  
+  # API Keys Settings Button: Build UI safely
+  observeEvent(input$keys_btn, {
     
+    # --- RESOLUTION LAYER ---
+    # Helper function to safely read from VFS if the file exists
+    get_vfs_key <- function(filename) {
+      path <- file.path("keys", filename)
+      if (fs::file_exists(path)) {
+        tryCatch({
+          dec <- sodium::data_decrypt(readRDS(path), key=sha256(glens_env$privkey_dec))
+          return(trimws(rawToChar(dec)))
+        }, error = function(e) return(NULL))
+      }
+      return(NULL)
+    }
+    
+    # Resolve keys: Try VFS first. If NULL, fallback to the browser-stored glens_env
+    val_scopus    <- if(!is.null(get_vfs_key("scopus.key"))) get_vfs_key("scopus.key") else glens_env$scopus_key
+    val_wos       <- if(!is.null(get_vfs_key("wos.key"))) get_vfs_key("wos.key") else glens_env$wos_key
+    val_semantic  <- if(!is.null(get_vfs_key("semantic.key"))) get_vfs_key("semantic.key") else glens_env$semantic_key
+    val_crossref  <- if(!is.null(get_vfs_key("crossref.key"))) get_vfs_key("crossref.key") else glens_env$crossref_key
+    val_opencites <- if(!is.null(get_vfs_key("opencites.key"))) get_vfs_key("opencites.key") else glens_env$opencites_key
+    
+    # Evaluate boolean flags for the UI Badges (TRUE if we found a key anywhere)
+    has_scopus    <- !is.null(val_scopus) && val_scopus != ""
+    has_wos       <- !is.null(val_wos) && val_wos != ""
+    has_semantic  <- !is.null(val_semantic) && val_semantic != ""
+    has_crossref  <- !is.null(val_crossref) && val_crossref != ""
+    has_opencites <- !is.null(val_opencites) && val_opencites != ""
+    
+    # --- BUILD MODAL ---
     showModal(modalDialog(
       title = tags$span(icon("gears", lib = "font-awesome"), " API Configuration Settings"),
       size = "m",
       
       # Scopus
       tags$div(class = "api-row",
-               tags$div(class = "label-container",
-                        tags$label("Scopus API Key:", style="margin-bottom:0;"),
-                        if(has_scopus) tags$span(class="status-badge badge-found", icon("check", lib = "font-awesome"), " Key Found") 
-                        else tags$span(class="status-badge badge-missing", "Missing")
-               ),
                tags$div(class = "input-button-group",
-                        passwordInput("scopus_key", label = NULL, placeholder = "Enter Scopus Key", width = "100%"),
-                        tags$div(class = "api-save-wrap",
-                                 actionButton("save_scopus", "Save Scopus Key", class = "btn-success save-btn-custom")
-                        )
+                        passwordInput("scopus_key", 
+                                      label = HTML(paste0('
+             <div style="display: flex; align-items: center;">
+               Scopus API Key :
+               <span class="api-help-container" style="position: relative; display: inline-block;">
+                 <span class="help-icon" style="cursor: pointer; margin-left: 5px; color: #17a2b8; font-size: 16px;">&#9432;</span>
+                 <div class="api-help-content" style="display: none; position: absolute; bottom: 130%; left: 50%; transform: translateX(-50%); width: 220px; background: #ffffff; padding: 12px; border: 1px solid #ccc; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 9999; font-weight: normal; font-size: 13px; text-align: left;">
+                   Need a key? Register at the <br>
+                   <a href="https://dev.elsevier.com/" target="_blank" style="text-decoration: underline; color: #007bff; font-weight: bold;">Elsevier Developer Portal</a>.
+                 </div>
+               </span>
+               
+               ', if(has_scopus) {
+                 '<span class="status-badge badge-found" style="margin-left: auto; font-weight: normal; font-size: 12px;"><i class="fa fa-check"></i> Key Found</span>'
+               } else {
+                 '<span class="status-badge badge-missing" style="margin-left: auto; font-weight: normal; font-size: 12px; color: #dc3545;">Missing</span>'
+               }, 
+               '</div>'
+                                      )), 
+               placeholder = "Enter Scopus Key", 
+               width = "100%"
+                        ),
+               tags$div(class = "api-save-wrap",
+                        actionButton("save_scopus", "Save Scopus Key", class = "btn-success save-btn-custom")
+               )
                )
       ),
       
       # Web of Science
       tags$div(class = "api-row",
-               tags$div(class = "label-container",
-                        tags$label("Web of Science API Key:", style="margin-bottom:0;"),
-                        if(has_wos) tags$span(class="status-badge badge-found", icon("check", lib = "font-awesome"), " Key Found") 
-                        else tags$span(class="status-badge badge-missing", "Missing")
-               ),
                tags$div(class = "input-button-group",
-                        passwordInput("wos_key", label = NULL, placeholder = "Enter Web of Science Key", width = "100%"),
+                        passwordInput("wos_key",
+                                      label = HTML(paste0('
+             <div style="display: flex; align-items: center;">
+                          Web of Science API Key :
+                          <span class="api-help-container" style="position: relative; display: inline-block;">
+                            <span class="help-icon" style="cursor: pointer; margin-left: 5px; color: #17a2b8; font-size: 16px;">&#9432;</span>
+                            <div class="api-help-content" style="display: none; position: absolute; bottom: 130%; left: 50%; transform: translateX(-50%); width: 220px; background: #ffffff; padding: 12px; border: 1px solid #ccc; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 9999; font-weight: normal; font-size: 13px; text-align: left;">
+                              Need a key? Register at the <br>
+                              <a href="https://developer.clarivate.com/apis" target="_blank" style="text-decoration: underline; color: #007bff; font-weight: bold;">Clarivate Developer Portal</a>.
+                            </div>
+                          </span>
+                        ', if(has_wos) {
+                          '<span class="status-badge badge-found" style="margin-left: auto; font-weight: normal; font-size: 12px;"><i class="fa fa-check"></i> Key Found</span>'
+                        } else {
+                          '<span class="status-badge badge-missing" style="margin-left: auto; font-weight: normal; font-size: 12px; color: #dc3545;">Missing</span>'
+                        }, 
+                        '</div>'
+                                      )), placeholder = "Enter Web of Science Key", width = "100%"),
                         tags$div(class = "api-save-wrap",
                                  actionButton("save_wos", "Save Web of Science Key", class = "btn-success save-btn-custom")
                         )
                )
       ),
       
-      # Example Row: Semantic Scholar
+      # Semantic Scholar
       tags$div(class = "api-row",
-               tags$div(class = "label-container",
-                        tags$label("Semantic Scholar API Key:", style="margin-bottom:0;"),
-                        if(has_semantic) tags$span(class="status-badge badge-found", icon("check", lib = "font-awesome"), " Key Found") 
-                        else tags$span(class="status-badge badge-missing", "Missing")
-               ),
                tags$div(class = "input-button-group",
-                        passwordInput("semantic_key", label = NULL, placeholder = "Enter Semantic Scholar Key", width = "100%"),
+                        passwordInput("semantic_key",
+                                      label = HTML(paste0('
+             <div style="display: flex; align-items: center;">
+                          Semantic Scholar API Key :
+                          <span class="api-help-container" style="position: relative; display: inline-block;">
+                            <span class="help-icon" style="cursor: pointer; margin-left: 5px; color: #17a2b8; font-size: 16px;">&#9432;</span>
+                            <div class="api-help-content" style="display: none; position: absolute; bottom: 130%; left: 50%; transform: translateX(-50%); width: 220px; background: #ffffff; padding: 12px; border: 1px solid #ccc; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 9999; font-weight: normal; font-size: 13px; text-align: left;">
+                              Need a key? Request one from the <br>
+                              <a href="https://www.semanticscholar.org/product/api#api-key" target="_blank" style="text-decoration: underline; color: #007bff; font-weight: bold;">Semantic Scholar API Form</a>.
+                            </div>
+                          </span>
+                        ', if(has_semantic) {
+                          '<span class="status-badge badge-found" style="margin-left: auto; font-weight: normal; font-size: 12px;"><i class="fa fa-check"></i> Key Found</span>'
+                        } else {
+                          '<span class="status-badge badge-missing" style="margin-left: auto; font-weight: normal; font-size: 12px; color: #dc3545;">Missing</span>'
+                        }, 
+                        '</div>'
+                                      )), placeholder = "Enter Semantic Scholar Key", width = "100%"),
                         tags$div(class = "api-save-wrap",
                                  actionButton("save_semantic", "Save Semantic Scholar Key", class = "btn-success save-btn-custom")
                         )
                )
       ),
       
-      footer = modalButton("Close Settings"),
+      # Crossref
+      tags$div(class = "api-row",
+               tags$div(class = "input-button-group",
+                        passwordInput("crossref_key", 
+                                      label = HTML(paste0('
+             <div style="display: flex; align-items: center;">
+               Crossref API Key :
+               <span class="api-help-container" style="position: relative; display: inline-block;">
+                 <span class="help-icon" style="cursor: pointer; margin-left: 5px; color: #17a2b8; font-size: 16px;">&#9432;</span>
+                 <div class="api-help-content" style="display: none; position: absolute; bottom: 130%; left: 50%; transform: translateX(-50%); width: 220px; background: #ffffff; padding: 12px; border: 1px solid #ccc; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 9999; font-weight: normal; font-size: 13px; text-align: left;">
+                   Need a key? Register at <br>
+                   <a href="https://manage.crossref.org/keys" target="_blank" style="text-decoration: underline; color: #007bff; font-weight: bold;">Crossref Key Manager</a>.
+                 </div>
+               </span>
+               
+               ', if(has_crossref) {
+                 '<span class="status-badge badge-found" style="margin-left: auto; font-weight: normal; font-size: 12px;"><i class="fa fa-check"></i> Key Found</span>'
+               } else {
+                 '<span class="status-badge badge-missing" style="margin-left: auto; font-weight: normal; font-size: 12px; color: #dc3545;">Missing</span>'
+               }, 
+               '</div>'
+                                      )), 
+               placeholder = "Enter Crossref Key", 
+               width = "100%"
+                        ),
+               tags$div(class = "api-save-wrap",
+                        actionButton("save_crossref", "Save Crossref Key", class = "btn-success save-btn-custom")
+               )
+               )
+      ),
+      
+      # OpenCitations
+      tags$div(class = "api-row",
+               tags$div(class = "input-button-group",
+                        passwordInput("opencites_key", 
+                                      label = HTML(paste0('
+             <div style="display: flex; align-items: center;">
+               OpenCitations API Key :
+               <span class="api-help-container" style="position: relative; display: inline-block;">
+                 <span class="help-icon" style="cursor: pointer; margin-left: 5px; color: #17a2b8; font-size: 16px;">&#9432;</span>
+                 <div class="api-help-content" style="display: none; position: absolute; bottom: 130%; left: 50%; transform: translateX(-50%); width: 220px; background: #ffffff; padding: 12px; border: 1px solid #ccc; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 9999; font-weight: normal; font-size: 13px; text-align: left;">
+                   Need a key? Register at <br>
+                   <a href="https://opencitations.net/accesstoken/" target="_blank" style="text-decoration: underline; color: #007bff; font-weight: bold;">OpenCitations Access Token</a>.
+                 </div>
+               </span>
+               
+               ', if(has_opencites) {
+                 '<span class="status-badge badge-found" style="margin-left: auto; font-weight: normal; font-size: 12px;"><i class="fa fa-check"></i> Key Found</span>'
+               } else {
+                 '<span class="status-badge badge-missing" style="margin-left: auto; font-weight: normal; font-size: 12px; color: #dc3545;">Missing</span>'
+               }, 
+               '</div>'
+                                      )), 
+               placeholder = "Enter OpenCites Token", 
+               width = "100%"
+                        ),
+               tags$div(class = "api-save-wrap",
+                        actionButton("save_opencites", "Save OpenCitations Token", class = "btn-success save-btn-custom")
+               )
+               )
+      ),
+      
+      footer = modalButton("Close API Key Settings"),
       easyClose = TRUE
     ))
     
-    # check for files and update the fields
-    if(has_scopus){
-      glens_env$scopus_key <- sodium::data_decrypt(readRDS(file.path("keys","scopus.key")), key=sha256(glens_env$privkey_dec))
-      updateTextInput(session, "scopus_key", value = trimws(rawToChar(glens_env$scopus_key)))
-    }
-    if(has_wos){
-      glens_env$wos_key <- sodium::data_decrypt(readRDS(file.path("keys","wos.key")), key=sha256(glens_env$privkey_dec))
-      updateTextInput(session, "wos_key", value = trimws(rawToChar(glens_env$wos_key)))
-    }
-    if(has_semantic){
-      glens_env$semantic_key <- sodium::data_decrypt(readRDS(file.path("keys","semantic.key")), key=sha256(glens_env$privkey_dec))
-      updateTextInput(session, "semantic_key", value = trimws(rawToChar(glens_env$semantic_key)))
-    }
+    # --- FILL TEXT INPUTS ---
+    # Update the input boxes safely using the unified values
+    if(has_scopus) updateTextInput(session, "scopus_key", value = val_scopus)
+    if(has_wos) updateTextInput(session, "wos_key", value = val_wos)
+    if(has_semantic) updateTextInput(session, "semantic_key", value = val_semantic)
+    if(has_crossref) updateTextInput(session, "crossref_key", value = val_crossref)
+    if(has_opencites) updateTextInput(session, "opencites_key", value = val_opencites)
   })
   
-  # SCOPUS save handlers (repeat for WoS and Semantic)
+  # Save handlers
   observeEvent(input$save_scopus, {
     # req(input$scopus_key)
     if(is.null(input$scopus_key) || stringi::stri_isempty(input$scopus_key)){
       if(fs::file_exists(file.path("keys","scopus.key")))
         fs::file_delete(file.path("keys","scopus.key"))
-      removeModal()
+      # removeModal()
       return()
     }
     raw_key <- charToRaw(trimws(input$scopus_key))
@@ -1860,22 +2463,28 @@ server <- function(input, output, session) {
     # print(sha256(glens_env$privkey_dec))
     encrypted_scopus <- sodium::data_encrypt(raw_key, key=sha256(glens_env$privkey_dec))
     saveRDS(encrypted_scopus, file = file.path("keys","scopus.key"))
+    if(is_WASM){
+      session$sendCustomMessage("save_key_to_browser", list(platform = "scopus_key", key = raw_key))
+    }
     showNotification("Scopus Key Encrypted and Saved.", type = "message")
-    removeModal()
+    # removeModal()
   })
   observeEvent(input$save_wos, {
     # req(input$wos_key)
     if(is.null(input$wos_key) || stringi::stri_isempty(input$wos_key)){
       if(fs::file_exists(file.path("keys","wos.key")))
         fs::file_delete(file.path("keys","wos.key"))
-      removeModal()
+      # removeModal()
       return()
     }
     raw_key <- charToRaw(trimws(input$wos_key))
     encrypted_wos <- sodium::data_encrypt(raw_key, key=sha256(glens_env$privkey_dec))
     saveRDS(encrypted_wos, file = file.path("keys","wos.key"))
+    if(is_WASM){
+      session$sendCustomMessage("save_key_to_browser", list(platform = "wos_key", key = raw_key))
+    }
     showNotification("Web of Science Key Encrypted and Saved.", type = "message")
-    removeModal()
+    # removeModal()
   })
   observeEvent(input$save_semantic, {
     # fs::dir_create("keys")
@@ -1883,20 +2492,94 @@ server <- function(input, output, session) {
     if(is.null(input$semantic_key) || stringi::stri_isempty(input$semantic_key)){
       if(fs::file_exists(file.path("keys","semantic.key")))
         fs::file_delete(file.path("keys","semantic.key"))
-      removeModal()
+      # removeModal()
       return()
     }
     raw_key <- charToRaw(trimws(input$semantic_key))
     encrypted_semantic <- sodium::data_encrypt(raw_key, key=sha256(glens_env$privkey_dec))
     saveRDS(encrypted_semantic, file = file.path("keys","semantic.key"))
+    if(is_WASM){
+      session$sendCustomMessage("save_key_to_browser", list(platform = "semantic_key", key = raw_key))
+    }
     showNotification("Semantic Scholar Key Encrypted and Saved.", type = "message")
-    removeModal()
+    # removeModal()
+  })
+  observeEvent(input$save_crossref, {
+    # fs::dir_create("keys")
+    # req(input$semantic_key)
+    if(is.null(input$crossref_key) || stringi::stri_isempty(input$crossref_key)){
+      if(fs::file_exists(file.path("keys","crossref.key")))
+        fs::file_delete(file.path("keys","crossref.key"))
+      # removeModal()
+      return()
+    }
+    raw_key <- charToRaw(trimws(input$crossref_key))
+    encrypted_crossref <- sodium::data_encrypt(raw_key, key=sha256(glens_env$privkey_dec))
+    saveRDS(encrypted_crossref, file = file.path("keys","crossref.key"))
+    if(is_WASM){
+      session$sendCustomMessage("save_key_to_browser", list(platform = "crossref_key", key = raw_key))
+    }
+    showNotification("Crossref Key Encrypted and Saved.", type = "message")
+    # removeModal()
+  })
+  observeEvent(input$save_opencites, {
+    # fs::dir_create("keys")
+    # req(input$semantic_key)
+    if(is.null(input$opencites_key) || stringi::stri_isempty(input$opencites_key)){
+      if(fs::file_exists(file.path("keys","opencites.key")))
+        fs::file_delete(file.path("keys","opencites.key"))
+      # removeModal()
+      return()
+    }
+    raw_key <- charToRaw(trimws(input$opencites_key))
+    encrypted_opencites <- sodium::data_encrypt(raw_key, key=sha256(glens_env$privkey_dec))
+    saveRDS(encrypted_opencites, file = file.path("keys","opencites.key"))
+    if(is_WASM){
+      session$sendCustomMessage("save_key_to_browser", list(platform = "opencites_key", key = raw_key))
+    }
+    showNotification("OpenCitations Key Encrypted and Saved.", type = "message")
+    # removeModal()
   })
   
-  #Slider Event
-  observeEvent(c(input$selected_source, input$year_slider, input$author_list, input$author_logic_gate), {
-      req(rv$glens_etable_final, input$selected_source, input$year_slider, input$author_list)
+  observeEvent(input$cancel_button,{
+      message("Cancel signal received.")
+      if(fs::file_exists(file.path("run.lock"))){
+        fs::file_delete(file.path("run.lock"))
+      }
+      rv$is_cancelled <- TRUE
+      # Immediately hide the overlay and re-enable the UI
+      shinyjs::hide("sh_index")
+      shinyjs::hide("summary_table")
+      shinyjs::hide("acounts_plot")
+      shinyjs::hide("ccounts_plot")
+      shinyjs::hide("cdist_plot")
+      shinyjs::hide("aperc_plot")
+      shinyjs::hide("cperc_plot")
+      shinyjs::hide("network_filtered")
+      shinyjs::hide("network_full")
+      shinyjs::hide("extended_table")
+      shinyjs::hide(id="year_slider")
+      shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
+      shinyjs::enable(id = "submit_button")
+      # Update logs
+      rv$log_text <- paste(rv$log_text, paste0("Process cancelled by user.\n"),sep="\n")
       
+      removeModal()
+  })
+  
+  observeEvent(rv$glens_year_filtered, {
+    plot_glens_table(rv, session)
+  })
+  
+  #source selection, slider, author_list ,Slider Events
+  observeEvent(c(input$selected_source, input$year_slider, input$author_list, input$author_logic_gate), {
+  # observe({
+      req(rv$glens_etable_final, input$selected_source, input$year_slider, input$author_list)
+      # message(paste("(post)nrow(rv$glens_etable_final):",nrow(rv$glens_etable_final)))
+      # message(paste("(post)colnames(rv$glens_etable_final):",colnames(rv$glens_etable_final)))
+      # req("Source" %in% names(rv$glens_etable_final))
+      # req("Qscore" %in% names(rv$glens_etable_final))
+    
       if(isTRUE(is.null(input$author_logic_gate))){
         author_logic_gate <- "OR"
       }else{
@@ -1946,6 +2629,7 @@ server <- function(input, output, session) {
         shinyjs::hide("cdist_plot")
         shinyjs::hide("aperc_plot")
         shinyjs::hide("cperc_plot")
+        shinyjs::hide("network_filtered")
         shinyjs::hide("extended_table")
         shinyjs::enable(id="year_slider")
         return()
@@ -1955,7 +2639,7 @@ server <- function(input, output, session) {
       ), sep="\n")
       
       # output$log <- renderText({ rv$log_text })
-      print(paste("(Slider:", input$year_slider[1], "-", input$year_slider[2],")","Filtered years to range...", min(rv$glens_year_filtered$Year), "and",max(rv$glens_year_filtered$Year)))
+      # print(paste("(Slider:", input$year_slider[1], "-", input$year_slider[2],")","Filtered years to range...", min(rv$glens_year_filtered$Year), "and",max(rv$glens_year_filtered$Year)))
       # print(str(rv$glens_year_filtered$Year))
       
       raw_text <- input$author_list
@@ -2034,391 +2718,528 @@ server <- function(input, output, session) {
         )
       })
       
-      plot_glens_table(rv, output, session)
+      plot_glens_table(rv, session)
+      # plot_glens_table(rv, output, session)
+      # plot_glens_table()
       
       shinyjs::enable(id="year_slider")
   
   })
   
+  # observeEvent(input$cancel_button,{
+  #   rv$is_cancelled <- TRUE
+  #   message("HERE1")
+  #   
+  #   # Immediately hide the overlay and re-enable the UI
+  #   shinyjs::hide("sh_index")
+  #   shinyjs::hide("summary_table")
+  #   shinyjs::hide("acounts_plot")
+  #   shinyjs::hide("ccounts_plot")
+  #   shinyjs::hide("cdist_plot")
+  #   shinyjs::hide("aperc_plot")
+  #   shinyjs::hide("cperc_plot")
+  #   shinyjs::hide("network_filtered")
+  #   shinyjs::hide("network_full")
+  #   shinyjs::hide("extended_table")
+  #   shinyjs::hide(id="year_slider")
+  #   shinyjs::enable(id = "submit_button")
+  #   
+  #   # Update logs
+  #   rv$log_text <- paste(rv$log_text, paste0("Process cancelled by user.\n"),sep="\n")
+  #   removeModal()
+  # })
+  
   #Submit Button Event
   observeEvent(input$submit_button, {   # same as bindEvent(input$submit_button)
-    # basic input guard
-    rv$is_cancelled <- FALSE
-    rv$is_glens_exec <- T
-    rv$log_text <- ""
-    rv$glens_etable_final <- NULL
-    rv$glens_year_filtered <- NULL
-    # rv$scopus_df <- NULL
-    # rv$wos_df <- NULL
-    # rv$semantic_df <- NULL
-    
-    # Reset the UI Progress Bars to 0%
-    shinyWidgets::updateProgressBar(session, id = "prog_doi", value = 0, 
-                                    title = "DOI / ORCID Resolver: 0%", status = "info")
-    shinyWidgets::updateProgressBar(session, id = "prog_scopus", value = 0, 
-                                    title = "Scopus API: 0%", status = "info")
-    
-    # check_orcid_input <- F
-    # input_is_orcid <- F
-    if (is.null(input$author_list) || stringi::stri_isempty(input$author_list)) {
-      rv$log_text <- paste(rv$log_text, "Author list required.\n")
-      # #INPUT IS PROLLY ORCID
-      # check_orcid_input <- T
-      # output$log <- renderText({rv$log_text})
-      shinyjs::enable(id = "submit_button")
-      shinyjs::hide("progress_overlay")
-      rv$is_glens_exec <- F
-      req(input$author_list)
-      return()
-    }
-    
-    shinyjs::disable(id = "submit_button")
-    shinyjs::hide(id="year_slider")
-    shinyjs::show("progress_overlay")
-  
-    observeEvent(input$cancel_button, {
-      rv$is_cancelled <- TRUE
-      print("HERE1")
-      removeModal()
+      # basic input guard
+      rv$is_cancelled <- FALSE
+      rv$is_glens_exec <- T
+      rv$log_text <- ""
+      rv$glens_etable_final <- NULL
+      rv$glens_year_filtered <- NULL
+      # rv$scopus_df <- NULL
+      # rv$wos_df <- NULL
+      # rv$semantic_df <- NULL
       
-      # Immediately hide the overlay and re-enable the UI
-      shinyjs::hide("progress_overlay")
-      shinyjs::enable(id = "submit_button")
+      fs::file_create(file.path("run.lock"))
       
-      # Update logs
-      rv$log_text <- paste(rv$log_text, paste0("Process cancelled by user.\n"),sep="\n")
-      # output$log <- renderText({ rv$log_text })
-    })
+      # message(str(input$cancel_button))
       
-    if (is.null(input$doi_text) || stringi::stri_isempty(input$doi_text)) {
-      rv$log_text <- paste(rv$log_text, "No DOIs provided in Input.\n")
-      #INPUT IS PROLLY ORCID
-      # check_orcid_input <- T
-    }
-    orcid_list <- str_split(input$orcid_text, "\n")[[1]]
-    print(orcid_list)
-    # print(length(orcid_list))
-    # if(check_orcid_input){
-    if (is.null(input$orcid_text) || stringi::stri_isempty(input$orcid_text) || length(orcid_list) == 0) {
-      rv$log_text <- paste(rv$log_text, "Empty ORC-ID input.\n")
-      # output$log <- renderText({rv$log_text})
-      # shinyjs::enable(id = "submit_button")
-      # rv$is_glens_exec <- F
-      # return()
-    } 
-    #   input_is_orcid <- T
-    # }
-    
-    doi_lines <- c()
-    # print(orcid_list)
-    if(length(orcid_list) == 1 && stringi::stri_isempty(orcid_list)){
-      orcid_list<- list()
-    }
-    
-    # Ensure lists are clean and empty strings are removed
-    orcid_list <- orcid_list[trimws(orcid_list) != ""]
-    doi_lines <- doi_lines[trimws(doi_lines) != ""]
-    
-    # We use a reactiveValues object to safely track progress across all async streams on the main thread
-    progress_state <- reactiveValues(orcid_done = 0, doi_done = 0, scopus_done = 0, doi_found = 0)
-    
-    # ==============================================================================
-    # PHASE 1: ORCID -> DOI EXTRACTION (ASYNC)
-    # ==============================================================================
-    
-    if (length(orcid_list) > 0) {
-      rv$log_text <- paste(rv$log_text, sprintf("Processing %d ORC-ID(s)...\n", length(orcid_list)))
-      # output$log <- renderText({rv$log_text})
+      # Reset the UI Progress Bars to 0%
+      shinyWidgets::updateProgressBar(session, id = "prog_doi", value = 0, 
+                                      title = "DOI / ORCID Resolver: 0%", status = "info")
+      shinyWidgets::updateProgressBar(session, id = "prog_scopus", value = 0, 
+                                      title = "Scopus API: 0%", status = "info")
       
-      # Stream 1: Fetch all ORCIDs in parallel
-      orcid_promises <- lapply(orcid_list, function(orcid_str) {
-        future({
-          clean_orcid <- trimws(orcid_str)
-          if (length(strsplit(clean_orcid, "-")[[1]]) != 4) return(list(error = "Malformed ORCID"))
-          
-          target_url <- paste0("https://pub.orcid.org/v3.0/", clean_orcid, "/works")
-          
-          # Use base R connection to avoid httr2 serialization/timeout issues inside futures
-          res <- tryCatch({
-            con <- url(target_url, headers = c(Accept = "application/xml"))
-            lines <- readLines(con, warn = FALSE)
-            close(con)
-            paste(lines, collapse = "\n")
-          }, error = function(e) {
-            if (exists("con")) try(close(con), silent = TRUE)
-            return(e)
-          })
-          
-          if (inherits(res, "error")) return(list(error = conditionMessage(res)))
-          
-          # Parse XML safely inside the worker
-          xml_vec <- xml2::read_xml(res)
-          xml_vec_ns <- xml2::xml_ns(xml_vec)
-          xml_groups <- xml2::xml_find_all(xml_vec, ".//activities:group", xml_vec_ns)
-          
-          # Extract DOI details (assuming xtext is available)
-          orcid_df <- purrr::map_dfr(xml_groups, function(g) {
-            tibble::tibble(
-              source_name = xtext(g, ".//common:source-name", xml_vec_ns),
-              title = xtext(g, ".//common:title", xml_vec_ns),
-              external_id_value = xtext(g, ".//common:external-id-value", xml_vec_ns),
-              external_id_url = xtext(g, ".//common:external-id-url", xml_vec_ns),
-              last_modified_date = xtext(g, ".//common:last-modified-date", xml_vec_ns),
-              journal_title = xtext(g, ".//work:journal-title", xml_vec_ns),
-              work_type = xtext(g, ".//work:type", xml_vec_ns)
-            )
-          })
-          orcid_df$orcid <- clean_orcid
-          return(list(df = orcid_df, error = NULL))
-        }, globals = c("xtext", "orcid_str")) %...>% (function(res) {
-          # Resolves on main thread
-          if (rv$is_cancelled) return(NULL)
-          
-          progress_state$orcid_done <- progress_state$orcid_done + 1
-          if (!is.null(res$error)) {
-            rv$log_text <- paste(rv$log_text, "ORCID Error:", res$error, "\n")
-            # output$log <- renderText({rv$log_text})
-          }
-          return(res$df)
-        })
-      })
-      
-      master_orcid_promise <- promise_all(.list = orcid_promises)
-    } else {
-      # Fallback: if no ORCIDs were provided, resolve immediately to an empty list
-      master_orcid_promise <- promise_resolve(list())
-    }
-    
-    
-    # ==============================================================================
-    # PHASE 2: LAUNCH SCOPUS IMMEDIATELY (Doesn't wait for ORCID extraction)
-    # ==============================================================================
-    scopus_count <- length(orcid_list)
-    has_scopus_key <- fs::file_exists(file.path("keys","scopus.key"))
-    if (has_scopus_key) {
-      shinyjs::show("scopus_bar_container")
-      scopus_key_val <- trimws(rawToChar(sodium::data_decrypt(readRDS(file.path("keys","scopus.key")), key=openssl::sha256(glens_env$privkey_dec))))
-      rv$log_text <- paste(rv$log_text, "Found Scopus API key!.\n")
-    }else{
-      shinyjs::hide("scopus_bar_container")
-      rv$log_text <- paste(rv$log_text, "No Scopus key found. Skipping Scopus.\n")
-    }
-    
-    rv$log_text <- paste(rv$log_text, "Launching Scopus fetching in parallel...\n")
-    # output$log <- renderText({rv$log_text})
-    
-    # --- STREAM B: PARALLEL SCOPUS PROCESSING ---
-    scopus_promises <- lapply(seq_along(orcid_list), function(i) {
-      orcid_target <- orcid_list[i]
-      
-      # 1. Handle missing key gracefully & update progress bar
-      if (!has_scopus_key) {
-        progress_state$scopus_done <- progress_state$scopus_done + 1
-        pct <- round((progress_state$scopus_done / max(1, scopus_count)) * 100)
-        shinyWidgets::updateProgressBar(
-          session, id = "prog_scopus", value = progress_state$scopus_done, total = max(1, scopus_count),
-          title = sprintf("Scopus Skipped (No Key): %d%%", pct), status = "warning"
-        )
-        return(promise_resolve(NULL))
-      }
-      
-      # 2. Launch the Future Worker
-      future({
-        tryCatch({ 
-          get_complete_scopus_data(scopus_key_val, orcid_target) 
-        }, error = function(e) list(error = conditionMessage(e)))
-      }, 
-      globals = c("get_complete_scopus_data", "scopus_key_val", "orcid_target"),
-      packages = c("dplyr", "httr", "jsonlite", "tidyr", "purrr") 
-      ) %...>% (function(res) {
-        
-        if (rv$is_cancelled) return(NULL)
-        
-        # 3. INCREMENT PROGRESS BAR
-        progress_state$scopus_done <- progress_state$scopus_done + 1
-        pct <- round((progress_state$scopus_done / max(1, scopus_count)) * 100)
-        shinyWidgets::updateProgressBar(
-          session, id = "prog_scopus", value = progress_state$scopus_done, total = max(1, scopus_count),
-          title = sprintf("Scopus: %d%% (%d/%d)", pct, progress_state$scopus_done, scopus_count),
-          status = if(pct == 100) "success" else "info"
-        )
-        
-        # 4. Check error
-        if (is.list(res) && !is.null(res$error)) {
-          rv$log_text <- paste(rv$log_text, "\nScopus Error for", orcid_target, ":", res$error)
-          # output$log <- renderText({rv$log_text})
-          return(NULL)
-        }
-        
-        return(res) 
-      })
-    })
-    
-    # Wrap all Scopus promises into one master promise
-    master_scopus_promise <- promise_all(.list = scopus_promises)
-    
-    
-    # ==============================================================================
-    # PHASE 3: WAIT FOR ORCIDS -> THEN LAUNCH DOI
-    # ==============================================================================
-    # Notice we assign this to `master_doi_promise`
-    master_doi_promise <- master_orcid_promise %...>% (function(orcid_results) {
-      if (rv$is_cancelled) return(NULL)
-      
-      # 1. Combine DOIs extracted from ORCIDs with manually typed DOIs
-      extracted_orcid_dfs <- purrr::compact(orcid_results) 
-      if (length(extracted_orcid_dfs) > 0) {
-        orcid_combo <- dplyr::bind_rows(extracted_orcid_dfs)
-        missing_url <- is.na(orcid_combo$external_id_url)
-        orcid_combo[missing_url, "external_id_url"] <- orcid_combo[missing_url, "external_id_value"]
-        doi_lines <<- unique(c(doi_lines, orcid_combo$external_id_url))
-      }
-      
-      doi_lines <<- doi_lines[!is.na(doi_lines) & trimws(doi_lines) != ""]
-      doi_count <- length(doi_lines)
-      
-      rv$log_text <- paste(rv$log_text, sprintf("Extracted %d total DOIs. Launching DOIs...\n", doi_count))
-      # output$log <- renderText({rv$log_text})
-      
-      # --- STREAM A: PARALLEL DOI PROCESSING ---
-      doi_promises <- lapply(seq_along(doi_lines), function(i) {
-        doi_target <- doi_lines[i]
-        future({
-          tryCatch({ doi2gscholarlens(doi_target) }, error = function(e) NULL)
-        }) %...>% (function(res_df) {
-          if (rv$is_cancelled) return(NULL)
-          
-          progress_state$doi_done <- progress_state$doi_done + 1
-          pct <- round((progress_state$doi_done / max(1, doi_count)) * 100)
-          
-          shinyWidgets::updateProgressBar(
-            session, id = "prog_doi", value = progress_state$doi_done, total = max(1, doi_count),
-            title = sprintf("DOI: %d%% (%d/%d)", pct, progress_state$doi_done, doi_count),
-            status = if(pct == 100) "success" else "warning"
-          )
-          return(res_df)
-        })
-      })
-      
-      # RETURN the resolved DOI promises to `master_doi_promise`
-      return(promise_all(.list = doi_promises))
-    })
-    
-    promise_all(
-      dois = master_doi_promise,
-      scopus = master_scopus_promise
-    ) %...>% (function(results) {
-      if (rv$is_cancelled) return(NULL)
-      
-      # Merge DOIs
-      accumulated_df <- dplyr::bind_rows(purrr::compact(results$dois))
-      if (nrow(accumulated_df) > 0) accumulated_df <- accumulated_df %>% dplyr::distinct() %>% dplyr::mutate(Source = "DOI/ORCID")
-      
-      # Merge Scopus
-      rv$scopus_df <- dplyr::bind_rows(purrr::compact(results$scopus))
-      if (nrow(rv$scopus_df) > 0) rv$scopus_df <- rv$scopus_df %>% dplyr::distinct() %>% dplyr::mutate(Source = "SCOPUS")
-      
-      # Final Table
-      rv$glens_input_table <- dplyr::bind_rows(accumulated_df, rv$scopus_df)
-      
-      rv$log_text <- paste(rv$log_text, sprintf("\nDone. Found %d total records.\n", nrow(rv$glens_input_table)))
-      # output$log <- renderText(rv$log_text)
-      
-      output$dynamic_source_ui <- renderUI({
-        req(rv$glens_input_table)
-        available_sources <- levels(factor(rv$glens_input_table$Source))
-        if (length(available_sources) == 0) return(p("No sources identified yet.", style = "color: #888;"))
-        radioButtons("selected_source", label = NULL, choices = available_sources, selected = available_sources[1], inline = FALSE)
-      })
-      
-      # --- SCRIPTS 2 & 3: STATS & PLOTTING ---
-      target_variants <- stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n")))
-      target_variants <- target_variants[target_variants != ""]
-      
-      rv$target_variants_norm <- lapply(setNames(target_variants, target_variants), function(v) {
-        vn <- normalize_name(v)
-        list(norm = vn, parts = extract_parts(vn))
-      })
-      rv$author_match_regex <- build_name_regex_for_variants(target_variants)
-      
-      extend_input_table(rv)
-      rv$glens_year_filtered <- rv$glens_etable_final
-      
-      if (nrow(rv$glens_year_filtered) <= 0) {
-        output$log <- renderText(paste(rv$log, "No names were matched.",sep="\n"))
-        shinyjs::enable("submit_button")
+      # check_orcid_input <- F
+      # input_is_orcid <- F
+      if (is.null(input$author_list) || stringi::stri_isempty(input$author_list)) {
+        rv$log_text <- paste(rv$log_text, "Author list required.\n")
+        # #INPUT IS PROLLY ORCID
+        # check_orcid_input <- T
+        # output$log <- renderText({rv$log_text})
+        shinyjs::enable(id = "submit_button")
         shinyjs::hide("progress_overlay")
+        rv$is_glens_exec <- F
+        req(input$author_list)
         return()
       }
       
-      compute_indices(rv)
-      
-      output$summary_table <- renderTable(rv$summary_table, striped = TRUE)
-      output$sh_index <- renderUI(HTML(paste("<b>Sh-Index:</b>", rv$sh_index)))
-      output$extended_table <- DT::renderDataTable({
-        DT::datatable(rv$glens_year_filtered, options = list(scrollY = "600px", scrollX = TRUE, paging = TRUE))
-      })
-      
-      print(str(jcr_names_norm))
-      # 1. Match Journals and create Qscore FIRST
-      match_journals(rv)
-      print("HERE7")
-      print(str(rv$glens_etable_final))
-      print(str(rv$glens_year_filtered))
-      
-      rv$glens_year_filtered <- rv$glens_etable_final
-      
-      # 2. Update the Slider SECOND (now it's safe to trigger observers)
-      min_year <- min(as.numeric(rv$glens_year_filtered$Year), na.rm = TRUE)
-      max_year <- max(as.numeric(rv$glens_year_filtered$Year), na.rm = TRUE)
-      if (is.finite(min_year) && is.finite(max_year)) {
-        updateSliderInput(session, "year_slider", value = c(min_year, max_year), min = min_year, max = max_year)
-        shinyjs::show("year_slider")
+      shinyjs::disable(id = "submit_button")
+      shinyjs::hide(id="year_slider")
+      shinyjs::show("progress_overlay")
+        
+      if (is.null(input$doi_text) || stringi::stri_isempty(input$doi_text)) {
+        rv$log_text <- paste(rv$log_text, "No DOIs provided in Input.\n")
+        
+        #INPUT IS PROLLY ORCID
+        # check_orcid_input <- T
       }
-      print("HERE8")
-      # 3. Render the initial plots
-      render_skeleton_plots(rv, output)
-      plot_glens_table(rv, output, session)
+      orcid_list <- str_split(input$orcid_text, "\n")[[1]]
+      print(orcid_list)
+      # print(length(orcid_list))
+      # if(check_orcid_input){
+      if (is.null(input$orcid_text) || stringi::stri_isempty(input$orcid_text) || length(orcid_list) == 0) {
+        rv$log_text <- paste(rv$log_text, "Empty ORC-ID input.\n")
+        
+        # output$log <- renderText({rv$log_text})
+        # shinyjs::enable(id = "submit_button")
+        # rv$is_glens_exec <- F
+        # return()
+      } 
+      #   input_is_orcid <- T
+      # }
       
-      # Render Full Data Network
-      output$network_full <- renderVisNetwork({
-        req(rv$glens_etable_final) # Ensure data exists
+      doi_lines <- c()
+      # print(orcid_list)
+      if(length(orcid_list) == 1 && stringi::stri_isempty(orcid_list)){
+        orcid_list<- list()
+      }
+      
+      # Ensure lists are clean and empty strings are removed
+      orcid_list <- orcid_list[trimws(orcid_list) != ""]
+      doi_lines <- doi_lines[trimws(doi_lines) != ""]
+      
+      # We use a reactiveValues object to safely track progress across all async streams on the main thread
+      progress_state <- reactiveValues(orcid_done = 0, doi_done = 0, scopus_done = 0, doi_found = 0)
+      
+      # --- 1. SCOPUS ---
+      if (!is.null(glens_env$scopus_key) && glens_env$scopus_key != "") {
+        rv$log_text <- paste(rv$log_text, "Found Scopus API key!\n")
+        has_scopus <- T
+      } else {
+        rv$log_text <- paste(rv$log_text, "No Scopus key found. Skipping Scopus.\n")
+        has_scopus <- F
+      }
+      # --- 2. Web of Science ---
+      if (!is.null(glens_env$wos_key) && glens_env$wos_key != "") {
+        rv$log_text <- paste(rv$log_text, "Found Web of Science API key!\n")
+        has_wos <- T
+      } else {
+        rv$log_text <- paste(rv$log_text, "No WoS key found. Skipping WoS.\n")
+        has_wos <- F
+      }
+      # --- 3. Semantic Scholar ---
+      if (!is.null(glens_env$semantic_key) && glens_env$semantic_key != "") {
+        rv$log_text <- paste(rv$log_text, "Found Semantic Scholar API key!\n")
+        has_semantic <- T
+      } else {
+        rv$log_text <- paste(rv$log_text, "No Semantic Scholar key found. Skipping Semantic Scholar.\n")
+        has_semantic <- F
+      }
+      # --- 4. Crossref ---
+      if (!is.null(glens_env$crossref_key) && glens_env$crossref_key != "") {
+        rv$log_text <- paste(rv$log_text, "Found Crossref API key!\n")
+        have_crossref <- T
+      } else {
+        rv$log_text <- paste(rv$log_text, "No Crossref key found.\n")
+        have_crossref <- F
+      }
+      # --- 5. OpenCitations ---
+      if (!is.null(glens_env$opencites_key) && glens_env$opencites_key != "") {
+        rv$log_text <- paste(rv$log_text, "Found OpenCitations API key!\n")
+        have_opencites <- T
+      } else {
+        rv$log_text <- paste(rv$log_text, "No OpenCitations key found.\n")
+        have_opencites <- F
+      }
+      
+      # ==============================================================================
+      # PHASE 1: ORCID -> DOI EXTRACTION (ASYNC)
+      # ==============================================================================
+      
+      if (length(orcid_list) > 0) {
+        rv$log_text <- paste(rv$log_text, sprintf("\nProcessing %d ORC-ID(s)...\n", length(orcid_list)))
         
-        net_data <- build_collaboration_network(rv$glens_etable_final, rv$author_list)
+        # output$log <- renderText({rv$log_text})
         
-        visNetwork(net_data$nodes, net_data$edges, width = "100%", height = "500px") %>%
-          visNodes(font = list(size = 14)) %>%
-          visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = TRUE) %>%
-          # Add physics for a nice floating layout
-          # visPhysics(solver = "forceAtlas2Based", forceAtlas2Based = list(gravitationalConstant = -50)) %>%
-          # visPhysics(
-          #   solver = "barnesHut", 
-          #   barnesHut = list(
-          #     gravitationalConstant = -2000, 
-          #     springConstant = 0.04, # Stiffer springs respect 'length' better
-          #     avoidOverlap = 0.1     # Prevents nodes from perfectly stacking
-          #   ),
-          #   stabilization = list(enabled = TRUE, iterations = 200)
-          # ) %>%
-          #IgraphLayout overrides physics and is fast
-          visIgraphLayout(layout = "layout_with_fr") %>%
-          visOptions(highlightNearest = list(enabled = TRUE, degree = 1), nodesIdSelection = TRUE) %>%
-          # visLegend() %>%
-          addFontAwesome() # CRITICAL: This is required to render the user icons!
+        # Stream 1: Fetch all ORCIDs in parallel
+        orcid_promises <- lapply(orcid_list, function(orcid_str) {
+          clean_orcid <- trimws(orcid_str)
+          
+          # 1. MAIN THREAD: Safe to update Shiny reactives here, BEFORE the future starts
+          if (length(strsplit(clean_orcid, "-")[[1]]) == 4) {
+            rv$log_text <- paste(rv$log_text, "Working on ORCID:", clean_orcid, sep="\n")
+          }
+          
+          future({
+            # --- INSIDE FUTURE: Pure R only. NO `rv`, NO `session`, NO `input`! ---
+            if (length(strsplit(clean_orcid, "-")[[1]]) != 4) return(list(error = "Malformed ORCID"))
+            
+            target_url <- paste0("https://pub.orcid.org/v3.0/", clean_orcid, "/works")
+            
+            # Use base R connection
+            res <- tryCatch({
+              con <- url(target_url, headers = c(Accept = "application/xml"))
+              lines <- readLines(con, warn = FALSE)
+              close(con)
+              paste(lines, collapse = "\n")
+            }, error = function(e) {
+              if (exists("con")) try(close(con), silent = TRUE)
+              return(e)
+            })
+            
+            if (inherits(res, "error")) return(list(error = conditionMessage(res)))
+            
+            # Parse XML 
+            xml_vec <- xml2::read_xml(res)
+            xml_vec_ns <- xml2::xml_ns(xml_vec)
+            xml_groups <- xml2::xml_find_all(xml_vec, ".//activities:group", xml_vec_ns)
+            
+            # Extract DOI details
+            orcid_df <- purrr::map_dfr(xml_groups, function(g) {
+              tibble::tibble(
+                source_name = xtext(g, ".//common:source-name", xml_vec_ns),
+                title = xtext(g, ".//common:title", xml_vec_ns),
+                external_id_value = xtext(g, ".//common:external-id-value", xml_vec_ns),
+                external_id_url = xtext(g, ".//common:external-id-url", xml_vec_ns),
+                last_modified_date = xtext(g, ".//common:last-modified-date", xml_vec_ns),
+                journal_title = xtext(g, ".//work:journal-title", xml_vec_ns),
+                work_type = xtext(g, ".//work:type", xml_vec_ns),
+                orcid <- clean_orcid
+              )
+            })
+            
+            return(list(df = orcid_df, error = NULL))
+            
+            # Note: I removed 'rv', 'progress_state', and 'print_log' from globals because they shouldn't be here
+          }, globals = c("xtext", "clean_orcid"), seed = TRUE) %...>% (function(res) {
+            
+            # --- BACK ON MAIN THREAD: Safe to touch Shiny UI and reactives again ---
+            if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+            
+            orcid_count <- length(orcid_list)
+            progress_state$orcid_done <- progress_state$orcid_done + 1 
+            pct <- round(( progress_state$orcid_done / max(1, orcid_count) ) * 100)
+            
+            # FIXED: Replaced scopus_count with orcid_count, and updated the title
+            shinyWidgets::updateProgressBar(
+              session, 
+              id = "prog_doi", 
+              value = progress_state$orcid_done, 
+              total = max(1, orcid_count),
+              title = sprintf("Processing ORCID: %d%%", pct), 
+              status = "info"
+            )
+            
+            if (!is.null(res$error)) {
+              rv$log_text <- paste(rv$log_text, "ORCID Error:", res$error, "\n")
+              return(NULL)
+            } 
+            
+            return(res$df)
+            
+          }) %...!% (function(err) {
+            # If the future itself crashes, log it safely on the main thread
+            warning(paste("ORCID Error:", err))
+            rv$log_text <- paste(rv$log_text, "System Error during ORCID fetch:", err, "\n")
+          })
+        })
+        
+        master_orcid_promise <- promise_all(.list = orcid_promises)
+      } else {
+        # Fallback: if no ORCIDs were provided, resolve immediately to an empty list
+        master_orcid_promise <- promise_resolve(list())
+      }
+      
+      
+      # ==============================================================================
+      # PHASE 2: LAUNCH SCOPUS IMMEDIATELY (Doesn't wait for ORCID extraction)
+      # ==============================================================================
+      scopus_count <- length(orcid_list)
+      
+      # rv$log_text <- paste(rv$log_text, "Launching Scopus fetching in parallel...\n")
+      # output$log <- renderText({rv$log_text})
+      
+      # --- STREAM B: PARALLEL SCOPUS PROCESSING ---
+      scopus_promises <- lapply(seq_along(orcid_list), function(i) {
+        
+          orcid_target <- orcid_list[i]
+          
+          # 1. Handle missing key gracefully & update progress bar
+          if (!has_scopus) {
+            progress_state$scopus_done <- progress_state$scopus_done + 1 
+            pct <- round(( progress_state$scopus_done / max(1, scopus_count) ) * 100)
+            shinyWidgets::updateProgressBar(
+              session, id = "prog_scopus", value = progress_state$scopus_done , total = max(1, scopus_count),
+              title = sprintf("Scopus Skipped (No Key): %d%%", pct), status = "warning"
+            )
+            return(promise_resolve(NULL))
+          }
+          
+          # 2. Launch the Future Worker
+          future({
+            tryCatch({ 
+              # if (rv$is_cancelled) return(NULL)
+              if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+              # INCREMENT PROGRESS BAR
+              prog_scopus_reactive <- reactive({ progress_state$scopus_done + 1 })
+              # progress_state$scopus_done <- progress_state$scopus_done + 1
+              pct <- round(( isolate(prog_scopus_reactive()) / max(1, scopus_count) ) * 100)
+              shinyWidgets::updateProgressBar(
+                session, id = "prog_scopus", value = isolate(prog_scopus_reactive()), total = max(1, scopus_count),
+                title = sprintf("Scopus: %d%% (%d/%d)", pct, isolate(prog_scopus_reactive()) , scopus_count),
+                status = if(pct == 100) "success" else "info"
+              )
+              progress_state$scopus_done <- isolate(prog_scopus_reactive())
+              return(get_complete_scopus_data(orcid_target, rv, glens_env$scopus_key))
+              
+            }, error = function(e) message("ERROR (get_complete_scopus_data()):",str(e),e))
+          }, 
+          globals = c("get_complete_scopus_data", "scopus_count", "glens_env", "orcid_target", "rv", "session", "progress_state", "print_log"),
+          packages = c("shinyWidgets","dplyr", "httr2", "jsonlite", "tidyr", "purrr", "shiny"), seed = TRUE 
+          ) %...>% (function(res) {
+            # if (rv$is_cancelled) return(NULL)
+            if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+            return(res) 
+          }) %...!% (function(res) {
+            # if (rv$is_cancelled) return(NULL)
+            if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+            progress_state$scopus_done <- progress_state$scopus_done + 1 
+            shinyWidgets::updateProgressBar(session, id = "prog_scopus", value =  progress_state$scopus_done , status = "danger", title = "Process Failed!")
+            # output$log <- renderText(sprintf("Failed in SCOPUS Processing: %s", conditionMessage(err)))
+            warning("Failed SCOPUS Processing:", err)
+            shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
+            shinyjs::enable("submit_button")
+            if (is.list(res) && !is.null(res$error)) {
+              rv$log_text <- paste(rv$log_text, "\nScopus Error for", orcid_target, ":", res$error)
+              
+              # output$log <- renderText({rv$log_text})
+              return(NULL)
+            }
+          })
+        
       })
       
-      rv$is_glens_exec <- FALSE   
-      shinyjs::delay(1500, shinyjs::hide("progress_overlay"))
-      shinyjs::enable("submit_button")
+      # Wrap all Scopus promises into one master promise
+      master_scopus_promise <- promise_all(.list = scopus_promises)
       
-    }) %...!% (function(err) {
-      if (rv$is_cancelled) return(NULL)
-      shinyWidgets::updateProgressBar(session, id = "prog_doi", value = 100, status = "danger", title = "Process Failed!")
-      output$log <- renderText(sprintf("Failed in DOI/Scopus Processing: %s", conditionMessage(err)))
-      shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
-      shinyjs::enable("submit_button")
-    })
-    
+      
+      # ==============================================================================
+      # PHASE 3: WAIT FOR ORCIDS -> THEN LAUNCH DOI
+      # ==============================================================================
+      # Notice we assign this to `master_doi_promise`
+      master_doi_promise <- master_orcid_promise %...>% (function(orcid_results) {
+        # if (rv$is_cancelled) return(NULL)
+        if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+        print(paste("orcid_results: ", colnames(orcid_results),collapse=","))
+        doi_lines <- c()
+        # 1. Combine DOIs extracted from ORCIDs with manually typed DOIs
+        extracted_orcid_dfs <- purrr::compact(orcid_results) 
+        if (length(extracted_orcid_dfs) > 0) {
+          orcid_combo <- dplyr::bind_rows(extracted_orcid_dfs)
+          missing_url <- is.na(orcid_combo$external_id_url)
+          orcid_combo[missing_url, "external_id_url"] <- orcid_combo[missing_url, "external_id_value"]
+          doi_lines <- unique(c(doi_lines, orcid_combo$external_id_url))
+        }
+        print(paste("orcid_combo: ",colnames(orcid_combo),collapse=","))
+        doi_lines <- doi_lines[!is.na(doi_lines) & trimws(doi_lines) != ""]
+        doi_count <- length(doi_lines)
+        message(paste("DOI COUNT:", doi_count))
+        rv$log_text <- paste(rv$log_text, sprintf("\nExtracted %d total DOIs. Launching DOIs...\n", doi_count))
+        
+        # output$log <- renderText({rv$log_text})
+        
+        # --- STREAM A: PARALLEL DOI PROCESSING ---
+        doi_promises <- lapply(seq_along(doi_lines), function(i) {
+          doi_target <- doi_lines[i]
+            future({
+              tryCatch({ 
+                  # if (rv$is_cancelled) return(NULL)
+                  if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+                  ret_df <- doi2gscholarlens(doi_target, rv) 
+                  prog_doi_reactive <- reactive({ progress_state$doi_done + 1 })
+                  # progress_state$scopus_done <- progress_state$scopus_done + 1
+                  pct <- round(( isolate(prog_doi_reactive()) / max(1, doi_count) ) * 100 )
+                  shinyWidgets::updateProgressBar(
+                    session, id = "prog_doi", value = isolate(prog_doi_reactive()), total = max(1, doi_count),
+                    title = sprintf("DOI: %d%% (%d/%d)", pct, isolate(prog_doi_reactive()), doi_count),
+                    status = if(pct == 100) "success" else "warning"
+                  )
+                  progress_state$doi_done <- isolate(prog_doi_reactive())
+                  return(ret_df)
+                }, error = function(e){ 
+                  message(paste("ERROR (doi2gscholarlens()):", e))
+                  warning(traceback()) })
+            }, globals = c("glens_env", "doi_target", "doi2gscholarlens", "rv", "doi_count", "session", "progress_state"), packages = c("shinyWidgets", "stringi", "dplyr", "shiny"), seed = TRUE) %...>% (function(res_df) {
+              # if (rv$is_cancelled) return(NULL)
+              if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+              return(res_df)
+            }) %...!% (function(err) {
+                # if (rv$is_cancelled) return(NULL)
+                if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+                progress_state$doi_done <- progress_state$doi_done + 1 
+                shinyWidgets::updateProgressBar(session, id = "prog_doi", value = progress_state$doi_done , status = "danger", title = "Process Failed!")
+                # output$log <- renderText(sprintf("Failed in DOI Processing: %s", conditionMessage(err)))
+                rv$log_text <- paste(rv$log_text, sprintf("\nFailed in DOI Processing: %s", conditionMessage(err)),sep="\n")
+                warning(paste("Failed in DOI Processing:", err))
+                message(traceback())
+                shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
+                shinyjs::enable("submit_button")
+              })
+          
+        })
+          
+        # RETURN the resolved DOI promises to `master_doi_promise`
+        return(promise_all(.list = doi_promises))
+      })
+      
+      promise_all(
+        dois = master_doi_promise,
+        scopus = master_scopus_promise
+      ) %...>% (function(results) {
+        # if (rv$is_cancelled) return(NULL)
+        if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+        print("DOI:")
+        # print(str(results$dois[[1]]))
+        print(class(results$dois[[8]]))
+        print(str(results$dois[[8]]))
+        print(results$dois[[8]])
+        # Merge DOIs
+        # Merge DOIs safely
+        valid_dois <- Filter(is.data.frame, results$dois)
+        accumulated_df <- dplyr::bind_rows(valid_dois)
+        if (nrow(accumulated_df) > 0) accumulated_df <- accumulated_df %>% dplyr::distinct() %>% dplyr::mutate(Source = "DOI/ORCID")
+        
+        print("SCOPUS:")
+        print(str(results$scopus))
+        print(results$scopus[[1]])
+        # Merge Scopus
+        rv$scopus_df <- dplyr::bind_rows(purrr::compact(Filter(is.data.frame, results$scopus)))
+        if (nrow(rv$scopus_df) > 0) rv$scopus_df <- rv$scopus_df %>% dplyr::distinct() %>% dplyr::mutate(Source = "SCOPUS")
+        print("BIND ROWS:")
+        # Final Table
+        rv$glens_input_table <- dplyr::bind_rows(accumulated_df, rv$scopus_df)
+        print("BUILT INPUT TABLE:")
+        message(paste("(pre)nrow(rv$glens_input_table):",nrow(rv$glens_input_table)))
+        message(paste("(pre)colnames(rv$glens_input_table):",colnames(rv$glens_input_table)))
+        rv$log_text <- paste(rv$log_text, sprintf("\nDone. Found %d total records.\n", nrow(rv$glens_input_table)))
+        # output$log <- renderText(rv$log_text)
+        
+        # message(colnames(rv$glens_input_table))
+        # message(nrow(rv$glens_input_table))
+        
+        output$dynamic_source_ui <- renderUI({
+          req(rv$glens_input_table)
+          available_sources <- levels(factor(rv$glens_input_table$Source))
+          if (length(available_sources) == 0) return(p("No sources identified yet.", style = "color: #888;"))
+          radioButtons("selected_source", label = NULL, choices = available_sources, selected = available_sources[1], inline = FALSE)
+        })
+        
+        # --- SCRIPTS 2 & 3: STATS & PLOTTING ---
+        target_variants <- stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n")))
+        target_variants <- target_variants[target_variants != ""]
+        
+        rv$target_variants_norm <- lapply(setNames(target_variants, target_variants), function(v) {
+          vn <- normalize_name(v)
+          list(norm = vn, parts = extract_parts(vn))
+        })
+        rv$author_match_regex <- build_name_regex_for_variants(target_variants)
+        
+        extend_input_table(rv)
+        rv$glens_year_filtered <- rv$glens_etable_final
+        
+        if (nrow(rv$glens_year_filtered) <= 0) {
+          # output$log <- renderText(paste(rv$log, "No names were matched.",sep="\n"))
+          rv$log_text <- paste(rv$log_text, "No names were matched.",sep="\n")
+          shinyjs::enable("submit_button")
+          shinyjs::hide("progress_overlay")
+          return()
+        }
+        
+        compute_indices(rv)
+        
+        output$summary_table <- renderTable(rv$summary_table, striped = TRUE)
+        output$sh_index <- renderUI(HTML(paste("<b>Sh-Index:</b>", rv$sh_index)))
+        output$extended_table <- DT::renderDataTable({
+          DT::datatable(rv$glens_year_filtered, options = list(scrollY = "600px", scrollX = TRUE, paging = TRUE))
+        })
+        
+        print(str(jcr_names_norm))
+        # 1. Match Journals and create Qscore FIRST
+        match_journals(rv)
+        print("HERE7")
+        print(str(rv$glens_etable_final))
+        print(str(rv$glens_year_filtered))
+        
+        rv$glens_year_filtered <- rv$glens_etable_final
+        
+        # 2. Update the Slider SECOND (now it's safe to trigger observers)
+        min_year <- min(as.numeric(rv$glens_year_filtered$Year), na.rm = TRUE)
+        max_year <- max(as.numeric(rv$glens_year_filtered$Year), na.rm = TRUE)
+        if (is.finite(min_year) && is.finite(max_year)) {
+          updateSliderInput(session, "year_slider", value = c(min_year, max_year), min = min_year, max = max_year)
+          shinyjs::show("year_slider")
+        }
+        print("HERE8")
+        # 3. Render the initial plots
+        render_skeleton_plots(rv, output)
+        plot_glens_table(rv, session)
+        # plot_glens_table(rv, output, session)
+        # plot_glens_table()
+        
+        # Render Full Data Network
+        output$network_full <- renderVisNetwork({
+          req(rv$glens_etable_final) # Ensure data exists
+          
+          net_data <- build_collaboration_network(rv$glens_etable_final, rv$author_list)
+          
+          visNetwork(net_data$nodes, net_data$edges, width = "100%", height = "500px") %>%
+            visNodes(font = list(size = 14)) %>%
+            visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = TRUE) %>%
+            # Add physics for a nice floating layout
+            # visPhysics(solver = "forceAtlas2Based", forceAtlas2Based = list(gravitationalConstant = -50)) %>%
+            # visPhysics(
+            #   solver = "barnesHut", 
+            #   barnesHut = list(
+            #     gravitationalConstant = -2000, 
+            #     springConstant = 0.04, # Stiffer springs respect 'length' better
+            #     avoidOverlap = 0.1     # Prevents nodes from perfectly stacking
+            #   ),
+            #   stabilization = list(enabled = TRUE, iterations = 200)
+            # ) %>%
+            #IgraphLayout overrides physics and is fast
+            visIgraphLayout(layout = "layout_with_fr") %>%
+            visOptions(highlightNearest = list(enabled = TRUE, degree = 1), nodesIdSelection = TRUE) %>%
+            # visLegend() %>%
+            addFontAwesome() 
+        })
+        shinyjs::show("network_full")
+        
+        fs::file_delete(file.path("run.lock"))
+        rv$is_cancelled <- FALSE
+        rv$is_glens_exec <- FALSE   
+        shinyjs::delay(1500, shinyjs::hide("progress_overlay"))
+        shinyjs::enable("submit_button")
+        
+      }) %...!% (function(err) {
+        # if (rv$is_cancelled) return(NULL)
+        if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+        shinyWidgets::updateProgressBar(session, id = "prog_doi", value = 100, status = "danger", title = "Process Failed!")
+        # output$log <- renderText(sprintf("(Master) Failed in DOI/Scopus Processing: %s", conditionMessage(err)))
+        rv$log_text <- paste(rv$log_text, sprintf("\n(Master) Failed in DOI/Scopus Processing: %s", conditionMessage(err)),sep="\n")
+        shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
+        shinyjs::enable("submit_button")
+      })
   }) #observeEVENT(submit_button)
-  
-}
+} #server end

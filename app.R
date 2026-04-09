@@ -25,12 +25,14 @@ suppressPackageStartupMessages(require(xfun))
 suppressPackageStartupMessages(require(readxl))
 suppressPackageStartupMessages(require(tools))
 suppressPackageStartupMessages(require(utils))
+suppressPackageStartupMessages(require(future.callr))
 
 is_WASM <- grepl(pattern="wasm",x=Sys.info()["machine"])
 # # use a multisession plan so futures run in background R sessions
 # if(!is_WASM){
-  future::plan(future::multisession)
-# future::plan(future::multicore)
+  # future::plan(future::multisession)
+# future::plan(future.callr::callr)
+future::plan(future::multicore)
 # }else{
 #   future::plan(future::sequential)
 # }

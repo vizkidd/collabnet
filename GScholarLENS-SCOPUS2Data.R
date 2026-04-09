@@ -10,7 +10,7 @@ suppressPackageStartupMessages(require(dplyr))
 suppressPackageStartupMessages(require(purrr))
 suppressPackageStartupMessages(require(stringr))
 
-get_complete_scopus_data <- function(api_key = NULL, orcid) {
+get_complete_scopus_data <- function(orcid, rv, api_key = NULL) {
   if(is.null(api_key) || trimws(api_key) == ""){
     stop("SCOPUS API Key is missing.")
   }
@@ -31,6 +31,8 @@ get_complete_scopus_data <- function(api_key = NULL, orcid) {
   total_results <- NA
   print("HERE13")
   repeat {
+    # if (rv$is_cancelled) return(NULL)
+    if(!fs::file_exists(file.path("run.lock"))) return(NULL)
     status <- 200
     pubs_raw <- NULL
     err_body <- ""

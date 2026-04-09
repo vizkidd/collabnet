@@ -1,4 +1,5 @@
 suppressPackageStartupMessages(require(httr))
+suppressPackageStartupMessages(require(httr2))
 suppressPackageStartupMessages(require(jsonlite))
 suppressPackageStartupMessages(require(stringi))
 suppressPackageStartupMessages(require(dplyr))
@@ -7,8 +8,9 @@ suppressPackageStartupMessages(require(openxlsx))
 is_WASM <- grepl(pattern="wasm",x=Sys.info()["machine"])
 # use a multisession plan so futures run in background R sessions
 # if(!is_WASM){
-  future::plan(future::multisession)
-# future::plan(future::multicore)
+  # future::plan(future::multisession)
+# future::plan(future.callr::callr)
+future::plan(future::multicore)
 # }else{
 #   future::plan(future::sequential)
 # }
@@ -109,13 +111,18 @@ safe_fetch_with_backoff <- function(url, req_headers = NULL, max_retries = 3) {
   wait_time <- 2 
   
   # OPTIMIZATION 1: Hoist header creation outside the loop (Local R)
-  # No need to rebuild the httr objects 3 times if we are retrying.
   if (!is_WASM) {
-    hdrs <- httr::add_headers()
-    if (!is.null(req_headers)) {
-      hdrs <- do.call(httr::add_headers, as.list(req_headers))
+    # 1. Initialize the httr2 request
+    req <- httr2::request(url) |> 
+      httr2::req_user_agent("R (httr2)") |> 
+      # PREVENT httr2 from throwing an R error on 4xx/5xx so we can read the status manually
+      httr2::req_error(is_error = ~ FALSE) 
+    
+    # 2. Add headers if they exist
+    if (!is.null(req_headers) && length(req_headers) > 0) {
+      # httr2::req_headers uses tidy evaluation, so we splice the list with !!!
+      req <- httr2::req_headers(req, !!!req_headers)
     }
-    ua <- httr::user_agent("R (httr)")
   }
   
   for (i in 1:max_retries) {
@@ -127,14 +134,19 @@ safe_fetch_with_backoff <- function(url, req_headers = NULL, max_retries = 3) {
       con <- NULL 
       tryCatch({
         con <- url(url, headers = req_headers)
-        # paste0 is slightly faster than paste
         txt <- paste0(readLines(con, warn = FALSE), collapse = "\n")
         success <- TRUE
       }, error = function(e) {
-        # OPTIMIZATION 2: WebR throws the HTTP status in the error string.
-        # If it's a client error (e.g., 404 Not Found, 400 Bad Request), DO NOT RETRY.
+        # Fetch the error string
         err_msg <- conditionMessage(e)
-        if (grepl("400|401|403|404", err_msg)) {
+        message(paste("ERROR:",str(e),e,err_msg))
+        # OPTIMIZATION 2: WebR throws the HTTP status in the error string.
+        # If it's a rate limit, just let the loop continue and backoff
+        if (grepl("429", err_msg)) {
+          fatal_error <<- FALSE
+        } 
+        # If it's a true client error (Not Found, Bad Request), kill it
+        else if (grepl("400|401|403|404", err_msg)) {
           fatal_error <<- TRUE
         }
       }, finally = {
@@ -144,16 +156,19 @@ safe_fetch_with_backoff <- function(url, req_headers = NULL, max_retries = 3) {
       })
       
     } else {
-      # Standard local R (httr)
-      res <- tryCatch(httr::GET(url, hdrs, ua), error = function(e) NULL)
+      # Standard local R (httr2)
+      res <- tryCatch(httr2::req_perform(req), error = function(e) NULL)
       
       if (!is.null(res)) {
-        status <- httr::status_code(res)
+        status <- httr2::resp_status(res)
+        
         if (status == 200) {
-          txt <- httr::content(res, as = "text", encoding = "UTF-8")
+          # httr2 safely extracts text body
+          txt <- httr2::resp_body_string(res) 
           success <- TRUE
         } else if (status == 429) {
-          retry_header <- httr::headers(res)[["retry-after"]]
+          # Extract retry header in httr2
+          retry_header <- httr2::resp_header(res, "retry-after")
           if (!is.null(retry_header)) wait_time <- as.numeric(retry_header) + 1
         } else if (status >= 400 && status < 500) {
           # OPTIMIZATION 3: Local R fatal client error check
@@ -182,11 +197,19 @@ safe_fetch_with_backoff <- function(url, req_headers = NULL, max_retries = 3) {
   return(NULL) 
 }
 
-get_crossref_count <- function(doi) {
+get_crossref_count <- function(doi, crossref_key = NULL) {
   doi_e <- URLencode(doi, reserved = TRUE)
   url <- paste0("https://api.crossref.org/works/", doi_e)
   
-  txt <- safe_fetch_with_backoff(url, req_headers = c(Accept = "application/json"))
+  # 1. Base headers
+  headers <- c(Accept = "application/json")
+  
+  # 2. Add API key if available (Crossref uses 'Crossref-Plus-API-Token' for auth)
+  if (!is.null(crossref_key) && trimws(crossref_key) != "") {
+    headers["Crossref-Plus-API-Token"] <- crossref_key
+  }
+  
+  txt <- safe_fetch_with_backoff(url, req_headers = headers)
   if (is.null(txt)) return(NA_integer_)
   
   j <- tryCatch(jsonlite::fromJSON(txt, simplifyVector = TRUE), error = function(e) NULL)
@@ -197,11 +220,19 @@ get_crossref_count <- function(doi) {
 }
 
 
-get_opencitations_count <- function(doi) {
+get_opencitations_count <- function(doi, opencitations_key = NULL) {
   doi_e <- URLencode(doi, reserved = TRUE)
   url <- paste0("https://api.opencitations.net/index/v1/citation-count/", doi_e)
   
-  txt <- safe_fetch_with_backoff(url, req_headers = c(Accept = "application/json"))
+  # 1. Base headers
+  headers <- c(Accept = "application/json")
+  
+  # 2. Add API key if available (OpenCitations uses the 'authorization' header)
+  if (!is.null(opencitations_key) && trimws(opencitations_key) != "") {
+    headers["authorization"] <- opencitations_key
+  }
+  
+  txt <- safe_fetch_with_backoff(url, req_headers = headers)
   if (is.null(txt)) return(NA_integer_)
   
   j <- tryCatch(jsonlite::fromJSON(txt, simplifyVector = TRUE), error = function(e) NULL)
@@ -214,10 +245,23 @@ get_opencitations_count <- function(doi) {
   return(NA_integer_)
 }
 
-
 get_semanticscholar_count <- function(doi, api_key = NULL) {
   doi_e <- URLencode(doi, reserved = TRUE)
   url <- paste0("https://api.semanticscholar.org/graph/v1/paper/DOI:", doi_e, "?fields=citationCount")
+  
+  # message(paste("HERE0",glens_env$semantic_key))
+  if(is.null(api_key) && !is.null(glens_env$semantic_key)){
+    # message("HERE1")
+    if(!stringi::stri_isempty(glens_env$semantic_key)){
+      api_key <- glens_env$semantic_key
+      # message("HERE2")
+    }
+  }
+  
+  if(is.null(api_key)){
+    # message("HERE3")
+    return(NA_integer_)  
+  }
   
   req_headers <- c(Accept = "application/json")
   if (!is.null(api_key)) {
@@ -237,14 +281,40 @@ get_semanticscholar_count <- function(doi, api_key = NULL) {
 
 # Master function: tries multiple sources and returns a named list (counts may be NA)
 get_citation_counts <- function(doi_or_url, semanticscholar_key = NULL, try_sources = c("crossref","opencitations","semanticscholar")) {
+  
   doi <- normalize_doi(doi_or_url)
-  # res <- list(doi = doi)
-  res <- list()
-  if ("crossref" %in% try_sources) res$crossref <- tryCatch(get_crossref_count(doi), error = function(e) NA_integer_)
-  if ("opencitations" %in% try_sources) res$opencitations <- tryCatch(get_opencitations_count(doi), error = function(e) NA_integer_)
-  if ("semanticscholar" %in% try_sources) res$semanticscholar <- tryCatch(get_semanticscholar_count(doi, semanticscholar_key), error = function(e) NA_integer_)
-  return(res)
+  
+  # 1. Define a helper function to route the source to the correct API call
+  fetch_source <- function(source) {
+    Sys.sleep(1)
+    if (source == "crossref") {
+      return(tryCatch(get_crossref_count(doi), error = function(e) NA_integer_))
+    } else if (source == "opencitations") {
+      return(tryCatch(get_opencitations_count(doi), error = function(e) NA_integer_))
+    } else if (source == "semanticscholar") {
+      return(tryCatch(get_semanticscholar_count(doi, semanticscholar_key), error = function(e) NA_integer_))
+    }
+    return(NA_integer_)
+  }
+  
+  # 2. Fire all requested API calls simultaneously using future_lapply
+  # future.seed = TRUE suppresses warnings about random number generation in parallel environments
+  res_list <- future.apply::future_lapply(try_sources, fetch_source, future.seed = TRUE)
+  
+  # 3. Name the resulting list elements to match the requested sources
+  names(res_list) <- try_sources
+  
+  return(res_list)
 }
+# get_citation_counts <- function(doi_or_url, semanticscholar_key = NULL, try_sources = c("crossref","opencitations","semanticscholar")) {
+#   doi <- normalize_doi(doi_or_url)
+#   # res <- list(doi = doi)
+#   res <- list()
+#   if ("crossref" %in% try_sources) res$crossref <- tryCatch(get_crossref_count(doi), error = function(e) NA_integer_)
+#   if ("opencitations" %in% try_sources) res$opencitations <- tryCatch(get_opencitations_count(doi), error = function(e) NA_integer_)
+#   if ("semanticscholar" %in% try_sources) res$semanticscholar <- tryCatch(get_semanticscholar_count(doi, semanticscholar_key), error = function(e) NA_integer_)
+#   return(res)
+# }
 
 get_title_from_ris <- function(ris){
   # cat(ris)
@@ -346,15 +416,20 @@ construct_author_list_from_ris <- function(ris){
   }
 }
 
-doi2gscholarlens <- function(doi_input, write_file = NULL){
+doi2gscholarlens <- function(doi_input, rv, write_file = NULL){
   if(is.null(doi_input) || length(doi_input) == 0 || is.na(doi_input[1]) || stringi::stri_length(doi_input[1]) <= 0){
     warning("Empty DOI")
     return(NULL)
   }
   
+  # message(paste("glens_env:"))
+  # message(glens_env$scopus_key)
+  
   doi_lines_input <- strsplit(doi_input, "\n")[[1]]
   
   return(dplyr::bind_rows(lapply(doi_lines_input, function(doi_line){
+    # if (rv$is_cancelled) return(NULL)
+    if(!fs::file_exists(file.path("run.lock"))) return(NULL)
     if(stringi::stri_isempty(doi_line)){
       return(NULL)
     }
@@ -379,7 +454,7 @@ doi2gscholarlens <- function(doi_input, write_file = NULL){
     author_text <- author_list$Authors 
     author_text <- ifelse(length(author_text) > 0, author_text, NA)
     title_text <- get_title_from_ris(ris)
-    
+    # message(doi_line)
     doi_citations <- get_citation_counts(doi_line)
     
     # Safely extract valid citations using standard base logic
@@ -390,7 +465,7 @@ doi2gscholarlens <- function(doi_input, write_file = NULL){
       Title = title_text, 
       Authors = author_text,
       Author_Count = author_list$Author_Count, 
-      Citations = max_cit, # BUG FIXED: Using safe if/else variable
+      Citations = max_cit, 
       Journal = journal_text, 
       Publisher = publisher_text, 
       Year = publisher_year_text

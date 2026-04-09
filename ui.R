@@ -25,7 +25,8 @@ suppressPackageStartupMessages(require(visNetwork))
 is_WASM <- grepl(pattern="wasm",x=Sys.info()["machine"])
 # # use a multisession plan so futures run in background R sessions
 # if(!is_WASM){
-  future::plan(future::multisession)
+  # future::plan(future::multisession)
+# future::plan(future.callr::callr)
 # future::plan(future::multicore)
 # }else{
 #   future::plan(future::sequential)
@@ -34,6 +35,7 @@ is_WASM <- grepl(pattern="wasm",x=Sys.info()["machine"])
 ui <- fluidPage(
   shinyjs::useShinyjs(),
   tags$head(
+    tags$script(src = "https://cdn.jsdelivr.net/npm/plotly.js-dist/plotly.min.js"),
     tags$style(HTML("
       @font-face {
         font-family: 'schibsted-grotesk';
@@ -421,6 +423,25 @@ ui <- fluidPage(
       
     ")),
     tags$script(HTML("
+     $(document).ready(function() {
+      // Toggle popup on icon click
+      $(document).on('click', '.help-icon', function(e) {
+        e.preventDefault(); // Prevents input focus when clicking the icon
+        e.stopPropagation();
+        // Hide all other popups first
+        $('.api-help-content').not($(this).next('.api-help-content')).hide();
+        // Toggle the one we just clicked
+        $(this).next('.api-help-content').toggle();
+      });
+  
+      // Close popup if clicking anywhere outside the container
+      $(document).on('click', function(e) {
+        if ($(e.target).closest('.api-help-container').length === 0) {
+          $('.api-help-content').hide();
+        }
+      });
+    });
+    
     $(function() {
         const log = document.getElementById('log');
         const handle = document.getElementById('log_header');
@@ -481,6 +502,26 @@ ui <- fluidPage(
             }, 10); 
           }
         });
+        
+        // LOCAL API KEY STORAGE IN BROWSER using localStorage
+        // 1. When Shiny connects, check localStorage and send keys to R
+        $(document).on('shiny:connected', function() {
+          Shiny.setInputValue('browser_stored_keys', {
+            scopus_key: localStorage.getItem('scopus_key'),
+            wos_key: localStorage.getItem('wos_key'),
+            semantic_key: localStorage.getItem('semantic_key'),
+            crossref_key: localStorage.getItem('crossref_key'),
+            opencites_key: localStorage.getItem('opencites_key')
+          }, {priority: 'event'}); // priority: 'event' ensures it fires immediately
+        });
+    
+        // 2. Listen for a command from R to save a new key
+        Shiny.addCustomMessageHandler('save_key_to_browser', function(message) {
+          localStorage.setItem(message.platform, message.key);
+          // Optional: Give the user a tiny visual confirmation via JS
+          console.log('Saved ' + message.platform + ' key to browser.');
+        });
+    
       });
     ")),
   ),
@@ -491,7 +532,9 @@ ui <- fluidPage(
     h2("GScholarLENS Analysis Dashboard", style = "margin: 0; font-weight: bold;"),
     tags$div(
       class = "header-buttons",
-      actionButton("settings_btn", "", icon = icon("gear", lib = "font-awesome"), class = "btn-outline-white"),
+      actionButton("upload_btn", "", icon = icon("upload", lib = "font-awesome"), class = "btn-outline-white"),
+      actionButton("download_btn", "", icon = icon("download", lib = "font-awesome"), class = "btn-outline-white"),
+      actionButton("keys_btn", "", icon = icon("key", lib = "font-awesome"), class = "btn-outline-white"),
       actionButton("theme_toggle", "🌙 Dark Mode", icon = icon("moon", lib = "font-awesome"), class = "btn-outline-white")
     )
   ),
@@ -640,11 +683,11 @@ ui <- fluidPage(
                        tags$label("Scopus API", class = "api-progress-label"),
                        shinyWidgets::progressBar(id = "prog_scopus", title = "0%", value = 0, total = 100, status = "info")
               ),
-              tags$div(class = "api-progress-wrapper",
+              tags$div(id = "wos_bar_container", class = "api-progress-wrapper",
                        tags$label("Web of Science API", class = "api-progress-label"),
                        shinyWidgets::progressBar(id = "prog_wos", title = "0%", value = 0, total = 100, status = "primary")
               ),
-              tags$div(class = "api-progress-wrapper",
+              tags$div(id = "semantic_bar_container", class = "api-progress-wrapper",
                        tags$label("Semantic Scholar API", class = "api-progress-label"),
                        shinyWidgets::progressBar(id = "prog_semantic", title = "0%", value = 0, total = 100, status = "success")
               )

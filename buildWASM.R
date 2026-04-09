@@ -32,7 +32,7 @@ shinylive::export(appdir = "./staging_app/", destdir = "./wasm_build/")
 httpuv::runStaticServer("./wasm_build/", headers = list(
   "Cross-Origin-Opener-Policy" = "same-origin",
   "Cross-Origin-Embedder-Policy" = "require-corp"
-))
+)) #host = "0.0.0.0"
 
 # httpuv::runServer(
 #   host = "127.0.0.1", port = 7446,

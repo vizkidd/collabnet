@@ -4,6 +4,8 @@ suppressPackageStartupMessages(require(stringr))
 suppressPackageStartupMessages(require(dplyr))
 suppressPackageStartupMessages(require(tidyr))
 suppressPackageStartupMessages(require(ggplot2))
+suppressPackageStartupMessages(require(igraph))
+suppressPackageStartupMessages(require(plotly))
 
 # ---------------------------
 # Aggregate counts and citations by Position × Quartile
@@ -88,7 +90,7 @@ build_collaboration_network <- function(df, main_authors_list) {
       title = paste0(
         "<div style='padding: 8px; border-radius: 5px; background: white; color: black; box-shadow: 1px 1px 5px rgba(0,0,0,0.2);'>",
         "<b>", id, "</b><br>",
-        "<i>Total Collaborations: ", total_connections, "</i>",
+        "<i>Number of Collaborations: ", total_connections, "</i>",
         "</div>"
       ),
       size = 15 + (replace_na(total_connections, 0) * 3),
