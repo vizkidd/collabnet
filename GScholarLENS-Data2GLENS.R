@@ -35,8 +35,13 @@ extract_parts <- function(name) {
 
 score_match <- function(token_clean, target_variants_norm) {
   best <- list(score = -Inf, variant = NA_character_, reason = NA_character_)
+  
+  # Safeguard: If the cleaned token is somehow NA, instantly return no match
+  if (is.na(token_clean) || trimws(token_clean) == "") {
+    return(list(score = -Inf, variant = NA_character_, reason = "no_match"))
+  }
+  
   for (vname in names(target_variants_norm)) {
-    # print(vname)
     vnorm <- target_variants_norm[[vname]]$norm
     vparts <- target_variants_norm[[vname]]$parts
     tparts <- extract_parts(token_clean)
@@ -47,6 +52,7 @@ score_match <- function(token_clean, target_variants_norm) {
       reason <- "exact_full"
     } else if (tparts$last == vparts$last &&
                length(tparts$first_tokens) >= 1 &&
+               length(vparts$first_tokens) >= 1 &&
                tparts$first_tokens[1] == vparts$first_tokens[1]) {
       sc <- 90      # same first name + same last name
       reason <- "first_and_last_match"
@@ -68,7 +74,6 @@ score_match <- function(token_clean, target_variants_norm) {
     if (sc > best$score) best <- list(score = sc, variant = vname, reason = reason)
   }
   
-  # print(best)
   return(best)
 }
 
@@ -82,6 +87,11 @@ build_name_regex_for_variants <- function(vars) {
 # Tokenize authors & position rules
 # --------------------------------------------------------------
 split_authors <- function(author_field) {
+  # Safeguard: if the field is NA or completely blank, return empty
+  if (is.na(author_field) || trimws(as.character(author_field)) == "") {
+    return(character(0))
+  }
+  
   s <- as.character(author_field)
   s <- gsub("\\s+and\\s+|\\s+&\\s+|\\s+/\\s+|;", ",", s, ignore.case = TRUE)
   parts <- unlist(str_split(s, "\\s*,\\s*"))
@@ -89,16 +99,25 @@ split_authors <- function(author_field) {
 }
 
 tokenize_and_position <- function(author_field) {
+  # Safeguard: check for NA early
+  if (is.na(author_field) || trimws(as.character(author_field)) == "") {
+    return(tibble())
+  }
+  
   tokens <- split_authors(author_field)
   if (length(tokens) == 0) return(tibble())
   
   df_tokens <- tibble(raw = tokens) %>%
+    # Filter out any accidental NA tokens that sneak through
+    filter(!is.na(raw) & trimws(raw) != "") %>% 
     mutate(
       has_star = str_detect(raw, "\\*"),
       has_caret = str_detect(raw, "\\^"),
       clean = str_trim(str_replace_all(raw, "[\\*\\^]", "")),
-      clean_norm = normalize_name(clean)
+      clean_norm = sapply(clean, normalize_name) # Ensure normalize_name maps cleanly
     )
+  
+  if(nrow(df_tokens) == 0) return(tibble())
   
   # '^' means shared position
   positions <- integer(nrow(df_tokens))

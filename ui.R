@@ -529,12 +529,49 @@ ui <- fluidPage(
   # 1. Custom Title Header with Settings & Dark Mode
   tags$div(
     class = "header-container",
-    h2("GScholarLENS Analysis Dashboard", style = "margin: 0; font-weight: bold;"),
+    h2("CollabNET Analysis Dashboard", style = "margin: 0; font-weight: bold;"),
     tags$div(
       class = "header-buttons",
-      actionButton("upload_btn", "", icon = icon("upload", lib = "font-awesome"), class = "btn-outline-white"),
-      actionButton("download_btn", "", icon = icon("download", lib = "font-awesome"), class = "btn-outline-white"),
-      actionButton("keys_btn", "", icon = icon("key", lib = "font-awesome"), class = "btn-outline-white"),
+      # tags$label(
+      #   class = "btn btn-default btn-outline-white",
+      #   style = "margin-bottom: 0; font-weight: normal; cursor: pointer;",
+      #   icon("upload", lib = "font-awesome"),
+      #   tags$input(
+      #     id = "upload_btn",
+      #     type = "file",
+      #     multiple = FALSE,
+      #     style = "display: none;" # This hides the ugly default browser file input
+      #   )
+      # ),
+      tags$label(
+        class = "btn btn-default btn-outline-white",
+        style = "margin-bottom: 0; font-weight: normal; cursor: pointer;",
+        tags$i(id = "upload_icon", class = "fa fa-upload"),
+        # tags$span(id = "upload_icon", icon("upload", lib = "font-awesome")),
+        tags$span(id = "upload_text", ""), 
+        tags$input(
+          id = "upload_btn",
+          type = "file",
+          multiple = FALSE,
+          style = "display: none;",
+          onchange = "
+            document.getElementById('upload_text').innerText = ' Uploading...';
+            document.getElementById('upload_icon').className = 'fa fa-spinner fa-spin';
+          "
+        )
+      ),
+      tags$label(
+        class = "btn btn-default btn-outline-white",
+        style = "margin-bottom: 0; font-weight: normal; cursor: pointer;",
+        icon("download", lib = "font-awesome"),
+        tags$input(id="download_btn", type="button", style = "display: none;")
+      ),
+      tags$label(
+        class = "btn btn-default btn-outline-white",
+        style = "margin-bottom: 0; font-weight: normal; cursor: pointer;",
+        icon("key", lib = "font-awesome"),
+        tags$input(id="keys_btn", type="button", style = "display: none;")
+      ),
       actionButton("theme_toggle", "🌙 Dark Mode", icon = icon("moon", lib = "font-awesome"), class = "btn-outline-white")
     )
   ),
@@ -553,11 +590,39 @@ ui <- fluidPage(
         style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; margin-bottom: 25px;",
         h4("Search & Identification", style = "margin-top: 0; font-weight: bold; font-size: 16px;"),
         textAreaInput("doi_text", "DOI input:", value = "", rows = 2, width = "100%"),
-        textAreaInput("author_list",  "Author Name List :", value = "", rows = 2, width = "100%"),
+        textAreaInput("author_list",  "Lookup Keywords :", value = "", rows = 2, width = "100%"),
+        # # --- Flexbox layout for Label + Checkbox ---
+        # tags$div(
+        #   style = "display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;",
+        #   tags$label("Lookup Keywords :", style = "font-weight: bold; margin-bottom: 0;"),
+        #   # Wrap the checkbox to remove Shiny's default spacing so it aligns perfectly
+        #   tags$div(
+        #     style = "margin-bottom: 0; margin-top: 0;", 
+        #     checkboxInput("auto_refresh_lookup", "Auto-Refresh", value = TRUE)
+        #   )
+        # ),
+        # # The text area itself (label set to NULL since we built a custom one above)
+        # textAreaInput("author_list", label = NULL, value = "", rows = 2, width = "100%"),
+        # # ------------------------------------------------
         uiOutput("dynamic_author_filter"),
-        textAreaInput("orcid_text", "ORCID input:", value = "", rows = 2, width = "100%"),
-        actionButton("submit_button", "Run GScholarLENS for DOI", class = "btn-primary", style = "width: 100%; font-weight: bold; margin-top: 10px; background-color: #4B8BBE; border: none;")
+        textAreaInput("orcid_text", "ORCiD input:", value = "", rows = 2, width = "100%"),
+        actionButton("submit_button", "Run CollabNET", icon = icon("play", lib = "font-awesome"), class = "btn-primary", style = "width: 100%; font-weight: bold; margin-top: 10px; background-color: #4B8BBE; border: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"),
+        # The Toggle Lock Button
+        actionButton("toggle_extended", "Show Extended Controls", icon = icon("unlock"), 
+                     class = "btn-secondary", style = "margin-top: 10px; width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"),
+        shinyjs::hidden(
+          tags$div(id = "extended_controls_container",
+                   uiOutput("extended_controls_panel")
+          )
+        )
       ),
+      # tags$div(
+      #   class = "custom-card",
+      #   style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; margin-bottom: 25px;",
+      #   h4("Extended Controls", style = "margin-top: 0; font-weight: bold; font-size: 16px;"),
+      #   # The container for the extended controls
+      #   uiOutput("extended_controls_panel")
+      # ),
       # Section 2: Timeline
       tags$div(
         class = "custom-card",
@@ -582,7 +647,20 @@ ui <- fluidPage(
                         tags$div(class = "drag-grip") # The visual drag lines
                ),
                # The actual log output
-               verbatimTextOutput("log")
+               # verbatimTextOutput("log")
+               htmlOutput("log", 
+                          style = "background-color: #f5f5f5; 
+                            border: 1px solid #ccc; 
+                            border-radius: 4px; 
+                            padding: 10px; 
+                            font-family: Menlo, Monaco, Consolas, 'Courier New', monospace; 
+                            font-size: 13px; 
+                            color: #333; 
+                            white-space: pre-wrap; 
+                            word-wrap: break-word; 
+                            max-height: 400px; 
+                            overflow-y: auto;"
+                          )
       )
     ),
     
@@ -668,7 +746,7 @@ ui <- fluidPage(
                text-align: center; border-top: 6px solid #f39c12;",
             
             h3("Processing Data", style = "margin-top: 0; color: #2c3e50; font-weight: bold;"),
-            p("Please wait while GScholarLENS fetches and analyzes the records. This may take a moment.", 
+            p("Please wait while CollabNET fetches and analyzes the records. This may take a moment.", 
               style = "color: #7f8c8d; margin-bottom: 25px;"),
             
             tags$div(

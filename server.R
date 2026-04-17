@@ -175,1911 +175,7 @@ source("GScholarLENS-ORCID2Data.R", local = TRUE)
 source("GScholarLENS-SCOPUS2Data.R", local = TRUE)
 source("GScholarLENS-Data2GLENS.R", local = TRUE)
 source("GScholarLENS-PlotGLENS.R", local = TRUE)
-
-detect_vpn <- function(rv, output) {
-  req <- request("https://ipinfo.io/json") |>
-    req_timeout(3) |>
-    req_error(is_error = ~ FALSE) # Prevent it from throwing an R error if the API fails
-  # Perform the request, catch any hard network failures (e.g., no internet)
-  ip_resp <- tryCatch(req_perform(req), error = function(e) NULL)
-  
-  if (!is.null(ip_resp) && resp_status(ip_resp) == 200) {
-    # Extract the body as a list
-    ip_data <- resp_body_json(ip_resp)
-    org_name <- tolower(ip_data$org)
-    # print(ip_data)
-    # if (grepl("cloudflare", org_name)) {
-    #return("Cloudflare WARP detected.")
-    # } else if (grepl("vpn|proxy", org_name)) {
-    #return("A VPN or Proxy service was detected.")
-    # }
-    rv$log_text <- paste(
-      rv$log_text,
-      "Warning: Detected VPN. Skipping APIs.",
-      sep = "\n"
-    )
-    # output$log <- renderText({ rv$log_text })
-  }
-  return(NULL) # Network looks normal
-}
-
-#Flow functions
-extend_input_table <- function(rv) {
-  # print("target_variants_norm")
-  # print(rv$target_variants_norm)
-  # glens_extended_table <- dplyr::bind_rows(lapply(rv$target_variants_norm, function(curr_variant){
-  #   return(rv$glens_input_table %>%
-  #     rowwise() %>%
-  #     mutate(
-  #       dec = list(decide_label_for_target(Authors, curr_variant, rv$author_match_regex)),
-  #       label = dec$label,
-  #       matched_token = dec$matched_token
-  #     ) %>%
-  #     ungroup() %>%
-  #     filter(label != "Not_found") %>%
-  #     mutate(
-  #       First_Author = as.integer(label == "First_Author"),
-  #       Second_Author = as.integer(label == "Second_Author"),
-  #       Co_Author = as.integer(label == "Co_Author"),
-  #       Corresponding_Author = as.integer(label == "Corresponding_Author")
-  #     ) %>%
-  #     select(-dec) ) #END - return
-  # })) #END - lapply
-
-  
-    
-  if(nrow(rv$glens_input_table) <= 0){
-    stop("Check author logical filter: rv$glens_input_table")  
-  }
-  
-  # filtered_glens_input_table <- apply_author_logic(
-  #   pubs_df          = rv$glens_input_table,
-  #   primary_regex    = rv$author_match_regex,
-  #   selected_authors = rv$selected_filter_authors, 
-  #   gate             = rv$author_logic_gate        
-  # )
-  # 
-  # if(nrow(filtered_glens_input_table) <= 0){
-  #  stop("Check author logical filter: filtered_glens_input_table") 
-  # }
-  
-  glens_extended_table <- rv$glens_input_table %>%
-    rowwise() %>%
-    mutate(
-      dec = list(decide_label_for_target(Authors, rv$target_variants_norm, rv$author_match_regex)),
-      label = dec$label,
-      matched_token = dec$matched_token
-    ) %>%
-    ungroup() %>%
-    filter(label != "Not_found") %>%
-    mutate(
-      First_Author = as.integer(label == "First_Author"),
-      Second_Author = as.integer(label == "Second_Author"),
-      Co_Author = as.integer(label == "Co_Author"),
-      Corresponding_Author = as.integer(label == "Corresponding_Author")
-    ) %>%
-    select(-dec)
-  
-  # Ensure Author_Count exists
-  if (!"Author_Count" %in% colnames(glens_extended_table)) {
-    glens_extended_table <- glens_extended_table %>%
-      mutate(Author_Count = str_count(Authors, ",") + 1)
-  }
-  
-  # Correct weight logic
-  glens_extended_table <- glens_extended_table %>%
-    mutate(
-      Adjustment_Weights = case_when(
-        label == "Corresponding_Author" ~ 1.00,
-        label == "First_Author" ~ 0.90,
-        label == "Second_Author" ~ 0.50,
-        label == "Co_Author" & Author_Count <= 6 ~ 0.25,
-        label == "Co_Author" & Author_Count > 6 ~ 0.10,
-        TRUE ~ 0
-      ),
-      Adjusted_Citations = as.numeric(Citations) * Adjustment_Weights
-    )
-  
-  # Clean numeric columns
-  glens_extended_table$Adjusted_Citations <- suppressWarnings(as.numeric(glens_extended_table$Adjusted_Citations))
-  
-  for (col in c("First_Author","Second_Author","Co_Author","Corresponding_Author")) {
-    glens_extended_table[[col]][is.na(glens_extended_table[[col]])] <- 0
-    glens_extended_table[[col]] <- ifelse(glens_extended_table[[col]] >= 1, 1L, 0L)
-  }
-  
-  # Global ordering (consistent with file2.R logic)
-  rv$glens_etable_final <- glens_extended_table %>%
-    mutate(
-      position_rank = case_when(
-        First_Author == 1 ~ 1L,
-        Second_Author == 1 ~ 2L,
-        Co_Author == 1 ~ 3L,
-        Corresponding_Author == 1 ~ 4L,
-        TRUE ~ 99L
-      ),
-      adj_cit_for_sort = ifelse(is.na(Adjusted_Citations), -Inf, Adjusted_Citations)
-    ) %>%
-    arrange(position_rank, desc(adj_cit_for_sort)) %>%
-    select(-adj_cit_for_sort) %>%
-    mutate(Year = as.integer(Year))
-}
-
-compute_indices <- function(rv) {
-  
-  # Use FINAL ordered table only
-  # df <- rv$glens_etable_final
-  df <- rv$glens_year_filtered
-  
-  # Strict H-index (as you changed)
-  compute_h_index <- function(citations_vec) {
-    v <- citations_vec[!is.na(citations_vec)]
-    if (length(v) == 0) return(0L)
-    v <- sort(v, decreasing = TRUE)
-    h <- 0L
-    for (i in seq_along(v)) {
-      #STRICT
-      #if (v[i] > i) h <- i else break 
-      #Correct/Standard way
-      if (v[i] >= i) h <- i else break 
-    }
-    as.integer(h)
-  }
-  
-  positions <- c("First_Author",
-                 "Second_Author",
-                 "Co_Author",
-                 "Corresponding_Author")
-  
-  results <- list()
-  
-  for (pos in positions) {
-    sub <- df %>% filter(.data[[pos]] == 1)
-    h <- compute_h_index(sub %>% arrange(Citations) %>% select(Citations))
-    results[[pos]] <- list(
-      h_index = h,
-      n_papers = nrow(sub)
-    )
-  }
-  
-  # Classical H-indices
-  h_cites <- compute_h_index(df %>% arrange(Citations) %>% select(Citations))
-  h_adjcites <- compute_h_index(df %>% arrange(Adjusted_Citations) %>% select(Adjusted_Citations))
-  
-  rv$summary_table <- tibble(
-    Position = positions,
-    H_index = sapply(results, function(x) x$h_index),
-    Num_papers = sapply(results, function(x) x$n_papers)
-  )
-  
-  rv$summary_table <- rv$summary_table %>%
-    add_row(Position = "h-index(Citations)",
-            H_index = h_cites,
-            Num_papers = nrow(df))
-  # %>%
-  #   add_row(Position = "h-index(Adj.Citations)",
-  #           H_index = h_adjcites,
-  #           Num_papers = nrow(df))
-  
-  # # Correct Sh-index: sum ONLY the 4 positional H indices
-  # rv$sh_index <- sum(rv$summary_table$H_index[
-  #   rv$summary_table$Position %in% positions
-  # ], na.rm = TRUE)
-  
-  rv$sh_index <- h_adjcites
-  
-  shinyjs::show("sh_index")
-  shinyjs::show("summary_table")
-  shinyjs::show("extended_table")
-}
-
-match_journals <- function(rv){
-  
-  need_cols <- c("Title","Authors","Adjusted_Citations","Journal",
-                 "First_Author","Second_Author","Co_Author","Corresponding_Author")
-  missing_cols <- setdiff(need_cols, names(rv$glens_etable_final))
-  if (length(missing_cols) > 0) {
-    warning(paste("Author-level file missing columns:", paste(missing_cols, collapse = ", ")))
-    return()
-  }
-  
-  unique_journals <- unique(rv$glens_etable_final$Journal)
-  cat("Unique journals to match:", length(unique_journals), "\n")
-  
-  rv$glens_etable_final$Name_norm <- sapply(rv$glens_etable_final$Journal, function(x) normalize_journal(x))
-  
-  # Note: This assumes 'jcr' and 'jcr_names_norm' are loaded in your global environment 
-  # since the reading code was commented out!
-  
-  match_idx <- unique(
-    bind_rows(
-      future_sapply(
-        seq_len(length(unique_journals)),
-        getExcelColumns,
-        unique_journals = unique_journals,
-        jsonData = jcr_names_norm,
-        simplify = FALSE,
-        future.packages = c("stringr", "dplyr"),
-        # EXPLICITLY pass the large object and the function
-        future.globals = c("jcr_names_norm", "getExcelColumns"),
-        future.seed = TRUE
-      )
-    )
-  )
-  print("HERE0")
-  # Safely handle the case where absolutely NO journals were matched in pass 1
-  if (nrow(match_idx) > 0) {
-    jcr_matched <- inner_join(jcr_names_norm, match_idx, by = c("Name_norm", "Qscore", "JIF5Years"))
-    print(str(match_idx))
-    print(str(jcr_matched))
-    print("HERE0.1")  
-  } else {
-    jcr_matched <- jcr[0, ] # Creates an empty df that still has the Qscore column
-    print("HERE0.2")
-  }
-  
-  # # Clean up old columns just in case
-  rv$glens_etable_final$Qscore <- NULL
-  rv$glens_etable_final$JIF5Years <- NULL
-  print("HERE1")
-  print(str(rv$glens_etable_final))
-  df_auth_joined <- left_join(rv$glens_etable_final, jcr_matched, by = c("Name_norm"))
-  print("HERE2")
-  
-  # --- 1. Handle Journal Naming ---
-  if ("Journal.x" %in% names(df_auth_joined)) {
-    df_auth_joined <- df_auth_joined %>% rename("User_Journal" = Journal.x)
-  } else if ("Journal" %in% names(df_auth_joined) && !"User_Journal" %in% names(df_auth_joined)) {
-    df_auth_joined <- df_auth_joined %>% rename("User_Journal" = Journal)
-  }
-  
-  if ("Journal.y" %in% names(df_auth_joined)) {
-    df_auth_joined <- df_auth_joined %>% rename("JCR_Journal" = Journal.y)
-  } else if (!"JCR_Journal" %in% names(df_auth_joined)) {
-    df_auth_joined$JCR_Journal <- NA_character_
-  }
-  
-  # --- 2. CRITICAL FIX: Resolve Qscore .x and .y collisions ---
-  if ("Qscore.x" %in% names(df_auth_joined) && "Qscore.y" %in% names(df_auth_joined)) {
-    df_auth_joined <- df_auth_joined %>%
-      mutate(Qscore = coalesce(Qscore.y, Qscore.x)) %>% # Prefer new match (.y), fallback to old (.x)
-      select(-Qscore.x, -Qscore.y)                      # Remove the messy collision columns
-  } else if (!"Qscore" %in% names(df_auth_joined)) {
-    df_auth_joined$Qscore <- NA_character_
-  }
-  
-  # --- 3. Resolve JIF5Years .x and .y collisions ---
-  if ("JIF5Years.x" %in% names(df_auth_joined) && "JIF5Years.y" %in% names(df_auth_joined)) {
-    df_auth_joined <- df_auth_joined %>%
-      mutate(JIF5Years = coalesce(JIF5Years.y, JIF5Years.x)) %>%
-      select(-JIF5Years.x, -JIF5Years.y)
-  }
-  print(str(df_auth_joined))
-  print("HERE3")
-  # For any unmatched journals, try a fallback: look for exact substring match in Name
-  unmatched <- which(is.na(df_auth_joined$JCR_Journal))
-  if (length(unmatched) > 0) {
-    cat("Trying fallback substring match for", length(unmatched), "journals...\n")
-    for (i in unmatched) {
-      jn <- df_auth_joined$Name_norm[i]
-      if (is.na(jn) || nchar(jn) < 3) next
-      hits <- grep(jn, jcr_names_norm$Name_norm, value = TRUE)
-      
-      if (length(hits) == 1) {
-        idx <- which(jcr_names_norm$Name_norm == hits)[1]
-        df_auth_joined$JCR_Journal[i] <- jcr_names_norm$Name[idx]
-        df_auth_joined$Qscore[i] <- as.character(jcr_names_norm$Qscore[idx])
-      }
-    }
-  }
-  print("HERE4")
-  # CRITICAL FIX 2: Convert all remaining NAs to "Unranked" so dplyr plotting doesn't crash
-  df_auth_joined <- df_auth_joined %>%
-    mutate(Qscore = if_else(is.na(Qscore), "Unranked", as.character(Qscore)))
-  print("HERE5")
-  n_unmatched <- length(which(is.na(df_auth_joined$JCR_Journal)))
-  cat("Number of unmatched journal rows:", n_unmatched, "\n")
-  print("HERE6")
-  rv$glens_etable_final <- df_auth_joined
-  print(str(rv$glens_etable_final))
-  print("HERE6.1")
-}
-
-# match_journals <- function(rv){
-#   # jcr_base <- "2024-JCR_IMPACT_FACTOR"
-#   # jcr_file_xlsx <- paste0(jcr_base, ".xlsx")
-#   # jcr_file_xls  <- paste0(jcr_base, ".xls")
-#   # jcr_file_csv  <- paste0(jcr_base, ".csv")
-#   # 
-#   # jcr_path <- NULL
-#   # if (file.exists(jcr_file_xlsx)) jcr_path <- jcr_file_xlsx
-#   # if (is.null(jcr_path) && file.exists(jcr_file_xls)) jcr_path <- jcr_file_xls
-#   # if (is.null(jcr_path) && file.exists(jcr_file_csv)) jcr_path <- jcr_file_csv
-#   # 
-#   # if (is.null(jcr_path)) {
-#   #   warning("Cannot find '2024-JCR_IMPACT_FACTOR(.xlsx/.csv)' in working directory.\n")
-#   #   # jcr_path <- readline(prompt = "Enter full path to JCR file (xlsx or csv): ")
-#   #   # jcr_path <- str_trim(jcr_path)
-#   #   warning("JCR file not found. Exiting.")
-#   #   return()
-#   # } else {
-#   #   cat("Found JCR file:", jcr_path, "\n")
-#   # }
-#   # jcr <- read_jcr(jcr_path)
-#   # 
-#   # # If JIF columns exist, ensure numeric
-#   # if ("JIF" %in% names(jcr)) jcr$JIF <- suppressWarnings(as.numeric(jcr$JIF))
-#   # if ("JIF5Years" %in% names(jcr)) jcr$JIF5Years <- suppressWarnings(as.numeric(jcr$JIF5Years))
-#   # 
-#   # need_cols <- c("Title","Authors","Adjusted_Citations","Journal",
-#   #                "First_Author","Second_Author","Co_Author","Corresponding_Author")
-#   # missing_cols <- setdiff(need_cols, names(rv$glens_etable_final))
-#   # if (length(missing_cols) > 0) {
-#   #   warning(paste("Author-level file missing columns:", paste(missing_cols, collapse = ", ")))
-#   #   return()
-#   # }
-#   # 
-#   # unique_journals <- unique(rv$glens_etable_final$Journal)
-#   # print(cat("Unique journals to match:", length(unique_journals), "\n"))
-#   # 
-#   # jcr$Name_norm <- sapply(jcr$Name, function(x) normalize_journal(x))
-#   # rv$glens_etable_final$Name_norm <- sapply(rv$glens_etable_final$Journal, function(x) normalize_journal(x))
-#   # 
-#   # jcr_names_norm <- jcr |>
-#   #   select(Name, Name_norm, JIF5Years, Qscore) 
-#   # 
-#   # match_idx <- unique(
-#   #   bind_rows(
-#   #     future_sapply(
-#   #       seq_len(length(unique_journals)),
-#   #       getExcelColumns,
-#   #       unique_journals = unique_journals,
-#   #       jsonData = jcr_names_norm,
-#   #       simplify = FALSE,
-#   #       future.packages = c("stringr", "dplyr")
-#   #     )
-#   #   )
-#   # )
-#   # 
-#   # jcr_matched <- inner_join(jcr,match_idx)
-#   
-#   need_cols <- c("Title","Authors","Adjusted_Citations","Journal",
-#                  "First_Author","Second_Author","Co_Author","Corresponding_Author")
-#   missing_cols <- setdiff(need_cols, names(rv$glens_etable_final))
-#   if (length(missing_cols) > 0) {
-#     warning(paste("Author-level file missing columns:", paste(missing_cols, collapse = ", ")))
-#     return()
-#   }
-#   
-#   unique_journals <- unique(rv$glens_etable_final$Journal)
-#   print(cat("Unique journals to match:", length(unique_journals), "\n"))
-#   
-#   rv$glens_etable_final$Name_norm <- sapply(rv$glens_etable_final$Journal, function(x) normalize_journal(x))
-#   
-#   match_idx <- unique(
-#     bind_rows(
-#       future_sapply(
-#         seq_len(length(unique_journals)),
-#         getExcelColumns,
-#         unique_journals = unique_journals,
-#         jsonData = jcr_names_norm,
-#         simplify = FALSE,
-#         future.packages = c("stringr", "dplyr")
-#       )
-#     )
-#   )
-#   
-#   jcr_matched <- inner_join(jcr,match_idx)
-#   
-#   rv$glens_etable_final[c("Qscore", "JIF5Years")] <- NULL
-#   df_auth_joined <- left_join(rv$glens_etable_final, jcr_matched, by = c("Name_norm"))#, relationship = "many-to-many") 
-#   df_auth_joined <- df_auth_joined |> rename("User_Journal" = Journal.x) |> rename("JCR_Journal" = Journal.y)
-#   
-#   # For any unmatched journals, try a fallback: look for exact substring match in Name
-#   unmatched <- which(is.na(df_auth_joined$JCR_Journal))
-#   if (length(unmatched) > 0) {
-#     cat("Trying fallback substring match for", length(unmatched), "journals...\n")
-#     for (i in unmatched) {
-#       jn <- df_auth_joined$Name_norm[i]
-#       if (is.na(jn) || nchar(jn) < 3) next
-#       hits <- grep(jn, jcr_names_norm$Name_norm, value = TRUE)
-#       # print(hits)
-#       if (length(hits) == 1) {
-#         idx <- which(jcr_names_norm$Name_norm == hits)[1]
-#         df_auth_joined$JCR_Journal[i] <- jcr$Name[idx]
-#         df_auth_joined$Qscore[i] <- jcr$Qscore[idx]
-#         # df_auth_joined$ISSN[i] <- if ("ISSN" %in% names(jcr)) jcr$ISSN[idx] else NA_character_
-#         # df_auth_joined$EISSN[i] <- if ("EISSN" %in% names(jcr)) jcr$EISSN[idx] else NA_character_
-#       }
-#     }
-#   }
-#   
-#   # If still many unmatched, notify user (they can inspect sortedfile.csv)
-#   n_unmatched <- length(which(is.na(df_auth_joined$JCR_Journal)))
-#   print(paste("Number of unmatched journal rows:", n_unmatched, "\n"))
-#   rv$glens_etable_final <- df_auth_joined
-#   
-# }
-
-# plot_glens_table <- function(rv, output, session){
-#   if(nrow(rv$glens_year_filtered) <= 0){
-#     output$log <- renderText({paste(rv$log, "plot_glens_table() - Warning: No data available for these filters!", sep="\n")})
-#     warning("plot_glens_table() - Warning: No data available for these filters!")
-#     shinyjs::hide("sh_index")
-#     shinyjs::hide("summary_table")
-#     shinyjs::hide("acounts_plot")
-#     shinyjs::hide("ccounts_plot")
-#     shinyjs::hide("cdist_plot")
-#     shinyjs::hide("aperc_plot")
-#     shinyjs::hide("cperc_plot")
-#     shinyjs::hide("network_filtered")
-#     shinyjs::hide("extended_table")
-#     return()
-#   }
-#   
-#   # Render Filtered Subset Network
-#   output$network_filtered <- renderVisNetwork({
-#     req(rv$glens_year_filtered) # Assuming this is your filtered reactive variable
-#     
-#     net_data <- build_collaboration_network(rv$glens_year_filtered, rv$author_list)
-#     
-#     visNetwork(net_data$nodes, net_data$edges, width = "100%", height = "500px") %>%
-#       visNodes(font = list(size = 14)) %>%
-#       visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = TRUE) %>%
-#       # visPhysics(solver = "forceAtlas2Based", forceAtlas2Based = list(gravitationalConstant = -50)) %>%
-#       visIgraphLayout(layout = "layout_with_fr") %>%
-#       visOptions(highlightNearest = list(enabled = TRUE, degree = 1), nodesIdSelection = TRUE) %>%
-#       # visLegend() %>%
-#       addFontAwesome()
-#   })
-#   
-#   shinyjs::show("acounts_plot")
-#   shinyjs::show("ccounts_plot")
-#   shinyjs::show("cdist_plot")
-#   shinyjs::show("aperc_plot")
-#   shinyjs::show("cperc_plot")
-#   shinyjs::show("network_filtered")
-#   
-#   df_ordered_debug <- rv$glens_year_filtered %>%
-#     mutate(position_rank = case_when(
-#       as.numeric(First_Author) == 1 ~ 1L,
-#       as.numeric(Second_Author) == 1 ~ 2L,
-#       as.numeric(Co_Author) == 1 ~ 3L,
-#       as.numeric(Corresponding_Author) == 1 ~ 4L,
-#       TRUE ~ 99L
-#     )) %>%
-#     mutate(adj_cit_for_sort = ifelse(is.na(Adjusted_Citations), -Inf, Adjusted_Citations)) %>%
-#     arrange(position_rank, desc(adj_cit_for_sort)) %>%
-#     select(-adj_cit_for_sort)  
-#   
-#   df_ordered_debug$position_rank[which(df_ordered_debug$position_rank == 1)] <- "First Author"
-#   df_ordered_debug$position_rank[which(df_ordered_debug$position_rank == 2)] <- "Second Author"
-#   df_ordered_debug$position_rank[which(df_ordered_debug$position_rank == 3)] <- "Co-Author"
-#   df_ordered_debug$position_rank[which(df_ordered_debug$position_rank == 4)] <- "Corresponding Author"
-#   
-#   agg_first <- make_agg(df_ordered_debug, "First_Author", "First Author")
-#   agg_second <- make_agg(df_ordered_debug, "Second_Author", "Second Author")
-#   agg_co <- make_agg(df_ordered_debug, "Co_Author", "Co-Author")
-#   agg_cor <- make_agg(df_ordered_debug, "Corresponding_Author", "Corresponding Author")
-#   
-#   agg_all <- bind_rows(agg_first, agg_second, agg_co, agg_cor)
-#   
-#   # Ensure all quartiles present per position (fill zeros)
-#   all_positions <- c("First Author","Second Author","Co-Author","Corresponding Author")
-#   all_quartiles <- c("Q1","Q2","Q3","Q4", "NA")
-#   full_grid <- expand.grid(Position = all_positions, Qscore = all_quartiles, stringsAsFactors = FALSE)
-#   agg_all <- full_grid %>%
-#     left_join(agg_all, by = c("Position","Qscore")) %>%
-#     mutate(Count = tidyr::replace_na(Count, 0L),
-#            SumCitations = tidyr::replace_na(SumCitations, 0.0))
-#   
-#   # ---------------------------
-#   # Plotting parameters (colors + alpha per quartile)
-#   # ---------------------------
-#   # Base colors per quartile (Q1 -> rich color, Q4 -> light)
-#   # quartile_colors <- c("Q1" = "#2E8B57",  # greenish (co-author in your sample used green)
-#   #                      "Q2" = "#4B8BBE",  # blue-ish
-#   #                      "Q3" = "#B66BA4",  # purple-ish
-#   #                      "Q4" = "#D6A77A")  # tan (light)
-#   position_colors <- c("First Author" = "#D6A77A",  # greenish (co-author in your sample used green)
-#                        "Second Author" = "#B66BA4",  # blue-ish
-#                        "Co-Author" = "#2E8B57",  # purple-ish
-#                        "Corresponding Author" = "#4B8BBE")  # tan (light)
-#   position_border_colors <- c(
-#     "First Author" = "#ff9f40ff",
-#     "Second Author" = "#9966ffff",
-#     "Co-Author" = "#4bc093ff",
-#     "Corresponding Author" = "#36a2ebff"
-#   )
-#   
-#   # Alpha values so Q1 most opaque and Q4 faint
-#   quartile_alpha <- c("Q1" = 0.9, "Q2" = 0.70, "Q3" = 0.50, "Q4" = 0.30, "NA" = 0.1)
-#   
-#   # Order positions for plotting (Left to right as in your image: First, Second, Co, Corresponding)
-#   agg_all$Position <- factor(agg_all$Position, levels = all_positions)
-#   agg_all$Qscore <- factor(agg_all$Qscore, levels = all_quartiles)
-#   agg_all <- agg_all %>%
-#     group_by(Position) %>%
-#     mutate(Total_Position = sum(Count, na.rm = TRUE)) %>%
-#     ungroup()
-#   agg_all <- agg_all %>%
-#     group_by(Position) %>%
-#     mutate(Total_Citations = sum(SumCitations, na.rm = TRUE)) %>%
-#     ungroup()
-#   agg_all <- agg_all %>%
-#     group_by(Qscore) %>%
-#     mutate(Total_QCitations = sum(SumCitations, na.rm = TRUE)) %>%
-#     ungroup()
-#   
-#   agg_all <- agg_all %>%
-#     mutate(
-#       Position = factor(Position, levels = all_positions),
-#       Qscore   = factor(Qscore, levels = all_quartiles)
-#     ) %>%
-#     arrange(Qscore, Position)
-#   
-#   # print(agg_all)
-#   
-#   # ---------------------------
-#   # Create stacked bar chart for Counts
-#   # ---------------------------
-#   # p_counts <- ggplot(agg_all, aes(x = Position, y = Count, fill = Position, color = Position, alpha = Qscore, group = Qscore, text = paste(
-#   #   "Position:", Position,
-#   #   "<br>Quartile:", Qscore,
-#   #   "<br>Count:", Count,
-#   #   "<br>Total:", Total_Position
-#   #   # "<br>Author Name:", matched_token
-#   #   # "<br>Citations:", SumCitations
-#   # ))) +
-#   #   geom_bar(stat = "identity", size = 0.25) +
-#   #   scale_colour_manual(
-#   #     values = position_border_colors,
-#   #     guide = "none"          # hide border legend
-#   #   ) +
-#   #   # #scale_fill_manual(values = quartile_colors, name = "Qscore") +
-#   #   scale_fill_manual(values = position_colors, 
-#   #                     # name = "Position"
-#   #                     guide = "none"
-#   #   ) +
-#   #   scale_alpha_manual(values = quartile_alpha,
-#   #                      # name = "Journal Rank"
-#   #                      guide = "none"
-#   #   ) +
-#   #   theme_minimal(base_size = 12) +
-#   #   labs(title = "Publication Count based on Authorship with Journal Rank Categorization",
-#   #        y = NULL, x = NULL) +
-#   #   theme(
-#   #     plot.title = element_text(hjust = 0.5, face = "bold"),
-#   #     axis.text.x = element_text(angle = 15, hjust = 1)
-#   #   ) + 
-#   #   scale_color_manual(values = position_colors)
-#   # # +
-#   # # geom_text(aes(label = Count), position = position_stack(vjust = 0.5), size = 3, color = "black")
-#   # # geom_text(data = dplyr::filter(agg_all, Count > 0),aes(label = Count), position = position_stack(vjust = 0.5), size = 3, color = "black")
-#   
-#   # p_counts
-#   # output$acounts_plot <- renderPlotly({ plotly::ggplotly(p_counts, tooltip = "text") %>%
-#   # plotly::layout(showlegend = FALSE, transition = list(duration = 500))  }) #%>% toWebGL()
-#   # ---- animate update via plotlyProxy ----
-#   acounts_proxy <- plotlyProxy("acounts_plot", session)
-#   acounts_proxy_data <- lapply(all_quartiles, function(q) {
-#     agg_all %>%
-#       filter(Qscore == q) %>%
-#       arrange(Position) %>%
-#       pull(Count)
-#   })
-#   
-#   plotlyProxyInvoke(
-#     acounts_proxy,
-#     "restyle",
-#     list(
-#       # y = list(agg_all$Counts)
-#       y=acounts_proxy_data
-#     )
-#   )
-#   
-#   # ---------------------------
-#   # Create stacked bar chart for Sum of Adjusted Citations
-#   # ---------------------------
-#   # p_cites <- ggplot(agg_all, aes(x = Position, y = SumCitations, fill = Position, color = Position, alpha = Qscore, group=Qscore, text = paste(
-#   #   "Position:", Position,
-#   #   "<br>Position Citations:", Total_Citations,
-#   #   "<br>Quartile:", Qscore,
-#   #   "<br>Quartile Citations:", Total_QCitations
-#   #   # "<br>Citations:", SumCitations
-#   # ))) +
-#   #   geom_bar(stat = "identity", size = 0.25) +
-#   #   scale_colour_manual(
-#   #     values = position_border_colors,
-#   #     guide = "none"          # hide border legend
-#   #   ) +
-#   #   # scale_fill_manual(values = quartile_colors, name = "Quartile") +
-#   #   scale_fill_manual(values = position_colors, 
-#   #                     # name = "Position"
-#   #                     guide = "none"
-#   #   ) +
-#   #   scale_alpha_manual(values = quartile_alpha, 
-#   #                      name = "Journal Rank"
-#   #                      # guide = "none"
-#   #   ) +
-#   #   theme_minimal(base_size = 12) +
-#   #   labs(title = "Citation Count based on Authorship with Journal Rank Categorization",
-#   #        y = NULL, x = NULL) +
-#   #   theme(
-#   #     plot.title = element_text(hjust = 0.5, face = "bold"),
-#   #     axis.text.x = element_text(angle = 15, hjust = 1)
-#   #   ) #+
-#   # # geom_text(aes(label = ifelse(SumCitations==0, "", round(SumCitations, 0))), position = position_stack(vjust = 0.5), size = 3, color = "black")
-#   # # geom_text(data = dplyr::filter(agg_all, Count > 0), aes(label = ifelse(SumCitations==0, "", round(SumCitations, 0))), position = position_stack(vjust = 0.5), size = 3, color = "black")
-#   
-#   # p_cites
-#   # output$ccounts_plot <- renderPlotly({ plotly::ggplotly(p_cites, tooltip = "text") %>%
-#   # plotly::layout(showlegend = FALSE, transition = list(duration = 500))}) # %>% toWebGL() 
-#   ccounts_proxy <- plotlyProxy("ccounts_plot", session)
-#   ccounts_proxy_data <- lapply(all_quartiles, function(q) {
-#     agg_all %>%
-#       filter(Qscore == q) %>%
-#       arrange(Position) %>%
-#       pull(SumCitations)
-#   })
-#   
-#   plotlyProxyInvoke(
-#     ccounts_proxy,
-#     "restyle",
-#     list(
-#       # y = list(agg_all$Counts)
-#       y=ccounts_proxy_data
-#     )
-#   )
-#   
-#   stats_by_position <- df_ordered_debug %>%
-#     group_by(position_rank) %>%
-#     summarise(
-#       min  = min(Citations, na.rm = TRUE),
-#       q25  = quantile(Citations, 0.25, na.rm = TRUE),
-#       med  = median(Citations, na.rm = TRUE),
-#       mean = mean(Citations, na.rm = TRUE),
-#       q75  = quantile(Citations, 0.75, na.rm = TRUE),
-#       max  = max(Citations, na.rm = TRUE),
-#       .groups = "drop",
-#     )
-#   
-#   df_plot <- df_ordered_debug %>%
-#     left_join(stats_by_position, by = "position_rank")
-#   
-#   df_plot <- df_plot %>%
-#     mutate(
-#       position_rank = factor(position_rank),
-#       Qscore = factor(Qscore),
-#       Adjusted_Citations = as.numeric(Adjusted_Citations),
-#       Citations = as.numeric(Citations)
-#     )
-#   
-#   group_counts <- df_plot %>%
-#     count(position_rank)
-#   
-#   # print(df_plot)
-#   # print(df_plot[,c("Adjustment_Weights","Adjusted_Citations","position_rank", "JIF5Years", "Qscore")]) #"matched_token"
-#   # print(colnames(df_plot))
-#   # print(nrow(df_plot))
-#   # print(group_counts)
-#   
-#   if(nrow(df_plot) <= 1 || all(group_counts$n <= 1) || all(df_plot$Citations == 0)){
-#     rv$log_text <- paste(
-#       rv$log_text,
-#       "plot_glens_table() - Warning: Need more than one group and atleast 1 paper with 1 citation per-group for plotting distribution.",
-#       sep = "\n"
-#     )
-#     # output$log <- renderText({ rv$log_text })
-#     warning("plot_glens_table() - Warning: Need more than one group and atleast 1 paper with 1 citation per-group for plotting distribution.")
-#     shinyjs::hide("cdist_plot")
-#     # return()
-#   }
-#   
-#   # p_citesdist <- ggplot(df_plot, aes(x = position_rank, y = Citations, fill = position_rank, group=position_rank, colour = Qscore,size=Adjusted_Citations, text = paste0(
-#   #   "<b>Position:</b> ", position_rank,
-#   #   "<br><b>Citations:</b> ", Citations,
-#   #   "<br><b>Qscore:</b> ", Qscore,
-#   #   "<br><b>Author Count:</b> ", Author_Count,
-#   #   "<br><b>Adjustment Weight:</b> ", Adjustment_Weights,
-#   #   "<br><b>Adjusted Citations:</b> ", Adjusted_Citations,
-#   #   "<br><b>Min:</b> ", min,
-#   #   "<br><b>25%:</b> ", q25,
-#   #   "<br><b>Median:</b> ", med,
-#   #   "<br><b>Mean:</b> ", round(mean, 1),
-#   #   "<br><b>75%:</b> ", q75,
-#   #   "<br><b>Max:</b> ", max
-#   # ))) +     geom_violin(alpha = 0.5) +     geom_point(position = position_jitter(seed = 1, width = 0.2)) +     theme(legend.position = "none") + scale_colour_manual(
-#   #   values = position_border_colors,
-#   #   guide = "none"          # hide border legend
-#   # ) +
-#   #   scale_y_continuous(
-#   #     trans = "log1p"
-#   #   ) +
-#   #   scale_fill_manual(values = position_colors, 
-#   #                     # name = "Position"
-#   #                     guide = "none"
-#   #   ) +
-#   #   theme_minimal(base_size = 12) +
-#   #   labs(title = "Citation Distribution based on Authorship (Log Scale)",
-#   #        y = "log(1 + Citations)", x = NULL) +
-#   #   theme(
-#   #     plot.title = element_text(hjust = 0.5, face = "bold"),
-#   #     axis.text.x = element_text(angle = 15, hjust = 1)
-#   #   )
-#   # 
-#   # # p_citesdist
-#   # output$cdist_plot <- renderPlotly({ plotly::ggplotly(p_citesdist, tooltip = "text") %>%
-#   #   plotly::layout(showlegend = FALSE, transition = list(duration = 500)) }) # %>% toWebGL() 
-#   # --- function to build hover text identical to ggplot's text ---
-#   make_dist_hover_text <- function(df) {
-#     return(paste0(
-#       "<b>Position:</b> ", df$position_rank,
-#       "<br><b>Citations:</b> ", df$Citations,
-#       "<br><b>Qscore:</b> ", df$Qscore,
-#       "<br><b>Author Count:</b> ", df$Author_Count,
-#       "<br><b>Adjustment Weight:</b> ", df$Adjustment_Weights,
-#       "<br><b>Adjusted Citations:</b> ", df$Adjusted_Citations,
-#       "<br><b>Min:</b> ", df$min,
-#       "<br><b>25%:</b> ", df$q25,
-#       "<br><b>Median:</b> ", df$med,
-#       "<br><b>Mean:</b> ", round(df$mean, 1),
-#       "<br><b>75%:</b> ", df$q75,
-#       "<br><b>Max:</b> ", df$max
-#     ))
-#   }
-#   
-#   cdist_proxy <- plotlyProxy("cdist_plot", session)
-#   for (i in seq_along(all_positions)) {
-#     pos <- all_positions[i]
-#     rows <- which(df_plot$position_rank == pos)
-#     
-#     # Violin y-values (log1p transform to match ggplot scale)
-#     y_violin <- if (length(rows) > 0) log1p(df_plot$Citations[rows]) else numeric(0)
-#     x_violin <- rep(i, length(y_violin))
-#     
-#     # Scatter x/y/text/marker.size (jitter x around i)
-#     n <- length(rows)
-#     if (n > 0) {
-#       x_scatter <- i + runif(n, -0.18, 0.18)         # jitter around i
-#       y_scatter <- log1p(df_plot$Citations[rows]) 
-#       text_scatter <- make_dist_hover_text(df_plot[rows, , drop = FALSE])
-#       size_scatter <- (scale(df_plot$Adjusted_Citations[rows]) * 10) + 15   # maybe scale this if too large
-#     } else {
-#       x_scatter <- numeric(0); y_scatter <- numeric(0); text_scatter <- character(0); size_scatter <- numeric(0)
-#     }
-#     
-#     # Violin trace index = (i - 1) * 2   (0-based indices)
-#     violin_trace_idx <- (i - 1) * 2
-#     # Scatter trace index = (i - 1) * 2 + 1
-#     scatter_trace_idx <- (i - 1) * 2 + 1
-#     
-#     # print("x_violin")
-#     # print(x_violin)
-#     # print("y_violin")
-#     # print(y_violin)
-#     
-#     # Update violin 'y' (restyle)
-#     # Note: plotlyProxyInvoke expects values for the trace; we pass y as a list of values for that trace
-#     plotlyProxyInvoke(cdist_proxy, "restyle", list(x=list(x_violin),y = list(y_violin)), list(violin_trace_idx))
-#     
-#     # Update scatter x, y, text, marker.size
-#     # For nested properties like marker.size use named element `marker.size` in the props list
-#     cdist_proxy_data <- list(
-#       x = list(x_scatter),
-#       y = list(y_scatter),
-#       text = list(text_scatter),
-#       `marker.size` = list(size_scatter)
-#     )
-#     plotlyProxyInvoke(cdist_proxy, "restyle", cdist_proxy_data, list(scatter_trace_idx))
-#     
-#   } #End - for
-#   
-#   total_pubs <- nrow(df_plot)
-#   
-#   pub_pdata <- df_plot %>% 
-#     group_by(position_rank) %>% 
-#     count() %>% 
-#     ungroup() %>% 
-#     mutate(pcontrib = if (is.na(total_pubs) || total_pubs == 0) 0 else (n / total_pubs) * 100)
-#   # print(pub_pdata)
-#   
-#   # output$aperc_plot <- renderPlotly(({
-#   #   # auth_pplot <- ggplot(
-#   #   #   pub_pdata,
-#   #   #   aes(
-#   #   #     x = "Publications",
-#   #   #     y = pcontrib,
-#   #   #     fill = position_rank,
-#   #   #     colour = position_rank,
-#   #   #     text = paste0(
-#   #   #       "<b>Position:</b> ", position_rank,
-#   #   #       "<br><b>Contribution %:</b> ", pcontrib
-#   #   #     )
-#   #   #   )
-#   #   # ) +
-#   #   #   geom_bar(
-#   #   #     stat = "identity",
-#   #   #     width = 0.3,
-#   #   #     size = 0.6,
-#   #   #     alpha = 0.7
-#   #   #   ) +
-#   #   #   coord_flip() + 
-#   #   #   scale_fill_manual(values = position_colors, guide = "none") +
-#   #   #   scale_colour_manual(values = position_border_colors, guide = "none") +
-#   #   #   theme_minimal(base_size = 12) +
-#   #   #   labs(
-#   #   #     title = "Author Contribution in % based on Authorship",
-#   #   #     x = NULL,
-#   #   #     y = NULL, #"Contribution (%)",
-#   #   #     fill = "Position"
-#   #   #   ) +
-#   #   #   theme(
-#   #   #     # axis.text.x = element_blank(),
-#   #   #     # axis.ticks.x = element_blank(),
-#   #   #     axis.text.y = element_blank(),
-#   #   #     plot.title = element_text(hjust = 0.5, face = "bold")
-#   #   #   )
-#   #   # 
-#   #   # # auth_pplot
-#   #   # plotly::ggplotly(auth_pplot, tooltip = "text") %>%
-#   #   #   plotly::layout(showlegend = FALSE)  
-#   #   
-#   # }))
-#   
-#   make_perc_hover_text <- function(df) {
-#     return(paste0(
-#       "<b>Position:</b> ", df$position_rank,
-#       "<br><b>Contribution %:</b> ", df$pcontrib
-#     ))
-#   }
-#   
-#   # print("HERE1")
-#   req(pub_pdata)
-#   # print("HERE2")
-#   
-#   if(nrow(pub_pdata) <= 0){
-#     shinyjs::hide("aperc_plot")
-#     shinyjs::hide("cperc_plot")
-#     # return()
-#   }
-#   
-#   aperc_proxy <- plotlyProxy("aperc_plot", session)
-#   
-#   n <- length(all_positions)
-#   
-#   # 1. Calculate values
-#   aperc_vals <- sapply(all_positions, function(pos) {
-#     i <- which(pub_pdata$position_rank == pos)
-#     
-#     # Extract value if it exists, otherwise default to 0
-#     val <- if (length(i) == 1) pub_pdata$pcontrib[i] else 0
-#     
-#     # Final safety net to strip any lingering NAs or NaNs
-#     if (is.na(val) || is.nan(val)) 0 else val
-#   })
-#   
-#   # Normalize to 100%
-#   if(sum(aperc_vals) > 0) {
-#     aperc_vals <- (aperc_vals / sum(aperc_vals)) * 100
-#   }
-#   
-#   # 2. Prepare the lists for restyle
-#   # Restyle expects a list where each element corresponds to a trace
-#   # Each element itself must be a list containing the data point(s)
-#   aperc_x_list <- lapply(aperc_vals, function(v) list(v)) 
-#   # print("aperc_x_list")
-#   # print(aperc_x_list)
-#   aperc_y_list <- lapply(seq_len(n), function(i) list("Publications"))
-#   # print("aperc_y_list")
-#   # print(aperc_y_list)
-#   aperc_text_list <- lapply(seq_len(n), function(i) {
-#     list(paste0(
-#       "<b>Position:</b> ", all_positions[i],
-#       "<br><b>Contribution %:</b> ", round(aperc_vals[i], 1), "%"
-#     ))
-#   })
-#   
-#   # 3. Execute Invoke
-#   plotlyProxyInvoke(
-#     aperc_proxy,
-#     "restyle",
-#     list(
-#       x = unname(aperc_x_list),
-#       y = unname(aperc_y_list),
-#       text = unname(aperc_text_list),
-#       textposition = rep(list("inside"), n)
-#     ),
-#     as.list(0:(n - 1)) # Trace indices
-#   )
-#   
-#   # if (!is.null(rv$aperc_plot)) {
-#   #   pb <- plotly_build(rv$aperc_plot)
-#   #   cat("---- TRACE DEBUG ----\n")
-#   #   for (i in seq_along(pb$x$data)) {
-#   #     cat(
-#   #       "Trace", i-1,
-#   #       "| name:", pb$x$data[[i]]$name,
-#   #       "| x:", paste(pb$x$data[[i]]$x, collapse=","),
-#   #       "| y:", paste(pb$x$data[[i]]$y, collapse=","),
-#   #       "\n"
-#   #     )
-#   #   }
-#   # }
-#   
-#   #   for (i in seq_along(all_positions)) {
-#   #     # trace index is 0-based
-#   #     trace_idx <- i - 1
-#   #     
-#   #     plotlyProxyInvoke(
-#   #       aperc_proxy, "restyle",
-#   #       # set a single x value and the shared y category for this trace
-#   #       list(
-#   #         x = list(pub_pdata$pcontrib[i]),                         # ONE value per trace
-#   #         # y = list("Publications"),                  # same category for all traces
-#   #         text = list(
-#   #           paste0(
-#   #             "<b>Position:</b> ", all_positions[i],
-#   #             "<br><b>Contribution %:</b> ", round(aperc_vals[i], 1)
-#   #           )
-#   #         ),
-#   #         textposition = list("inside")              # place text inside each segment
-#   #       ),
-#   #       trace_idx
-#   #     )
-#   #   }
-#   # # }, once = TRUE)
-#   
-#   total_cites <- sum(df_plot$Citations)
-#   
-#   cites_pdata <- df_plot %>% 
-#     group_by(position_rank) %>% 
-#     summarise(TotalCitations = sum(Citations), .groups = 'drop') %>% 
-#     # Safely check for NA first, and use the double || 
-#     mutate(pcontrib = if (is.na(total_cites) || total_cites == 0) 0 else (TotalCitations / total_cites) * 100)
-#   
-#   # print(cites_pdata)
-#   
-#   req(cites_pdata)
-#   cperc_proxy <- plotlyProxy("cperc_plot", session)
-#   
-#   n <- length(all_positions)
-#   
-#   # 1. Map the citation data to match the order of all_positions
-#   cperc_vals <- sapply(all_positions, function(pos) {
-#     idx <- which(cites_pdata$position_rank == pos)
-#     
-#     # Extract value if it exists, otherwise default to 0
-#     val <- if (length(idx) == 1) cites_pdata$pcontrib[idx] else 0
-#     
-#     # Final safety net to strip any lingering NAs or NaNs before Plotly gets it
-#     if (is.na(val) || is.nan(val)) 0 else val
-#   })
-#   
-#   # print("HERE3")
-#   # print(cites_pdata)
-#   # print(cperc_vals)
-#   # print(n)
-#   # print(all_positions)
-#   # print("HERE4")
-#   
-#   # Ensure total is 100% (Safety check)
-#   if(sum(cperc_vals) > 0) {
-#     cperc_vals <- (cperc_vals / sum(cperc_vals)) * 100
-#   }
-#   
-#   # 2. Build the List-of-Lists (Unnamed)
-#   cperc_x_list <- lapply(cperc_vals, function(v) list(v))
-#   cperc_y_list <- lapply(seq_len(n), function(i) list("Citations"))
-#   cperc_text_list <- lapply(seq_len(n), function(i) {
-#     list(paste0(
-#       "<b>Position:</b> ", all_positions[i],
-#       "<br><b>Contribution %:</b> ", round(cperc_vals[i], 1), "%"
-#     ))
-#   })
-#   
-#   # 3. Single Update Call
-#   plotlyProxyInvoke(
-#     cperc_proxy,
-#     "restyle",
-#     list(
-#       x = unname(cperc_x_list),
-#       y = unname(cperc_y_list),
-#       text = unname(cperc_text_list),
-#       textposition = rep(list("inside"), n)
-#     ),
-#     as.list(0:(n - 1))
-#   )# End - for
-#   
-#   print(cites_pdata)
-#   print(sum(cites_pdata$pcontrib))
-#   # print(str(cperc_proxy))
-#   
-#   # cites_pplot <- ggplot(
-#   #   cites_pdata,
-#   #   aes(
-#   #     x = "Publications",
-#   #     y = pcontrib,
-#   #     fill = position_rank,
-#   #     colour = position_rank,
-#   #     text = paste0(
-#   #       "<b>Position:</b> ", position_rank,
-#   #       "<br><b>Contribution %:</b> ", pcontrib
-#   #     )
-#   #   )
-#   # ) +
-#   #   geom_bar(
-#   #     stat = "identity",
-#   #     width = 0.3,
-#   #     size = 0.6,
-#   #     alpha = 0.7
-#   #   ) +
-#   #   coord_flip() + 
-#   #   scale_fill_manual(values = position_colors, guide = "none") +
-#   #   scale_colour_manual(values = position_border_colors, guide = "none") +
-#   #   theme_minimal(base_size = 12) +
-#   #   labs(
-#   #     title = "Citation Contribution in % based on Authorship",
-#   #     x = NULL,
-#   #     y = NULL, #"Contribution (%)",
-#   #     fill = "Position"
-#   #   ) +
-#   #   theme(
-#   #     # axis.text.x = element_blank(),
-#   #     # axis.ticks.x = element_blank(),
-#   #     axis.text.y = element_blank(),
-#   #     plot.title = element_text(hjust = 0.5, face = "bold")
-#   #   )
-#   # 
-#   # cites_pplot
-#   # plotly::ggplotly(cites_pplot, tooltip = "text") %>%
-#   #   plotly::layout(showlegend = FALSE)
-# } #End - Plotting
-
-plot_glens_table <- function(rv,session){
-  req(rv$glens_year_filtered, nrow(rv$glens_year_filtered) > 0)
-  if(is.null(rv$glens_year_filtered) || nrow(rv$glens_year_filtered) <= 0){
-    rv$log_text <- paste(rv$log_text, "Warning: No data available for these filters!\n", sep="")
-    warning("Warning: No data available for these filters!")
-    shinyjs::hide("sh_index")
-    shinyjs::hide("summary_table")
-    shinyjs::hide("acounts_plot")
-    shinyjs::hide("ccounts_plot")
-    shinyjs::hide("cdist_plot")
-    shinyjs::hide("aperc_plot")
-    shinyjs::hide("cperc_plot")
-    shinyjs::hide("network_filtered")
-    shinyjs::hide("extended_table")
-    return() # Stop execution here
-  }
-  shinyjs::show("acounts_plot")
-  shinyjs::show("ccounts_plot")
-  shinyjs::show("cdist_plot")
-  shinyjs::show("aperc_plot")
-  shinyjs::show("cperc_plot")
-  shinyjs::show("network_filtered")
-  
-  df_ordered_debug <- rv$glens_year_filtered %>%
-    mutate(position_rank = case_when(
-      as.numeric(First_Author) == 1 ~ 1L,
-      as.numeric(Second_Author) == 1 ~ 2L,
-      as.numeric(Co_Author) == 1 ~ 3L,
-      as.numeric(Corresponding_Author) == 1 ~ 4L,
-      TRUE ~ 99L
-    )) %>%
-    mutate(adj_cit_for_sort = ifelse(is.na(Adjusted_Citations), -Inf, Adjusted_Citations)) %>%
-    arrange(position_rank, desc(adj_cit_for_sort)) %>%
-    select(-adj_cit_for_sort)  
-  
-  df_ordered_debug$position_rank[which(df_ordered_debug$position_rank == 1)] <- "First Author"
-  df_ordered_debug$position_rank[which(df_ordered_debug$position_rank == 2)] <- "Second Author"
-  df_ordered_debug$position_rank[which(df_ordered_debug$position_rank == 3)] <- "Co-Author"
-  df_ordered_debug$position_rank[which(df_ordered_debug$position_rank == 4)] <- "Corresponding Author"
-  
-  agg_first <- make_agg(df_ordered_debug, "First_Author", "First Author")
-  agg_second <- make_agg(df_ordered_debug, "Second_Author", "Second Author")
-  agg_co <- make_agg(df_ordered_debug, "Co_Author", "Co-Author")
-  agg_cor <- make_agg(df_ordered_debug, "Corresponding_Author", "Corresponding Author")
-  
-  agg_all <- bind_rows(agg_first, agg_second, agg_co, agg_cor)
-  
-  # Ensure all quartiles present per position (fill zeros)
-  all_positions <- c("First Author","Second Author","Co-Author","Corresponding Author")
-  all_quartiles <- c("Q1","Q2","Q3","Q4", "NA")
-  full_grid <- expand.grid(Position = all_positions, Qscore = all_quartiles, stringsAsFactors = FALSE)
-  agg_all <- full_grid %>%
-    left_join(agg_all, by = c("Position","Qscore")) %>%
-    mutate(Count = tidyr::replace_na(Count, 0L),
-           SumCitations = tidyr::replace_na(SumCitations, 0.0))
-  
-  position_colors <- c("First Author" = "#D6A77A",  # greenish (co-author in your sample used green)
-                       "Second Author" = "#B66BA4",  # blue-ish
-                       "Co-Author" = "#2E8B57",  # purple-ish
-                       "Corresponding Author" = "#4B8BBE")  # tan (light)
-  position_border_colors <- c(
-    "First Author" = "#ff9f40ff",
-    "Second Author" = "#9966ffff",
-    "Co-Author" = "#4bc093ff",
-    "Corresponding Author" = "#36a2ebff"
-  )
-  
-  # Alpha values so Q1 most opaque and Q4 faint
-  quartile_alpha <- c("Q1" = 0.9, "Q2" = 0.70, "Q3" = 0.50, "Q4" = 0.30, "NA" = 0.1)
-  
-  # Order positions for plotting (Left to right as in your image: First, Second, Co, Corresponding)
-  agg_all$Position <- factor(agg_all$Position, levels = all_positions)
-  agg_all$Qscore <- factor(agg_all$Qscore, levels = all_quartiles)
-  agg_all <- agg_all %>%
-    group_by(Position) %>%
-    mutate(Total_Position = sum(Count, na.rm = TRUE)) %>%
-    ungroup()
-  agg_all <- agg_all %>%
-    group_by(Position) %>%
-    mutate(Total_Citations = sum(SumCitations, na.rm = TRUE)) %>%
-    ungroup()
-  agg_all <- agg_all %>%
-    group_by(Qscore) %>%
-    mutate(Total_QCitations = sum(SumCitations, na.rm = TRUE)) %>%
-    ungroup()
-  
-  agg_all <- agg_all %>%
-    mutate(
-      Position = factor(Position, levels = all_positions),
-      Qscore   = factor(Qscore, levels = all_quartiles)
-    ) %>%
-    arrange(Qscore, Position)
-  
-  # ---- animate update via plotlyProxy ----
-  acounts_proxy <- plotlyProxy("acounts_plot", session)
-  
-  acounts_proxy_data <- lapply(all_quartiles, function(q) {
-    agg_all %>%
-      filter(Qscore == q) %>%
-      arrange(Position) %>%
-      pull(Count)
-  })
-  
-  # 1. Format the data explicitly as a list of traces for the 'animate' method
-  acounts_animate_payload <- lapply(acounts_proxy_data, function(y_vals) {
-    list(y = y_vals)
-  })
-  
-  # 2. Invoke 'animate' with transition settings
-  plotlyProxyInvoke(
-    acounts_proxy,
-    "animate",
-    # Argument 1: The new data
-    list(
-      data = acounts_animate_payload,
-      traces = as.list(0:(length(all_quartiles) - 1)) # Explicitly tell it which traces to map to
-    ),
-    
-    # Argument 2: The animation settings
-    list(
-      transition = list(
-        duration = 200,               # 800 milliseconds (0.8 seconds)
-        easing = "cubic-in-out"       # Starts slow, speeds up, ends slow
-      ),
-      frame = list(
-        duration = 200,
-        redraw = FALSE                # Set to FALSE for smoother SVG morphing
-      )
-    )
-  )
-  
-  ccounts_proxy <- plotlyProxy("ccounts_plot", session)
-  
-  ccounts_proxy_data <- lapply(all_quartiles, function(q) {
-    agg_all %>%
-      filter(Qscore == q) %>%
-      arrange(Position) %>%
-      pull(Count)
-  })
-  
-  # 1. Format the data explicitly as a list of traces for the 'animate' method
-  ccounts_animate_payload <- lapply(ccounts_proxy_data, function(y_vals) {
-    list(y = y_vals)
-  })
-  
-  # 2. Invoke 'animate' with transition settings
-  plotlyProxyInvoke(
-    ccounts_proxy,
-    "animate",
-    
-    # Argument 1: The new data
-    list(
-      data = ccounts_animate_payload,
-      traces = as.list(0:(length(all_quartiles) - 1)) # Explicitly tell it which traces to map to
-    ),
-    
-    # Argument 2: The animation settings
-    list(
-      transition = list(
-        duration = 200,               # 800 milliseconds (0.8 seconds)
-        easing = "cubic-in-out"       # Starts slow, speeds up, ends slow
-      ),
-      frame = list(
-        duration = 200,
-        redraw = FALSE                # Set to FALSE for smoother SVG morphing
-      )
-    )
-  )
-  
-  stats_by_position <- df_ordered_debug %>%
-    group_by(position_rank) %>%
-    summarise(
-      min  = min(Citations, na.rm = TRUE),
-      q25  = quantile(Citations, 0.25, na.rm = TRUE),
-      med  = median(Citations, na.rm = TRUE),
-      mean = mean(Citations, na.rm = TRUE),
-      q75  = quantile(Citations, 0.75, na.rm = TRUE),
-      max  = max(Citations, na.rm = TRUE),
-      .groups = "drop",
-    )
-  
-  df_plot <- df_ordered_debug %>%
-    left_join(stats_by_position, by = "position_rank")
-  
-  df_plot <- df_plot %>%
-    mutate(
-      position_rank = factor(position_rank),
-      Qscore = factor(Qscore),
-      Adjusted_Citations = as.numeric(Adjusted_Citations),
-      Citations = as.numeric(Citations)
-    )
-  
-  group_counts <- df_plot %>%
-    count(position_rank)
-  
-  if(nrow(df_plot) <= 1 || all(group_counts$n <= 1) || all(df_plot$Citations == 0)){
-    rv$log_text <- paste(
-      rv$log_text,
-      "plot_glens_table() - Warning: Need more than one group and atleast 1 paper with 1 citation per-group for plotting distribution.",
-      sep = "\n"
-    )
-    
-    # output$log <- renderText({ rv$log_text })
-    warning("plot_glens_table() - Warning: Need more than one group and atleast 1 paper with 1 citation per-group for plotting distribution.")
-    shinyjs::hide("cdist_plot")
-    # return()
-  }
-  
-  # --- function to build hover text identical to ggplot's text ---
-  make_dist_hover_text <- function(df) {
-    return(paste0(
-      "<b>Position:</b> ", df$position_rank,
-      "<br><b>Citations:</b> ", df$Citations,
-      "<br><b>Qscore:</b> ", df$Qscore,
-      "<br><b>Author Count:</b> ", df$Author_Count,
-      "<br><b>Adjustment Weight:</b> ", df$Adjustment_Weights,
-      "<br><b>Adjusted Citations:</b> ", df$Adjusted_Citations,
-      "<br><b>Min:</b> ", df$min,
-      "<br><b>25%:</b> ", df$q25,
-      "<br><b>Median:</b> ", df$med,
-      "<br><b>Mean:</b> ", round(df$mean, 1),
-      "<br><b>75%:</b> ", df$q75,
-      "<br><b>Max:</b> ", df$max
-    ))
-  }
-  
-  cdist_proxy <- plotlyProxy("cdist_plot", session)
-  for (i in seq_along(all_positions)) {
-    pos <- all_positions[i]
-    rows <- which(df_plot$position_rank == pos)
-    
-    # Violin y-values (log1p transform to match ggplot scale)
-    y_violin <- if (length(rows) > 0) log1p(df_plot$Citations[rows]) else numeric(0)
-    x_violin <- rep(i, length(y_violin))
-    
-    # Scatter x/y/text/marker.size (jitter x around i)
-    n <- length(rows)
-    if (n > 0) {
-      x_scatter <- i + runif(n, -0.18, 0.18)         # jitter around i
-      y_scatter <- log1p(df_plot$Citations[rows])
-      text_scatter <- make_dist_hover_text(df_plot[rows, , drop = FALSE])
-      size_scatter <- (scale(df_plot$Adjusted_Citations[rows]) * 10) + 15   # maybe scale this if too large
-    } else {
-      x_scatter <- numeric(0); y_scatter <- numeric(0); text_scatter <- character(0); size_scatter <- numeric(0)
-    }
-    
-    # Violin trace index = (i - 1) * 2   (0-based indices)
-    violin_trace_idx <- (i - 1) * 2
-    # Scatter trace index = (i - 1) * 2 + 1
-    scatter_trace_idx <- (i - 1) * 2 + 1
-    
-    # print("x_violin")
-    # print(x_violin)
-    # print("y_violin")
-    # print(y_violin)
-    
-    # Update violin 'y' (restyle)
-    # Note: plotlyProxyInvoke expects values for the trace; we pass y as a list of values for that trace
-    plotlyProxyInvoke(cdist_proxy, "restyle", list(x=list(x_violin),y = list(y_violin)), list(violin_trace_idx))
-    
-    # Update scatter x, y, text, marker.size
-    # For nested properties like marker.size use named element `marker.size` in the props list
-    cdist_proxy_data <- list(
-      x = list(x_scatter),
-      y = list(y_scatter),
-      text = list(text_scatter),
-      `marker.size` = list(size_scatter)
-    )
-    plotlyProxyInvoke(cdist_proxy, "restyle", cdist_proxy_data, list(scatter_trace_idx))
-    
-  } #End - for
-  
-  
-  total_pubs <- nrow(df_plot)
-  
-  pub_pdata <- df_plot %>% 
-    group_by(position_rank) %>% 
-    count() %>% 
-    ungroup() %>% 
-    mutate(pcontrib = if (is.na(total_pubs) || total_pubs == 0) 0 else (n / total_pubs) * 100)
-  # print(pub_pdata)
-  
-  make_perc_hover_text <- function(df) {
-    return(paste0(
-      "<b>Position:</b> ", df$position_rank,
-      "<br><b>Contribution %:</b> ", df$pcontrib
-    ))
-  }
-  
-  # print("HERE1")
-  req(pub_pdata)
-  # print("HERE2")
-  
-  if(nrow(pub_pdata) <= 0){
-    shinyjs::hide("aperc_plot")
-    shinyjs::hide("cperc_plot")
-    # return()
-  }
-  
-  aperc_proxy <- plotlyProxy("aperc_plot", session)
-  
-  n <- length(all_positions)
-  
-  # 1. Calculate values
-  aperc_vals <- sapply(all_positions, function(pos) {
-    i <- which(pub_pdata$position_rank == pos)
-    
-    # Extract value if it exists, otherwise default to 0
-    val <- if (length(i) == 1) pub_pdata$pcontrib[i] else 0
-    
-    # Final safety net to strip any lingering NAs or NaNs
-    if (is.na(val) || is.nan(val)) 0 else val
-  })
-  
-  # Normalize to 100%
-  if(sum(aperc_vals) > 0) {
-    aperc_vals <- (aperc_vals / sum(aperc_vals)) * 100
-  }
-  
-  # 2. Prepare the lists for restyle
-  # Restyle expects a list where each element corresponds to a trace
-  # Each element itself must be a list containing the data point(s)
-  aperc_x_list <- lapply(aperc_vals, function(v) list(v)) 
-  # print("aperc_x_list")
-  # print(aperc_x_list)
-  aperc_y_list <- lapply(seq_len(n), function(i) list("Publications"))
-  # print("aperc_y_list")
-  # print(aperc_y_list)
-  aperc_text_list <- lapply(seq_len(n), function(i) {
-    list(paste0(
-      "<b>Position:</b> ", all_positions[i],
-      "<br><b>Contribution %:</b> ", round(aperc_vals[i], 1), "%"
-    ))
-  })
-  
-  # 3. Execute Invoke
-  plotlyProxyInvoke(
-    aperc_proxy,
-    "restyle",
-    list(
-      x = unname(aperc_x_list),
-      y = unname(aperc_y_list),
-      text = unname(aperc_text_list),
-      textposition = rep(list("inside"), n)
-    ),
-    as.list(0:(n - 1)) # Trace indices
-  )
-  
-  total_cites <- sum(df_plot$Citations)
-  cites_pdata <- df_plot %>% 
-    group_by(position_rank) %>% 
-    summarise(TotalCitations = sum(Citations), .groups = 'drop') %>% 
-    # Safely check for NA first, and use the double || 
-    mutate(pcontrib = if (is.na(total_cites) || total_cites == 0) 0 else (TotalCitations / total_cites) * 100)
-  # print(cites_pdata)
-  req(cites_pdata)
-  cperc_proxy <- plotlyProxy("cperc_plot", session)
-  n <- length(all_positions)
-  # 1. Map the citation data to match the order of all_positions
-  cperc_vals <- sapply(all_positions, function(pos) {
-    idx <- which(cites_pdata$position_rank == pos)
-    # Extract value if it exists, otherwise default to 0
-    val <- if (length(idx) == 1) cites_pdata$pcontrib[idx] else 0
-    # Final safety net to strip any lingering NAs or NaNs before Plotly gets it
-    if (is.na(val) || is.nan(val)) 0 else val
-  })
-  # Ensure total is 100% (Safety check)
-  if(sum(cperc_vals) > 0) {
-    cperc_vals <- (cperc_vals / sum(cperc_vals)) * 100
-  }
-  # 2. Build the List-of-Lists (Unnamed)
-  cperc_x_list <- lapply(cperc_vals, function(v) list(v))
-  cperc_y_list <- lapply(seq_len(n), function(i) list("Citations"))
-  cperc_text_list <- lapply(seq_len(n), function(i) {
-    list(paste0(
-      "<b>Position:</b> ", all_positions[i],
-      "<br><b>Contribution %:</b> ", round(cperc_vals[i], 1), "%"
-    ))
-  })
-  # 3. Single Update Call
-  plotlyProxyInvoke(
-    cperc_proxy,
-    "restyle",
-    list(
-      x = unname(cperc_x_list),
-      y = unname(cperc_y_list),
-      text = unname(cperc_text_list),
-      textposition = rep(list("inside"), n)
-    ),
-    as.list(0:(n - 1))
-  )# End - for
-  print(cites_pdata)
-  print(sum(cites_pdata$pcontrib))
-  # print(str(cperc_proxy))
-  #End - Plotting
-}
-
-render_skeleton_plots <- function(rv, output){
-  df_ordered_debug <- rv$glens_year_filtered %>%
-    mutate(position_rank = case_when(
-      as.numeric(First_Author) == 1 ~ 1L,
-      as.numeric(Second_Author) == 1 ~ 2L,
-      as.numeric(Co_Author) == 1 ~ 3L,
-      as.numeric(Corresponding_Author) == 1 ~ 4L,
-      TRUE ~ 99L
-    )) %>%
-    mutate(adj_cit_for_sort = ifelse(is.na(Adjusted_Citations), -Inf, Adjusted_Citations)) %>%
-    arrange(position_rank, desc(adj_cit_for_sort)) %>%
-    select(-adj_cit_for_sort)  
-  
-  df_ordered_debug$position_rank[which(df_ordered_debug$position_rank == 1)] <- "First Author"
-  df_ordered_debug$position_rank[which(df_ordered_debug$position_rank == 2)] <- "Second Author"
-  df_ordered_debug$position_rank[which(df_ordered_debug$position_rank == 3)] <- "Co-Author"
-  df_ordered_debug$position_rank[which(df_ordered_debug$position_rank == 4)] <- "Corresponding Author"
-  print("HERE8.1")
-  print(str(df_ordered_debug))
-  agg_first <- make_agg(df_ordered_debug, "First_Author", "First Author")
-  agg_second <- make_agg(df_ordered_debug, "Second_Author", "Second Author")
-  agg_co <- make_agg(df_ordered_debug, "Co_Author", "Co-Author")
-  agg_cor <- make_agg(df_ordered_debug, "Corresponding_Author", "Corresponding Author")
-  print("HERE8.2")
-  agg_all <- bind_rows(agg_first, agg_second, agg_co, agg_cor)
-  
-  # Ensure all quartiles present per position (fill zeros)
-  all_positions <- c("First Author","Second Author","Co-Author","Corresponding Author")
-  all_quartiles <- c("Q1","Q2","Q3","Q4", "NA")
-  print("HERE8.3")
-  full_grid <- expand.grid(Position = all_positions, Qscore = all_quartiles, stringsAsFactors = FALSE)
-  print("HERE8.4")
-  agg_all <- full_grid %>%
-    left_join(agg_all, by = c("Position","Qscore")) %>%
-    mutate(Count = tidyr::replace_na(Count, 0L),
-           SumCitations = tidyr::replace_na(SumCitations, 0.0))
-  
-  print("HERE9")
-  # ---------------------------
-  # Plotting parameters (colors + alpha per quartile)
-  # ---------------------------
-  # Base colors per quartile (Q1 -> rich color, Q4 -> light)
-  # quartile_colors <- c("Q1" = "#2E8B57",  # greenish (co-author in your sample used green)
-  #                      "Q2" = "#4B8BBE",  # blue-ish
-  #                      "Q3" = "#B66BA4",  # purple-ish
-  #                      "Q4" = "#D6A77A")  # tan (light)
-  position_colors <- c("First Author" = "#D6A77A",  # greenish (co-author in your sample used green)
-                       "Second Author" = "#B66BA4",  # blue-ish
-                       "Co-Author" = "#2E8B57",  # purple-ish
-                       "Corresponding Author" = "#4B8BBE")  # tan (light)
-  position_border_colors <- c(
-    "First Author" = "#ff9f40ff",
-    "Second Author" = "#9966ffff",
-    "Co-Author" = "#4bc093ff",
-    "Corresponding Author" = "#36a2ebff"
-  )
-  
-  position_45plots <- c("First Author" = "#dbf2f2",
-                        "Second Author" = "#ebe0ff",
-                        "Co-Author" = "#ffe9d4",
-                        "Corresponding Author" = "#d7ecfb")
-  
-  position_45plots_border <- c("First Author" = "#8fcedb",
-                               "Second Author" = "#cfaeec",
-                               "Co-Author" = "#fbb774",
-                               "Corresponding Author" = "#7dc2f1")
-  
-  # Alpha values so Q1 most opaque and Q4 faint
-  quartile_alpha <- c("Q1" = 0.9, "Q2" = 0.70, "Q3" = 0.50, "Q4" = 0.30, "NA" = 0.1)
-  
-  print("HERE10")
-  # Order positions for plotting (Left to right as in your image: First, Second, Co, Corresponding)
-  agg_all$Position <- factor(agg_all$Position, levels = all_positions)
-  agg_all$Qscore <- factor(agg_all$Qscore, levels = all_quartiles)
-  print("HERE11")
-  agg_all <- agg_all %>%
-    group_by(Position) %>%
-    mutate(Total_Position = sum(Count, na.rm = TRUE)) %>%
-    ungroup()
-  agg_all <- agg_all %>%
-    group_by(Position) %>%
-    mutate(Total_Citations = sum(SumCitations, na.rm = TRUE)) %>%
-    ungroup()
-  print("HERE1.1")
-  agg_all <- agg_all %>%
-    group_by(Qscore) %>%
-    mutate(Total_QCitations = sum(SumCitations, na.rm = TRUE)) %>%
-    ungroup()
-  print("HERE1.2")
-  agg_all <- agg_all %>%
-    mutate(
-      Position = factor(Position, levels = all_positions),
-      Qscore   = factor(Qscore, levels = all_quartiles)
-    ) %>%
-    arrange(Qscore, Position)
-  # Ensure factor order matches ggplot
-  agg_all$Position <- factor(
-    agg_all$Position,
-    levels = all_positions
-  )
-  
-  agg_all$Qscore <- factor(
-    agg_all$Qscore,
-    levels = all_quartiles
-  )
-  
-  # print(agg_all)
-  
-  # stats_by_position <- df_ordered_debug %>%
-  #   group_by(position_rank) %>%
-  #   summarise(
-  #     min  = min(Citations, na.rm = TRUE),
-  #     q25  = quantile(Citations, 0.25, na.rm = TRUE),
-  #     med  = median(Citations, na.rm = TRUE),
-  #     mean = mean(Citations, na.rm = TRUE),
-  #     q75  = quantile(Citations, 0.75, na.rm = TRUE),
-  #     max  = max(Citations, na.rm = TRUE),
-  #     .groups = "drop",
-  #   )
-  # 
-  # df_plot <- df_ordered_debug %>%
-  #   left_join(stats_by_position, by = "position_rank")
-  # 
-  # df_plot <- df_plot %>%
-  #   mutate(
-  #     position_rank = factor(position_rank),
-  #     Qscore = factor(Qscore),
-  #     Adjusted_Citations = as.numeric(Adjusted_Citations),
-  #     Citations = as.numeric(Citations)
-  #   )
-  # 
-  # group_counts <- df_plot %>%
-  #   count(position_rank)
-  
-  # print(df_plot)
-  # print(df_plot[,c("Adjustment_Weights","Adjusted_Citations","position_rank", "JIF5Years", "Qscore")]) #"matched_token"
-  # print(colnames(df_plot))
-  # print(nrow(df_plot))
-  # print(group_counts)
-  
-  output$acounts_plot <- renderPlotly({
-    
-    rv$acounts_plotly <-  plot_ly(
-      data = agg_all,
-      x = ~Position,
-      y = ~Count,
-      split = ~Qscore,              # stacked bars by quartile
-      type = "bar",
-      hoverinfo = "text",
-      hovertext = ~paste(
-        "Position:", Position,
-        "<br>Quartile:", Qscore,
-        "<br>Count:", Count,
-        "<br>Total:", Total_Position
-      ),
-      marker = list(
-        color = ~position_colors[Position],
-        opacity = ~quartile_alpha[Qscore],
-        line = list(
-          width = 1,
-          color = ~position_border_colors[Position]
-        )
-      )
-    ) %>%
-      layout(
-        title = list(
-          text = "Publication Count based on Authorship with Journal Rank Categorization",
-          x = 0.5
-        ),
-        barmode = "stack",
-        xaxis = list(
-          title = "",
-          tickangle = 15
-        ),
-        yaxis = list(
-          title = ""
-        ),
-        showlegend = FALSE,
-        transition = list(
-          duration = 1000,
-          easing = "ease-in-out" #"cubic-in-out"
-        )
-      )
-    
-    # pb <- plotly_build(acounts_plotly)
-    # print(str(pb$x$data))
-    rv$acounts_plotly
-  })
-  
-  print("HERE1.3")
-  
-  output$ccounts_plot <- renderPlotly({
-    # p_cites <- ggplot(agg_all, aes(x = Position, y = SumCitations, fill = Position, color = Position, alpha = Qscore, group=Qscore, text = paste(
-    #   "Position:", Position,
-    #   "<br>Position Citations:", Total_Citations,
-    #   "<br>Quartile:", Qscore,
-    #   "<br>Quartile Citations:", Total_QCitations
-    #   # "<br>Citations:", SumCitations
-    # ))) +
-    #   geom_bar(stat = "identity", size = 0.25) +
-    #   scale_colour_manual(
-    #     values = position_border_colors,
-    #     guide = "none"          # hide border legend
-    #   ) +
-    #   # scale_fill_manual(values = quartile_colors, name = "Quartile") +
-    #   scale_fill_manual(values = position_colors, 
-    #                     # name = "Position"
-    #                     guide = "none"
-    #   ) +
-    #   scale_alpha_manual(values = quartile_alpha, 
-    #                      name = "Journal Rank"
-    #                      # guide = "none"
-    #   ) +
-    #   theme_minimal(base_size = 12) +
-    #   labs(title = "Citation Count based on Authorship with Journal Rank Categorization",
-    #        y = NULL, x = NULL) +
-    #   theme(
-    #     plot.title = element_text(hjust = 0.5, face = "bold"),
-    #     axis.text.x = element_text(angle = 15, hjust = 1)
-    #   ) 
-    
-    rv$ccounts_plotly <-  plot_ly(
-      data = agg_all,
-      x = ~Position,
-      y = ~SumCitations,
-      split = ~Qscore,              # stacked bars by quartile
-      type = "bar",
-      hoverinfo = "text",
-      hovertext = ~paste(
-        "Position:", Position,
-        "<br>Position Citations:", Total_Citations,
-        "<br>Quartile:", Qscore,
-        "<br>Quartile Citations:", Total_QCitations
-      ),
-      marker = list(
-        color = ~position_colors[Position],
-        opacity = ~quartile_alpha[Qscore],
-        line = list(
-          width = 1,
-          color = ~position_border_colors[Position]
-        )
-      )
-    ) %>%
-      layout(
-        title = list(
-          text = "Citation Count based on Authorship with Journal Rank Categorization",
-          x = 0.5
-        ),
-        barmode = "stack",
-        xaxis = list(
-          title = "",
-          tickangle = 15
-        ),
-        yaxis = list(
-          title = ""
-        ),
-        showlegend = FALSE,
-        transition = list(
-          duration = 1000,
-          easing = "ease-in-out" #"cubic-in-out"
-        )
-      )
-    
-    # pb <- plotly_build(ccounts_plotly)
-    # print(str(pb$x$data))
-    rv$ccounts_plotly
-  })
-  
-  print("HERE1.4")
-  # p_citesdist <- ggplot(df_plot, aes(x = position_rank, y = Citations, fill = position_rank, group=position_rank, colour = Qscore,size=Adjusted_Citations, text = paste0(
-  #   "<b>Position:</b> ", position_rank,
-  #   "<br><b>Citations:</b> ", Citations,
-  #   "<br><b>Qscore:</b> ", Qscore,
-  #   "<br><b>Author Count:</b> ", Author_Count,
-  #   "<br><b>Adjustment Weight:</b> ", Adjustment_Weights,
-  #   "<br><b>Adjusted Citations:</b> ", Adjusted_Citations,
-  #   "<br><b>Min:</b> ", min,
-  #   "<br><b>25%:</b> ", q25,
-  #   "<br><b>Median:</b> ", med,
-  #   "<br><b>Mean:</b> ", round(mean, 1),
-  #   "<br><b>75%:</b> ", q75,
-  #   "<br><b>Max:</b> ", max
-  # ))) +     geom_violin(alpha = 0.5) +     geom_point(position = position_jitter(seed = 1, width = 0.2)) +     theme(legend.position = "none") + scale_colour_manual(
-  #   values = position_border_colors,
-  #   guide = "none"          # hide border legend
-  # ) +
-  #   scale_y_continuous(
-  #     trans = "log1p"
-  #   ) +
-  #   scale_fill_manual(values = position_colors, 
-  #                     # name = "Position"
-  #                     guide = "none"
-  #   ) +
-  #   theme_minimal(base_size = 12) +
-  #   labs(title = "Citation Distribution based on Authorship (Log Scale)",
-  #        y = "log(1 + Citations)", x = NULL) +
-  #   theme(
-  #     plot.title = element_text(hjust = 0.5, face = "bold"),
-  #     axis.text.x = element_text(angle = 15, hjust = 1)
-  #   )
-  
-  # if(nrow(df_plot) <= 1 || all(group_counts$n <= 1) || all(df_plot$Citations == 0)){
-  #   rv$log_text <- paste(
-  #     rv$log_text,
-  #     "plot_glens_table() - Warning: Need more than one group and atleast 1 paper with 1 citation per-group for plotting distribution.",
-  #     sep = "\n"
-  #   )
-  #   output$log <- renderText({ rv$log_text })
-  #   warning("plot_glens_table() - Warning: Need more than one group and atleast 1 paper with 1 citation per-group for plotting distribution.")
-  #   shinyjs::hide("cdist_plot")
-  #   return()
-  # }
-  
-  output$cdist_plot <- renderPlotly({
-    p <- plot_ly()
-    
-    for (i in seq_along(all_positions)) {
-      pos <- all_positions[i]
-      fill_col <- position_colors[pos]
-      border_col <- position_border_colors[pos]
-      
-      # Violin trace for this position (empty skeleton y)
-      p <- add_trace(p,
-                     # x = list(i),        # category position as numeric
-                     # y = numeric(0),     # empty skeleton
-                     # type = "violin",
-                     # name = pos,
-                     # side = "both",
-                     # spanmode = "hard",
-                     # box = list(visible = FALSE),
-                     # meanline = list(visible = TRUE),
-                     # fillcolor = fill_col,
-                     # line = list(color = border_col),
-                     # opacity = 0.5,
-                     # points = FALSE,
-                     type = "violin",
-                     orientation = "v",
-                     width = 0.7,
-                     scalemode = "width",
-                     spanmode = "hard",
-                     box = list(visible = FALSE),
-                     meanline = list(visible = TRUE),
-                     points = FALSE,
-                     showlegend = FALSE,
-                     hoverinfo = "none"   # we rely on scatter points for hover
-      )
-      
-      # Scatter (jittered points) for this position (empty skeleton)
-      p <- add_trace(p,
-                     x = numeric(0),
-                     y = numeric(0),
-                     type = "scatter",
-                     mode = "markers",
-                     name = pos,
-                     marker = list(size = numeric(0), color = border_col, line = list(width = 0.5, color = border_col)),
-                     text = character(0),
-                     hoverinfo = "text",
-                     showlegend = FALSE
-      )
-    }
-    
-    rv$cdist_plotly <- p %>%
-      layout(
-        title = list(text = "Citation Distribution based on Authorship (Log Scale)", x = 0.5),
-        yaxis = list(title = "log(1 + Citations)"),
-        xaxis = list(title = "", tickmode = "array", tickvals = seq_along(all_positions), ticktext = all_positions),
-        showlegend = FALSE
-      )
-    rv$cdist_plotly
-  })
-  
-  print("HERE1.5")
-  
-  output$aperc_plot <- renderPlotly({
-    p <- plot_ly()
-    
-    for (pos in all_positions) {
-      p <- add_trace(
-        p,
-        type = "bar",
-        orientation = "h",
-        x = 0,               # Initialize with 0 instead of numeric(0)
-        y = "Publications",  # Give it the actual category name immediately
-        name = pos,
-        marker = list(
-          color = position_45plots[pos],
-          line = list(color = position_45plots_border[pos], width = 1)
-        ),
-        hoverinfo = "text",
-        
-        showlegend = FALSE
-      )
-    }
-    
-    p %>% layout(
-      barmode = "stack",
-      xaxis = list(
-        title = "", 
-        range = c(0, 100), 
-        dtick = 10, 
-        showgrid = TRUE,
-        ticksuffix = "%"
-        
-      ),
-      yaxis = list(
-        title = "", 
-        showticklabels = FALSE, 
-        fixedrange = TRUE
-      ),
-      margin = list(l = 10, r = 10, t = 50, b = 30),
-      title = list(text = "Author Contribution in % based on Authorship", x = 0.5)
-    )
-  })
-  
-  print("HERE1.6")
-  
-  output$cperc_plot <- renderPlotly({
-    p <- plot_ly()
-    for (pos in all_positions) {
-      p <- add_trace(
-        p,
-        type = "bar",
-        orientation = "h",
-        x = 0,               # Start at 0
-        y = "Citations",     # Pre-define the category
-        name = pos,
-        marker = list(
-          color = position_45plots[pos],
-          line = list(color = position_45plots_border[pos], width = 0.8)
-        ),
-        hoverinfo = "text",
-        
-        showlegend = FALSE
-      )
-    }
-    
-    p %>% layout(
-      barmode = "stack",
-      xaxis = list(title = "", range = c(0, 100), dtick = 10, ticksuffix = "%"),
-      yaxis = list(title = "", showticklabels = FALSE, fixedrange = TRUE),
-      margin = list(l = 20, r = 20, t = 50, b = 30),
-      title = list(text = "Citation Contribution in % based on Authorship", x = 0.5)
-    )
-  })
-  
-  print("HERE1.7")
-} # End - Plot skeleton renders
+source("GScholarLENS-helpers.R",local=TRUE)
 
 server <- function(input, output, session) {
   rv <- reactiveValues(
@@ -2092,9 +188,11 @@ server <- function(input, output, session) {
     scopus_future_list = list(),
     wos_df = data.frame(),
     semantic_df = data.frame(),
+    doi_count = 0,
     sh_index = 0,
     is_glens_exec = F,
     is_cancelled = F,
+    extended_controls = F,
     log_text = NULL,
     acounts_plotly = NULL,
     ccounts_plotly = NULL,
@@ -2217,7 +315,7 @@ server <- function(input, output, session) {
     # 4. If there is more than 1 valid author name, render the wellPanel
     if (length(author_list) > 1) {
       wellPanel(
-        tags$h5(icon("users-cog"), " Author Relationship Filter", class = "text-primary"),
+        tags$h5(icon("users-cog"), " Relationship Filter", class = "text-primary"),
         tags$p("Filter the publication list based on how the selected authors interact.", class = "text-muted"),
         
         radioButtons(
@@ -2240,6 +338,185 @@ server <- function(input, output, session) {
     }
   })
   
+  output$column_mapping_ui <- renderUI({
+    # if (is.null(rv$glens_etable_final) || ncol(rv$glens_etable_final) == 0) {
+    #   return(tags$div(class = "alert alert-warning", "No existing data to map to. Select 'All Columns'/'Map'."))
+    # }
+    
+    # Only trigger if "Merge" is selected
+    req(input$col_import_type == "Map")
+    
+    # # Safety checks
+    # if (is.null(rv$glens_etable_final) || ncol(rv$glens_etable_final) == 0) {
+    #   return(tags$div(class = "alert alert-warning", "No existing data to map to. Please select 'All Columns' instead."))
+    # }
+    if (is.null(rv$imported_data_list) || length(rv$imported_data_list) == 0) {
+      return(NULL)
+    }
+    
+    existing_cols <- c()
+    if (is.null(rv$glens_etable_final) || nrow(rv$glens_etable_final) == 0) {
+      existing_cols <- collabnet_required_cols
+    }else{
+      existing_cols <- names(rv$glens_etable_final)
+    }
+    
+    # Extract all unique column names from the newly uploaded files
+    uploaded_cols <- unique(unlist(lapply(rv$imported_data_list, names)))
+    
+    # Build a row for every existing column
+    mapping_rows <- lapply(existing_cols, function(col_name) {
+      safe_id <- paste0("map_col_", make.names(col_name))
+      
+      # Auto-fill the text box if there is an exact name match in the uploaded file
+      default_val <- if (col_name %in% uploaded_cols) col_name else ""
+      
+      fluidRow(
+        style = "margin-top: 10px; align-items: flex-end; display: flex;",
+        column(6, 
+               tags$label("Target Column (App)", style = "font-size: 0.85em; font-weight: normal; color: #555;"),
+               # Disabled box showing available target column
+               tags$input(type = "text", value = col_name, disabled = TRUE, class = "form-control", style = "background-color: #e9ecef;")
+        ),
+        column(6, 
+               # Editable box for the user to type the uploaded column name
+               textInput(inputId = safe_id, label = "Source Column (Uploaded)", value = default_val, width = "100%")
+        )
+      )
+    })
+    
+    # A helpful display string showing the user what they can type
+    available_cols_text <- paste(uploaded_cols, collapse = ", ")
+    
+    tagList(
+      tags$hr(),
+      tags$h5(icon("exchange-alt", lib="font-awesome"), " Map Columns"),
+      tags$p(style = "font-size: 0.9em; color: #666;", 
+             "Type the exact name of the uploaded column that matches each target column below."),
+      
+      # Display the available columns so the user doesn't have to guess
+      tags$div(
+        style = "background-color: #f8f9fa; padding: 10px; border-radius: 5px; font-size: 0.85em; margin-bottom: 15px; border: 1px solid #ddd;",
+        tags$strong("Available columns in your upload(s): "), 
+        tags$br(),
+        tags$span(style = "color: #0056b3;", available_cols_text)
+      ),
+      
+      mapping_rows,
+      tags$hr()
+    )
+  })
+  
+  output$row_merge_ui <- renderUI({
+    if (is.null(rv$glens_etable_final) || ncol(rv$glens_etable_final) == 0) {
+      return(tags$div(class = "alert alert-warning", "No existing data to merge with. Selecting 'New'."))
+    }
+    
+    req(input$row_import_type == "Merge")
+    
+    if (!is.null(rv$glens_etable_final) && !is.null(rv$intermediate_merged_df)) {
+      # Only show keys that exist in BOTH datasets to prevent join errors
+      common_keys <- intersect(names(rv$glens_etable_final), names(rv$intermediate_merged_df))
+      
+      tagList(
+        tags$div(
+          style = "margin-bottom: 15px; padding: 10px; border-left: 3px solid #17a2b8; background-color: #f8f9fa;",
+          
+          # Primary Key Selector
+          selectizeInput("row_merge_keys", "Select Primary Key(s) to Join By:", 
+                         choices = common_keys, multiple = TRUE, width = "100%",
+                         options = list(placeholder = "Select one or more keys (e.g., orcid, Title)")),
+          
+          # NEW: Join Type Selector
+          selectInput("join_type", "Select Join Type:", width = "100%",
+                      choices = c(
+                        "Full Join (Keep ALL rows from both)" = "full",
+                        "Inner Join (Keep ONLY rows that match exactly)" = "inner",
+                        "Left Join (Keep ALL Existing App Data, drop unmapped Uploaded Data)" = "left",
+                        "Right Join (Keep ALL Uploaded Data, drop unmapped App Data)" = "right"
+                      ), 
+                      selected = "full"),
+          
+          tags$small(style = "color: #666;", 
+                     "Missing data within joined rows will be intelligently backfilled regardless of join type.")
+        )
+      )
+    }
+  })
+  
+  output$delimiter_ui <- renderUI({
+    req(rv$detected_mv_cols)
+    
+    mapping_rows <- lapply(names(rv$detected_mv_cols), function(col) {
+      safe_id <- paste0("delim_action_", make.names(col))
+      delim_id <- paste0("delim_val_", make.names(col))
+      
+      suggested_delim <- rv$detected_mv_cols[[col]]
+      
+      fluidRow(
+        style = "margin-bottom: 10px; align-items: flex-end; display: flex; background: #f8f9fa; padding: 10px; border-radius: 5px;",
+        column(4, tags$strong(col, style="word-break: break-all; color: #333;")),
+        column(4, textInput(delim_id, "Delimiter:", value = suggested_delim)),
+        column(4, 
+               selectizeInput(safe_id, "Action:",  # <--- Changed to selectizeInput
+                              choices = c("Split to Rows (Lengthen)" = "rows", "Do Not Split" = "none"), 
+                              selected = "none",
+                              options = list(dropdownParent = 'body')) # <--- Now this is perfectly valid!
+        )
+      )
+    })
+    
+    tagList(
+      tags$div(style = "max-height: 450px; overflow-y: auto; overflow-x: hidden; padding-right: 10px;",
+               mapping_rows)
+    )
+  })
+  
+  output$extended_controls_panel <- renderUI({
+    # Determine which columns to show
+    cols_to_show <- if (!is.null(rv$glens_etable_final) && ncol(rv$glens_etable_final) > 0) {
+      names(rv$glens_etable_final)
+    } else {
+      collabnet_required_cols
+    }
+    
+    # Build a list of rows (Checkbox + Textbox)
+    control_rows <- lapply(cols_to_show, function(col) {
+      safe_id <- make.names(col)
+      
+      fluidRow(
+        style = "margin-bottom: 5px; align-items: center; display: flex;",
+        column(6, 
+               checkboxInput(paste0("ext_chk_", safe_id), col, value = FALSE)
+        ),
+        column(6, 
+               textInput(paste0("ext_delim_", safe_id), label = NULL, 
+                         placeholder = "Delimiters (e.g., ; , |)", width = "100%")
+        )
+      )
+    })
+    
+    # Wrap it all in an orange-styled panel
+    tags$div(
+      style = "background-color: #fff3e0; border: 2px solid #ff9800; border-radius: 8px; padding: 15px; margin-top: 15px;",
+      
+      tags$h4(icon("cogs"), " Extended Controls", style = "color: #e65100; margin-top: 0;"),
+      tags$p(style = "font-size: 0.9em; color: #555;", 
+             "Select columns for look-up and their delimiters (if any)."),
+      
+      # # --- Auto-Refresh Checkbox inside the panel ---
+      checkboxInput("auto_refresh_lookup", "Auto-Refresh Lookup", value = TRUE),
+      
+      tags$hr(style = "border-top: 1px solid #ffb74d; margin-top: 10px; margin-bottom: 10px;"),
+      
+      # Scrollable area so a massive dataframe doesn't break the UI
+      tags$div(
+        style = "max-height: 250px; overflow-y: auto; overflow-x: hidden; padding-right: 5px;",
+        control_rows
+      )
+    )
+  })
+  
   #light to dark mode and vice versa
   observeEvent(input$theme_toggle, {
     shinyjs::toggleClass(selector = "body", class = "dark-mode")
@@ -2249,6 +526,534 @@ server <- function(input, output, session) {
       updateActionButton(session, "theme_toggle", label = "☀️ Light Mode", icon = icon("sun", lib = "font-awesome"))
     } else {
       updateActionButton(session, "theme_toggle", label = "🌙 Dark Mode", icon = icon("moon", lib = "font-awesome"))
+    }
+  })
+  
+  observeEvent(input$upload_btn, {
+    
+    tryCatch({
+      # --- SUCCESS STATE ---
+      # Instantly change to a green checkmark when the file hits the server
+      shinyjs::runjs("
+        document.getElementById('upload_text').innerText = ' Upload Success!';
+        document.getElementById('upload_icon').className = 'fa fa-check';
+        document.getElementById('upload_icon').style.color = '#28a745'; // Bootstrap success green
+      ")
+      
+      message("FILE UPLOADED!")
+      
+      # Note: input$upload_btn is a dataframe. 
+      # You can access the actual uploaded file path using: input$upload_btn$datapath
+      
+      # 2. Iterate through each uploaded file using lapply
+      imported_data_list <- lapply(seq_len(nrow(input$upload_btn)), function(i) {
+        
+        # Shiny stores the original name in 'name', and the temp file in 'datapath'
+        file_name <- input$upload_btn$name[i]
+        file_path <- input$upload_btn$datapath[i]
+        
+        # Extract the extension and convert to lowercase for safe matching
+        ext <- tolower(tools::file_ext(file_name))
+        
+        # 3. Invoke the appropriate reader based on the extension
+        df <- switch(ext,
+                     "csv"  = read.csv(file_path, stringsAsFactors = FALSE, check.names = FALSE),
+                     "tsv"  = read.delim(file_path, sep = "\t", stringsAsFactors = FALSE, check.names = FALSE),
+                     "xlsx" = readxl::read_excel(file_path),
+                     "xls"  = readxl::read_excel(file_path),
+                     {
+                       # Fallback error message if someone uploads a weird file format
+                       warning(paste("Unsupported file extension:", ext))
+                       NULL 
+                     }
+        )
+        
+        return(df)
+      })
+      
+      # Remove any NULLs (in case an unsupported file was skipped)
+      rv$imported_data_list <- Filter(Negate(is.null), imported_data_list)
+      
+      # showModal(modalDialog(
+      #   title = tags$span(icon("upload", lib = "font-awesome"), " File Upload Wizard"),
+      #   size = "m",
+      #   radioButtons("col_import_type", label = "Choose Column import type:", inline = TRUE, choices = c("Common Columns", "All Columns","Merge")),
+      #   uiOutput("column_mapping_ui"),
+      #   radioButtons("row_import_type", label = "Choose Row import type:", inline = TRUE, choices = c("New", "Append", "Merge")),
+      #   uiOutput("row_merge_ui"),
+      #   footer = tagList(
+      #     actionButton("confirm_import", "Confirm Import", class = "btn-success"),
+      #     modalButton("Cancel Import")
+      #   ),
+      #   easyClose = TRUE
+      # ))
+      # --- TRANSITION DELAY ---
+      # Wait 1.5 seconds (1500ms), then reset the button and open the modal
+      shinyjs::delay(1500, {
+        
+        # Reset the button visually and clear the HTML input value so the same file can be uploaded twice if needed
+        shinyjs::runjs("
+          document.getElementById('upload_text').innerText = ' Upload File';
+          document.getElementById('upload_icon').className = 'fa fa-upload';
+          document.getElementById('upload_icon').style.color = ''; 
+          document.getElementById('upload_btn').value = ''; 
+        ")
+        showModal(modalDialog(
+          title = tags$span(icon("columns", lib = "font-awesome"), " Step 1: Column Mapping"),
+          size = "m",
+          radioButtons("col_import_type", label = "Choose Column import type:", inline = TRUE, choices = c("Common Columns", "All Columns", "Map")),
+          uiOutput("column_mapping_ui"),
+          footer = tagList(
+            modalButton("Cancel"),
+            actionButton("next_row_merge", "Next: Configure Rows", class = "btn-primary")
+          ),
+          easyClose = FALSE # Force them to use the buttons
+        ))
+        
+        if (is.null(rv$glens_etable_final) || ncol(rv$glens_etable_final) == 0) {
+          # 1. Safely tell Shiny to change the selection
+          updateRadioButtons(session, "col_import_type", selected = "All Columns")
+          
+          # 2. Wait 100 milliseconds for the modal to render, THEN disable the buttons
+          shinyjs::delay(100, {
+            shinyjs::runjs("$('input[name=\"col_import_type\"][value=\"Common Columns\"]').prop('disabled', true);")
+            # shinyjs::runjs("$('input[name=\"col_import_type\"][value=\"Map\"]').prop('disabled', true);")
+          })
+        }
+      })
+    }, error = function(e) {
+      
+      # --- FAILURE DETECTED ---
+      # Change button to a red X
+      shinyjs::runjs("
+        document.getElementById('upload_text').innerText = ' Upload Failed';
+        document.getElementById('upload_icon').className = 'fa fa-times';
+        document.getElementById('upload_icon').style.color = '#dc3545'; // Bootstrap danger red
+      ")
+      
+      # Tell the user what went wrong
+      showNotification(paste("Failed to process file:", e$message), type = "error", duration = 5)
+      
+      # Reset the button after 3 seconds so they can try again
+      shinyjs::delay(3000, {
+        shinyjs::runjs("
+          document.getElementById('upload_text').innerText = '';
+          document.getElementById('upload_icon').className = 'fa fa-upload';
+          document.getElementById('upload_icon').style.color = '';
+          document.getElementById('upload_btn').value = '';
+        ")
+      })
+    })
+    
+  }) #upload_btn
+  
+  observeEvent(input$next_after_delim, {
+    req(rv$intermediate_merged_df, rv$detected_mv_cols)
+    merged_df <- rv$intermediate_merged_df
+    
+    # Apply splits sequentially based on user input
+    for (col in names(rv$detected_mv_cols)) {
+      action <- input[[paste0("delim_action_", make.names(col))]]
+      delim_val <- input[[paste0("delim_val_", make.names(col))]]
+      
+      if (!is.null(action) && action == "rows" && !is.null(delim_val) && trimws(delim_val) != "") {
+        # Construct a regex that handles extra spaces (e.g., splitting "123; 456" properly)
+        sep_regex <- paste0("\\s*", escape_regex_inline(delim_val), "\\s*")
+        
+        # Lengthen the dataframe
+        merged_df <- merged_df %>% 
+          tidyr::separate_rows(dplyr::all_of(col), sep = sep_regex) %>%
+          # Clean up any residual empty spaces
+          dplyr::mutate(!!col := trimws(.data[[col]]))
+      }
+    }
+    
+    # Filter out empty rows that might have been generated by trailing semicolons (e.g. "ID1; ID2;")
+    # (Optional, but good practice for Scopus data)
+    
+    rv$intermediate_merged_df <- merged_df
+    removeModal()
+    
+    # Advance to Step 2
+    show_row_merge_modal(rv, session)
+  })
+  
+  observeEvent(input$next_row_merge, {
+    req(rv$imported_data_list)
+    imported_data_list <- rv$imported_data_list
+    
+    print("imported_data_list:")
+    print(length(imported_data_list))
+    
+    # Save the column choice so we don't lose it when Modal 1 closes
+    rv$saved_col_import_type <- input$col_import_type 
+    
+    # --- Apply Column Mapping ---
+    if (input$col_import_type == "Map") {
+      # BUG FIX: If fresh upload, use collabnet required cols, otherwise use existing app cols
+      existing_cols <- if (!is.null(rv$glens_etable_final) && ncol(rv$glens_etable_final) > 0) names(rv$glens_etable_final) else collabnet_required_cols
+      rename_map <- list()
+      
+      for (target_col in existing_cols) {
+        safe_id <- paste0("map_col_", make.names(target_col))
+        source_col <- input[[safe_id]]
+        if (!is.null(source_col) && trimws(source_col) != "") {
+          rename_map[[trimws(source_col)]] <- target_col
+        }
+      }
+      
+      print("(COL) RENAME MAP:")
+      print(length(rename_map))
+      print(str(rename_map))
+      
+      imported_data_list <- lapply(imported_data_list, function(df) {
+        
+        # 1. PREVENT DUPLICATE COLLISIONS (The "Authors...1" bug fix)
+        mapped_sources <- names(rename_map)
+        mapped_targets <- as.character(unlist(rename_map))
+        
+        # Find raw columns that match a Target name, but were NOT picked as the Source
+        # (e.g., Target is "Authors", Source is "Author full names". Drop the raw "Authors" column.)
+        cols_to_drop <- intersect(names(df), mapped_targets)
+        cols_to_drop <- setdiff(cols_to_drop, mapped_sources)
+        
+        # Safely drop the colliding columns from the dataframe
+        if (length(cols_to_drop) > 0) {
+          df <- df[, !(names(df) %in% cols_to_drop), drop = FALSE]
+        }
+        
+        # 2. Perform the actual renaming
+        current_names <- names(df)
+        for (i in seq_along(current_names)) {
+          check_name <- trimws(current_names[i])
+          if (check_name %in% names(rename_map)) {
+            current_names[i] <- as.character(rename_map[[check_name]])
+          }
+        }
+        names(df) <- current_names
+        
+        return(df)
+      })
+    }
+    
+    # Combine the uploaded files into one intermediate dataframe
+    merged_df <- dplyr::bind_rows(imported_data_list) %>% dplyr::distinct()
+    
+    # "Common Columns" logic for the uploaded files among themselves
+    if (input$col_import_type == "Common Columns") {
+      common_cols <- Reduce(intersect, lapply(imported_data_list, names))
+      merged_df <- merged_df[, common_cols, drop = FALSE] 
+    }
+    
+    # Save this column-merged data for Step 2
+    rv$intermediate_merged_df <- merged_df
+    removeModal()
+    
+    # --- Display Modal 1.5 without regex detection ---
+    cols_to_check <- names(merged_df)
+    
+    if (input$col_import_type == "Map" && exists("rename_map")) {
+      mapped_targets <- as.character(unlist(rename_map))
+      cols_to_check <- intersect(mapped_targets, names(merged_df))
+    }
+    
+    # Only show the modal if there are text columns to potentially split
+    text_cols <- cols_to_check[sapply(cols_to_check, function(c) is.character(merged_df[[c]]))]
+    
+    if (length(text_cols) > 0) {
+      # Prepare the list for the UI (defaulting the text box to a semicolon, but action is 'none')
+      detected_mv_cols <- list()
+      for (col in text_cols) {
+        detected_mv_cols[[col]] <- ";"
+      }
+      
+      rv$detected_mv_cols <- detected_mv_cols
+      
+      showModal(modalDialog(
+        title = tags$span(icon("cut", lib = "font-awesome"), " Step 1.5: Multi-Value Columns"),
+        size = "l",
+        tags$p("Review your columns below. If a column contains multiple values in a single cell (like multiple authors or IDs separated by semicolons), you can choose to split them into separate rows."),
+        uiOutput("delimiter_ui"),
+        footer = tagList(
+          modalButton("Cancel"),
+          actionButton("next_after_delim", "Apply Splits & Continue to Step 2", class = "btn-warning")
+        ),
+        easyClose = FALSE
+      ))
+    } else {
+      # If there are no text columns at all, just skip to Step 2
+      show_row_merge_modal(rv, session)
+    }
+  })
+
+  observeEvent(input$confirm_import, {
+    req(rv$intermediate_merged_df)
+    merged_df <- rv$intermediate_merged_df
+    rv$glens_etable_final_tmp <- rv$glens_etable_final
+    
+    # Force all columns in both datasets to be character text.
+    merged_df <- merged_df %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character))
+    
+    # 5. Handle Row Logic
+    if (input$row_import_type == "New" || is.null(rv$glens_etable_final)) {
+      rv$glens_etable_final <- merged_df
+      
+    } else if (input$row_import_type == "Append") {
+      
+      if (rv$saved_col_import_type == "Common Columns") {
+        final_common_cols <- intersect(names(rv$glens_etable_final), names(merged_df))
+        rv$glens_etable_final <- dplyr::bind_rows(
+          rv$glens_etable_final[, final_common_cols, drop = FALSE],
+          merged_df[, final_common_cols, drop = FALSE]
+        )
+      } else {
+        rv$glens_etable_final <- dplyr::bind_rows(rv$glens_etable_final, merged_df)
+      }
+      
+    } else if (input$row_import_type == "Merge") {
+      
+      join_keys <- input$row_merge_keys
+      join_type <- input$join_type # Grab the selected join type
+      
+      print("join_keys:")
+      print(join_keys)
+      print("join_type:")
+      print(join_type)
+      
+      if (!is.null(join_keys) && length(join_keys) > 0) {
+        
+        overlap_cols <- setdiff(intersect(names(rv$glens_etable_final), names(merged_df)), join_keys)
+        
+        # 1. Dynamically select the join function based on the dropdown
+        join_func <- switch(join_type,
+                            "inner" = dplyr::inner_join,
+                            "left"  = dplyr::left_join,
+                            "right" = dplyr::right_join,
+                            "full"  = dplyr::full_join)
+        
+        # 2. Execute the join
+        joined_df <- join_func(
+          rv$glens_etable_final, 
+          merged_df, 
+          by = join_keys,  
+          suffix = c(".old", ".new"),
+          relationship = "many-to-many" 
+        )
+        
+        # 3. Coalesce overlapping columns (prioritizing old data, filling gaps with new data)
+        for (col in overlap_cols) {
+          old_col <- paste0(col, ".old")
+          new_col <- paste0(col, ".new")
+          
+          # Force both to character to prevent integer/character mismatch crashes
+          old_vals <- as.character(joined_df[[old_col]])
+          new_vals <- as.character(joined_df[[new_col]])
+          
+          joined_df[[col]] <- dplyr::coalesce(old_vals, new_vals)
+          
+          joined_df[[old_col]] <- NULL
+          joined_df[[new_col]] <- NULL
+        }
+        
+        # 4. Spread metadata up and down grouped by ALL selected keys
+        joined_df <- joined_df %>%
+          dplyr::group_by(dplyr::across(dplyr::all_of(join_keys))) %>%
+          tidyr::fill(dplyr::everything(), .direction = "downup") %>%
+          dplyr::ungroup()
+        
+        rv$glens_etable_final <- joined_df
+        
+      } else {
+        warning("No join keys selected. Falling back to Append.")
+        rv$glens_etable_final <- dplyr::bind_rows(rv$glens_etable_final, merged_df)
+      }
+    }
+    
+    # --- Apply NA Removal ---
+    # if (input$drop_na_rows) {
+    #   # Drops any row that has an NA in ANY column
+    #   rv$glens_etable_final <- tidyr::drop_na(rv$glens_etable_final)
+    # }
+    # 
+    # if (input$drop_na_cols) {
+    #   # Drops any column that has an NA in ANY row
+    #   rv$glens_etable_final <- rv$glens_etable_final %>%
+    #     dplyr::select(dplyr::where(~ !any(is.na(.))))
+    # }
+    # Keep rows if ANY column has a non-NA value (drops rows where ALL are NA)
+    rv$glens_etable_final <- rv$glens_etable_final %>%
+      dplyr::filter(dplyr::if_any(dplyr::everything(), ~ !is.na(.)))
+  
+    # Keep columns if they don't have ALL NA values (drops columns where ALL are NA)
+    rv$glens_etable_final <- rv$glens_etable_final %>%
+      dplyr::select(dplyr::where(~ !all(is.na(.))))
+    
+    # ------------------------------
+    # --- 1. Safely Consolidate & Rename Known Columns ---
+    # Define all the variations of names that might come from different files
+    target_mappings <- list(
+      "orcid" = c("orcid", "ORCiD", "Orcid", "ORCID"),
+      "SCOPUS_ID" = c("SCOPUS_ID", "SCOPUS ID", "Scopus ID", "Author(s) ID"),
+      "Citations" = c("Citations", "Cited by"),
+      "User_Journal" = c("User_Journal", "Source title"),
+      "doi" = c("doi", "DOI")
+    )
+    
+    for (targ in names(target_mappings)) {
+      aliases <- target_mappings[[targ]]
+      # Find which of the aliases actually exist in the current dataframe
+      found_cols <- intersect(aliases, colnames(rv$glens_etable_final))
+      
+      if (length(found_cols) > 0) {
+        master_vec <- rep(NA_character_, nrow(rv$glens_etable_final))
+        
+        # Coalesce all found columns into one master vector (forcing character to avoid type crashes)
+        for (fc in found_cols) {
+          master_vec <- dplyr::coalesce(master_vec, as.character(rv$glens_etable_final[[fc]]))
+        }
+        
+        # Assign the master merged column
+        rv$glens_etable_final[[targ]] <- master_vec
+        
+        # Drop the old alias columns so the dataset stays clean
+        drop_cols <- setdiff(found_cols, targ)
+        if (length(drop_cols) > 0) {
+          rv$glens_etable_final <- rv$glens_etable_final %>% dplyr::select(-dplyr::all_of(drop_cols))
+        }
+      }
+    }
+    
+    if(nrow(rv$glens_etable_final) <= 0){
+      showNotification("Data import/merge returned empty rows. Try different options", type = "error", duration = 10)
+      rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'>Data import/merge returned empty rows. Try different options </span>"),sep="<br>")
+      rv$imported_data_list <- NULL
+      rv$intermediate_merged_df <- NULL
+      rv$saved_col_import_type <- NULL
+      rv$glens_etable_final <- rv$glens_etable_final_tmp
+      # rv$glens_input_table <- NULL
+      # rv$glens_year_filtered <- NULL
+      removeModal()
+      return()
+    }
+    
+    # #Checks to make sure CollabNET columns exist
+    # # Auto-fill any missing columns with NA. 
+    # # allows multi-file upload without it getting rejected for missing columns.
+    # for (col in collabnet_required_cols) {
+    #   if (!(col %in% colnames(rv$glens_etable_final))) {
+    #     rv$glens_etable_final[[col]] <- NA_character_
+    #   }
+    # }
+    
+    print(colnames(rv$glens_etable_final))
+    print(nrow(rv$glens_etable_final))
+    print(str(rv$glens_etable_final))
+    print("MERGED_DF:")
+    print(colnames(merged_df))
+    print(nrow(merged_df))
+    print(str(merged_df))
+    missing_cols <- setdiff(collabnet_required_cols, colnames(rv$glens_etable_final))
+    if(length(missing_cols) > 0) {
+      
+      # Format the missing columns into a clean string
+      missing_str <- paste(missing_cols, collapse=", ")
+      # Update the log
+      rv$log_text <- paste(rv$log_text, 
+                           paste0("<span style='color: red;'>Upload Failed: Missing required columns: ", missing_str, "</span>"), 
+                           sep="<br>")
+      # Show the smaller, targeted notification
+      showNotification(paste("Missing columns:", missing_str), type = "error", duration = 10)
+      # rv$imported_data_list <- NULL
+      # rv$intermediate_merged_df <- NULL
+      # rv$saved_col_import_type <- NULL
+      # rv$glens_etable_final <- rv$glens_etable_final_tmp
+      # # rv$glens_input_table <- NULL
+      # # rv$glens_year_filtered <- NULL
+      # removeModal()
+      # return()
+    }
+    
+    # Cleanup
+    rv$glens_etable_final <- dplyr::distinct(rv$glens_etable_final)
+    rv$imported_data_list <- NULL
+    rv$intermediate_merged_df <- NULL
+    rv$saved_col_import_type <- NULL
+    rv$log_text <- paste(rv$log_text, paste("Post-Import Total:",nrow(rv$glens_etable_final),"lines..."),sep="<br>")
+    rv$glens_input_table <- rv$glens_etable_final
+    output$dynamic_source_ui <- renderUI({
+      req(rv$glens_input_table)
+      available_sources <- levels(factor(rv$glens_input_table$Source))
+      if (length(available_sources) == 0) return(p("No sources identified yet.", style = "color: #888;"))
+      radioButtons("selected_source", label = NULL, choices = available_sources, selected = available_sources[1], inline = FALSE)
+    })
+    target_variants <- stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n")))
+    target_variants <- target_variants[target_variants != ""]
+    rv$target_variants_norm <- lapply(setNames(target_variants, target_variants), function(v) {
+      vn <- normalize_name(v)
+      list(norm = vn, parts = extract_parts(vn))
+    })
+    rv$author_match_regex <- build_name_regex_for_variants(target_variants)
+    extend_input_table(rv)
+    rv$glens_year_filtered <- rv$glens_etable_final
+    if (nrow(rv$glens_year_filtered) <= 0) {
+      rv$log_text <- paste(rv$log_text, "No names were matched.",sep="<br>")
+      shinyjs::enable("submit_button")
+      removeModal()
+      return()
+    }
+    compute_indices(rv)
+    output$summary_table <- renderTable(rv$summary_table, striped = TRUE)
+    output$sh_index <- renderUI(HTML(paste("<b>Sh-Index:</b>", rv$sh_index)))
+    output$extended_table <- DT::renderDataTable({
+      DT::datatable(rv$glens_year_filtered, options = list(scrollY = "600px", scrollX = TRUE, paging = TRUE))
+    })
+    match_journals(rv)
+    rv$glens_year_filtered <- rv$glens_etable_final
+    min_year <- min(as.numeric(rv$glens_year_filtered$Year), na.rm = TRUE)
+    max_year <- max(as.numeric(rv$glens_year_filtered$Year), na.rm = TRUE)
+    if (is.finite(min_year) && is.finite(max_year)) {
+      updateSliderInput(session, "year_slider", value = c(min_year, max_year), min = min_year, max = max_year)
+      shinyjs::show("year_slider")
+    }
+    rv$extended_controls <- TRUE
+    saveRDS(rv$glens_etable_final, "glens_etable_final.rds")
+    
+    removeModal()
+  })
+  
+  observeEvent(input$toggle_extended, {
+    rv$extended_controls <- !isTRUE(rv$extended_controls)
+    
+    if (rv$extended_controls) {
+      # --- TURNING ON EXTENDED MODE ---
+      
+      # instantly unhide the panel client-side
+      shinyjs::show("extended_controls_container") 
+      
+      updateActionButton(session, "toggle_extended", 
+                         label = "Hide Extended Controls", 
+                         icon = icon("lock"))
+      shinyjs::removeClass("toggle_extended", "btn-secondary")
+      shinyjs::addClass("toggle_extended", "btn-warning") 
+      
+      shinyjs::removeClass("submit_button", "btn-primary") 
+      shinyjs::removeClass("submit_button", "btn-success")
+      shinyjs::addClass("submit_button", "btn-warning")
+      
+    } else {
+      # --- TURNING OFF EXTENDED MODE ---
+      
+      # instantly hide the panel client-side
+      shinyjs::hide("extended_controls_container")
+      
+      updateActionButton(session, "toggle_extended", 
+                         label = "Show Extended Controls", 
+                         icon = icon("unlock"))
+      shinyjs::removeClass("toggle_extended", "btn-warning")
+      shinyjs::addClass("toggle_extended", "btn-secondary")
+      
+      shinyjs::removeClass("submit_button", "btn-warning")
+      shinyjs::addClass("submit_button", "btn-primary") 
     }
   })
   
@@ -2562,7 +1367,7 @@ server <- function(input, output, session) {
       shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
       shinyjs::enable(id = "submit_button")
       # Update logs
-      rv$log_text <- paste(rv$log_text, paste0("Process cancelled by user.\n"),sep="\n")
+      rv$log_text <- paste(rv$log_text, paste0("Process cancelled by user.\n"),sep="<br>")
       
       removeModal()
   })
@@ -2572,7 +1377,7 @@ server <- function(input, output, session) {
   })
   
   #source selection, slider, author_list ,Slider Events
-  observeEvent(c(input$selected_source, input$year_slider, input$author_list, input$author_logic_gate), {
+  observeEvent(c(rv$glens_etable_final, input$selected_source, input$year_slider, input$author_list, input$author_logic_gate), {
   # observe({
       req(rv$glens_etable_final, input$selected_source, input$year_slider, input$author_list)
       # message(paste("(post)nrow(rv$glens_etable_final):",nrow(rv$glens_etable_final)))
@@ -2620,7 +1425,8 @@ server <- function(input, output, session) {
       #         filter(Year >= input$year_slider[1],
       #                Year <= input$year_slider[2]))
       if(nrow(rv$glens_year_filtered) <= 0){
-        output$log <- renderText({paste("input$year_slider - Warning: No data found for this year range.")})
+        # output$log <- renderText({paste("input$year_slider - Warning: No data found for this year range.")})
+        rv$log_text <- paste(rv$log_text, paste("input$year_slider - Warning: No data found for this year range."), sep="<br>")
         warning("input$year_slider - Warning: No data found for this year range.")
         shinyjs::hide("sh_index")
         shinyjs::hide("summary_table")
@@ -2636,31 +1442,33 @@ server <- function(input, output, session) {
       }
       
       rv$log_text <- paste(rv$log_text,paste("(Slider:", input$year_slider[1], "-", input$year_slider[2],")","Filtered years to range...", min(rv$glens_year_filtered$Year), "and",max(rv$glens_year_filtered$Year)
-      ), sep="\n")
+      ), sep="<br>")
       
       # output$log <- renderText({ rv$log_text })
       # print(paste("(Slider:", input$year_slider[1], "-", input$year_slider[2],")","Filtered years to range...", min(rv$glens_year_filtered$Year), "and",max(rv$glens_year_filtered$Year)))
       # print(str(rv$glens_year_filtered$Year))
-      
-      raw_text <- input$author_list
-      # Only apply the logic gate if the user has actually typed something
-      if (!is.null(raw_text) && trimws(raw_text) != "") {
-        author_list <- unlist(strsplit(input$author_list, "[\n,]"))
-        author_list <- stringr::str_squish(author_list)
-        author_list <- stringr::str_to_title(author_list)
-        author_list <- author_list[author_list != ""]
-        
-        rv$author_list <- unique(author_list)
-        # Apply the logic gate function we built earlier
-        if (length(author_list) > 0) {
-          filtered_df <- apply_author_logic(
-            pubs_df          = rv$glens_year_filtered,
-            primary_regex    = rv$author_match_regex,
-            selected_authors = author_list, 
-            gate             = author_logic_gate        
-          )
-          # 3. Save the newly filtered data to your reactive variable
-          rv$glens_year_filtered <- filtered_df
+      #Fetch author info only when auto_refresh_lookup is enabled
+      if (isTRUE(input$auto_refresh_lookup)) {   
+        raw_text <- input$author_list
+        # Only apply the logic gate if the user has actually typed something
+        if (!is.null(raw_text) && trimws(raw_text) != "") {
+          author_list <- unlist(strsplit(input$author_list, "[\n,]"))
+          author_list <- stringr::str_squish(author_list)
+          author_list <- stringr::str_to_title(author_list)
+          author_list <- author_list[author_list != ""]
+          
+          rv$author_list <- unique(author_list)
+          # Apply the logic gate function we built earlier
+          if (length(author_list) > 0) {
+            filtered_df <- apply_author_logic(
+              pubs_df          = rv$glens_year_filtered,
+              primary_regex    = rv$author_match_regex,
+              selected_authors = author_list, 
+              gate             = author_logic_gate        
+            )
+            # 3. Save the newly filtered data to your reactive variable
+            rv$glens_year_filtered <- filtered_df
+          }
         }
       }
       
@@ -2745,17 +1553,44 @@ server <- function(input, output, session) {
   #   shinyjs::enable(id = "submit_button")
   #   
   #   # Update logs
-  #   rv$log_text <- paste(rv$log_text, paste0("Process cancelled by user.\n"),sep="\n")
+  #   rv$log_text <- paste(rv$log_text, paste0("Process cancelled by user.\n"),sep="<br>")
   #   removeModal()
   # })
   
   #Submit Button Event
   observeEvent(input$submit_button, {   # same as bindEvent(input$submit_button)
+      # 1. Re-determine the exact list of columns the UI generated
+      cols_to_check <- if (!is.null(rv$glens_etable_final) && ncol(rv$glens_etable_final) > 0) {
+        names(rv$glens_etable_final)
+      } else {
+        collabnet_required_cols
+      }
+      
+      # 2. Initialize an empty list to store our results
+      columns_to_split <- list()
+      
+      # 3. Loop through the columns and fetch the inputs
+      for (col in cols_to_check) {
+        safe_id <- make.names(col)
+        
+        # Fetch the current value of the checkbox and textbox using double brackets
+        is_checked <- input[[paste0("ext_chk_", safe_id)]]
+        delims     <- input[[paste0("ext_delim_", safe_id)]]
+        
+        # If the checkbox exists in the UI and is actively checked:
+        if (!is.null(is_checked) && isTRUE(is_checked)) {
+          
+          # Store the delimiter string in our list, using the original column name as the key
+          columns_to_split[[col]] <- delims
+        }
+      }
+      print(columns_to_split)
+      
       # basic input guard
       rv$is_cancelled <- FALSE
       rv$is_glens_exec <- T
       rv$log_text <- ""
-      rv$glens_etable_final <- NULL
+      # rv$glens_etable_final <- NULL
       rv$glens_year_filtered <- NULL
       # rv$scopus_df <- NULL
       # rv$wos_df <- NULL
@@ -2879,7 +1714,7 @@ server <- function(input, output, session) {
           
           # 1. MAIN THREAD: Safe to update Shiny reactives here, BEFORE the future starts
           if (length(strsplit(clean_orcid, "-")[[1]]) == 4) {
-            rv$log_text <- paste(rv$log_text, "Working on ORCID:", clean_orcid, sep="\n")
+            rv$log_text <- paste(rv$log_text, "Working on ORCID:", clean_orcid, sep="<br>")
           }
           
           future({
@@ -2916,7 +1751,7 @@ server <- function(input, output, session) {
                 last_modified_date = xtext(g, ".//common:last-modified-date", xml_vec_ns),
                 journal_title = xtext(g, ".//work:journal-title", xml_vec_ns),
                 work_type = xtext(g, ".//work:type", xml_vec_ns),
-                orcid <- clean_orcid
+                orcid = paste0("https://orcid.org/",clean_orcid)
               )
             })
             
@@ -3042,38 +1877,50 @@ server <- function(input, output, session) {
       master_doi_promise <- master_orcid_promise %...>% (function(orcid_results) {
         # if (rv$is_cancelled) return(NULL)
         if(!fs::file_exists(file.path("run.lock"))) return(NULL)
-        print(paste("orcid_results: ", colnames(orcid_results),collapse=","))
-        doi_lines <- c()
+        # print(paste("orcid_results: ", colnames(orcid_results),collapse=","))
+        doi_df <- data.frame()
         # 1. Combine DOIs extracted from ORCIDs with manually typed DOIs
         extracted_orcid_dfs <- purrr::compact(orcid_results) 
         if (length(extracted_orcid_dfs) > 0) {
           orcid_combo <- dplyr::bind_rows(extracted_orcid_dfs)
           missing_url <- is.na(orcid_combo$external_id_url)
           orcid_combo[missing_url, "external_id_url"] <- orcid_combo[missing_url, "external_id_value"]
-          doi_lines <- unique(c(doi_lines, orcid_combo$external_id_url))
+          # doi_lines <- unique(c(doi_lines, orcid_combo$external_id_url))
+          doi_df <- orcid_combo %>% dplyr::select(external_id_url, external_id_value, orcid) %>% dplyr::rename(doi_url=external_id_url) %>% dplyr::rename(doi=external_id_value)
         }
-        print(paste("orcid_combo: ",colnames(orcid_combo),collapse=","))
-        doi_lines <- doi_lines[!is.na(doi_lines) & trimws(doi_lines) != ""]
-        doi_count <- length(doi_lines)
-        message(paste("DOI COUNT:", doi_count))
-        rv$log_text <- paste(rv$log_text, sprintf("\nExtracted %d total DOIs. Launching DOIs...\n", doi_count))
+        print(paste("orcid_combo: ",paste(colnames(orcid_combo),collapse=",")))
+        print(str(orcid_combo))
+        print(str(doi_df))
+        if(nrow(doi_df) > 0){
+          doi_df$doi <- doi_df$doi[!is.na(doi_df$doi) & trimws(doi_df$doi) != ""]  
+          doi_df <- dplyr::full_join(doi_df, data.frame(doi=input$doi_text))
+        }else{
+          doi_lines <- input$doi_text[!is.na(input$doi_text) & trimws(input$doi_text) != ""]  
+          doi_df <- data.frame(doi=doi_lines, orcid=NA, doi_url=doi_lines)
+        }
+        doi_df <- doi_df %>% dplyr::distinct()
+        # doi_count <- length(doi_lines)
+        rv$doi_count <- nrow(doi_df)
+        message(paste("DOI COUNT:", rv$doi_count))
+        rv$log_text <- paste(rv$log_text, sprintf("\nExtracted %d total DOIs. Launching DOIs...\n", rv$doi_count))
         
         # output$log <- renderText({rv$log_text})
         
         # --- STREAM A: PARALLEL DOI PROCESSING ---
-        doi_promises <- lapply(seq_along(doi_lines), function(i) {
-          doi_target <- doi_lines[i]
+        doi_promises <- lapply(seq(nrow(doi_df)), function(i) {
+          # doi_target <- doi_lines[i]
+          doi_target <- doi_df[i,]
             future({
               tryCatch({ 
                   # if (rv$is_cancelled) return(NULL)
                   if(!fs::file_exists(file.path("run.lock"))) return(NULL)
-                  ret_df <- doi2gscholarlens(doi_target, rv) 
+                  ret_df <- doi2gscholarlens(doi_target[["doi"]], doi_target[["orcid"]], rv) 
                   prog_doi_reactive <- reactive({ progress_state$doi_done + 1 })
                   # progress_state$scopus_done <- progress_state$scopus_done + 1
-                  pct <- round(( isolate(prog_doi_reactive()) / max(1, doi_count) ) * 100 )
+                  pct <- round(( isolate(prog_doi_reactive()) / max(1, rv$doi_count) ) * 100 )
                   shinyWidgets::updateProgressBar(
-                    session, id = "prog_doi", value = isolate(prog_doi_reactive()), total = max(1, doi_count),
-                    title = sprintf("DOI: %d%% (%d/%d)", pct, isolate(prog_doi_reactive()), doi_count),
+                    session, id = "prog_doi", value = isolate(prog_doi_reactive()), total = max(1, rv$doi_count),
+                    title = sprintf("DOI: %d%% (%d/%d)", pct, isolate(prog_doi_reactive()), rv$doi_count),
                     status = if(pct == 100) "success" else "warning"
                   )
                   progress_state$doi_done <- isolate(prog_doi_reactive())
@@ -3081,7 +1928,7 @@ server <- function(input, output, session) {
                 }, error = function(e){ 
                   message(paste("ERROR (doi2gscholarlens()):", e))
                   warning(traceback()) })
-            }, globals = c("glens_env", "doi_target", "doi2gscholarlens", "rv", "doi_count", "session", "progress_state"), packages = c("shinyWidgets", "stringi", "dplyr", "shiny"), seed = TRUE) %...>% (function(res_df) {
+            }, globals = c("glens_env", "doi_target", "doi2gscholarlens", "rv", "session", "progress_state"), packages = c("shinyWidgets", "stringi", "dplyr", "shiny"), seed = TRUE) %...>% (function(res_df) {
               # if (rv$is_cancelled) return(NULL)
               if(!fs::file_exists(file.path("run.lock"))) return(NULL)
               return(res_df)
@@ -3091,7 +1938,7 @@ server <- function(input, output, session) {
                 progress_state$doi_done <- progress_state$doi_done + 1 
                 shinyWidgets::updateProgressBar(session, id = "prog_doi", value = progress_state$doi_done , status = "danger", title = "Process Failed!")
                 # output$log <- renderText(sprintf("Failed in DOI Processing: %s", conditionMessage(err)))
-                rv$log_text <- paste(rv$log_text, sprintf("\nFailed in DOI Processing: %s", conditionMessage(err)),sep="\n")
+                rv$log_text <- paste(rv$log_text, sprintf("\nFailed in DOI Processing: %s", conditionMessage(err)),sep="<br>")
                 warning(paste("Failed in DOI Processing:", err))
                 message(traceback())
                 shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
@@ -3110,29 +1957,33 @@ server <- function(input, output, session) {
       ) %...>% (function(results) {
         # if (rv$is_cancelled) return(NULL)
         if(!fs::file_exists(file.path("run.lock"))) return(NULL)
-        print("DOI:")
-        # print(str(results$dois[[1]]))
-        print(class(results$dois[[8]]))
-        print(str(results$dois[[8]]))
-        print(results$dois[[8]])
+        # print("DOI:")
+        # # # print(str(results$dois[[1]]))
+        # # print(class(results$dois[[8]]))
+        # # print(str(results$dois[[8]]))
+        # print(str(results$dois))
+        # print(length(results$dois))
+        rv$log_text <- paste(rv$log_text,paste("<span style='color: red;'> Failed RIS Extraction Count:",abs(rv$doi_count - sum(sapply(results$dois, is.null))),"</span>"),sep="<br>")
         # Merge DOIs
         # Merge DOIs safely
-        valid_dois <- Filter(is.data.frame, results$dois)
+        clean_dois <- Filter(Negate(is.null), results$dois)
+        valid_dois <- Filter(is.data.frame, clean_dois)
         accumulated_df <- dplyr::bind_rows(valid_dois)
         if (nrow(accumulated_df) > 0) accumulated_df <- accumulated_df %>% dplyr::distinct() %>% dplyr::mutate(Source = "DOI/ORCID")
         
-        print("SCOPUS:")
-        print(str(results$scopus))
-        print(results$scopus[[1]])
+        # print("SCOPUS:")
+        # print(str(results$scopus))
+        # print(results$scopus[[1]])
+        clean_scopus <- Filter(Negate(is.null), results$scopus)
         # Merge Scopus
-        rv$scopus_df <- dplyr::bind_rows(purrr::compact(Filter(is.data.frame, results$scopus)))
+        rv$scopus_df <- dplyr::bind_rows(purrr::compact(Filter(is.data.frame, clean_scopus)))
         if (nrow(rv$scopus_df) > 0) rv$scopus_df <- rv$scopus_df %>% dplyr::distinct() %>% dplyr::mutate(Source = "SCOPUS")
-        print("BIND ROWS:")
+        # print("BIND ROWS:")
         # Final Table
         rv$glens_input_table <- dplyr::bind_rows(accumulated_df, rv$scopus_df)
-        print("BUILT INPUT TABLE:")
-        message(paste("(pre)nrow(rv$glens_input_table):",nrow(rv$glens_input_table)))
-        message(paste("(pre)colnames(rv$glens_input_table):",colnames(rv$glens_input_table)))
+        # print("BUILT INPUT TABLE:")
+        # message(paste("(pre)nrow(rv$glens_input_table):",nrow(rv$glens_input_table)))
+        # message(paste("(pre)colnames(rv$glens_input_table):",colnames(rv$glens_input_table)))
         rv$log_text <- paste(rv$log_text, sprintf("\nDone. Found %d total records.\n", nrow(rv$glens_input_table)))
         # output$log <- renderText(rv$log_text)
         
@@ -3160,8 +2011,8 @@ server <- function(input, output, session) {
         rv$glens_year_filtered <- rv$glens_etable_final
         
         if (nrow(rv$glens_year_filtered) <= 0) {
-          # output$log <- renderText(paste(rv$log, "No names were matched.",sep="\n"))
-          rv$log_text <- paste(rv$log_text, "No names were matched.",sep="\n")
+          # output$log <- renderText(paste(rv$log, "No names were matched.",sep="<br>"))
+          rv$log_text <- paste(rv$log_text, "No names were matched.",sep="<br>")
           shinyjs::enable("submit_button")
           shinyjs::hide("progress_overlay")
           return()
@@ -3178,12 +2029,15 @@ server <- function(input, output, session) {
         print(str(jcr_names_norm))
         # 1. Match Journals and create Qscore FIRST
         match_journals(rv)
-        print("HERE7")
-        print(str(rv$glens_etable_final))
-        print(str(rv$glens_year_filtered))
         
         rv$glens_year_filtered <- rv$glens_etable_final
         
+        # 3. Render the initial plots
+        render_skeleton_plots(rv, output)
+        plot_glens_table(rv, session)
+        # plot_glens_table(rv, output, session)
+        
+        # plot_glens_table()
         # 2. Update the Slider SECOND (now it's safe to trigger observers)
         min_year <- min(as.numeric(rv$glens_year_filtered$Year), na.rm = TRUE)
         max_year <- max(as.numeric(rv$glens_year_filtered$Year), na.rm = TRUE)
@@ -3191,12 +2045,6 @@ server <- function(input, output, session) {
           updateSliderInput(session, "year_slider", value = c(min_year, max_year), min = min_year, max = max_year)
           shinyjs::show("year_slider")
         }
-        print("HERE8")
-        # 3. Render the initial plots
-        render_skeleton_plots(rv, output)
-        plot_glens_table(rv, session)
-        # plot_glens_table(rv, output, session)
-        # plot_glens_table()
         
         # Render Full Data Network
         output$network_full <- renderVisNetwork({
@@ -3237,9 +2085,13 @@ server <- function(input, output, session) {
         if(!fs::file_exists(file.path("run.lock"))) return(NULL)
         shinyWidgets::updateProgressBar(session, id = "prog_doi", value = 100, status = "danger", title = "Process Failed!")
         # output$log <- renderText(sprintf("(Master) Failed in DOI/Scopus Processing: %s", conditionMessage(err)))
-        rv$log_text <- paste(rv$log_text, sprintf("\n(Master) Failed in DOI/Scopus Processing: %s", conditionMessage(err)),sep="\n")
+        rv$log_text <- paste(rv$log_text, sprintf("\n(Master) Failed in DOI/Scopus Processing: %s", conditionMessage(err)),sep="<br>")
         shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
         shinyjs::enable("submit_button")
       })
   }) #observeEVENT(submit_button)
+  
+  # Tell Shiny to render this UI in the background even while the parent div is hidden.
+  outputOptions(output, "extended_controls_panel", suspendWhenHidden = FALSE)
+  
 } #server end

@@ -80,9 +80,7 @@ get_complete_scopus_data <- function(orcid, rv, api_key = NULL) {
         err_body <- httr2::resp_body_string(resp_pubs)
       }
     }
-    
-    print("HERE13.2")
-    
+  
     if (status == 401) stop("Authorization Error (401): API key lacks permissions. Check network.")
     else if (status != 200) stop(sprintf("API Error (%d): %s", status, err_body))
     
@@ -101,6 +99,10 @@ get_complete_scopus_data <- function(orcid, rv, api_key = NULL) {
   
   combined_entries <- dplyr::bind_rows(all_entries)
   if(nrow(combined_entries) == 0) return(tibble::tibble())
+  
+  # print(str(combined_entries))
+  # print(head(combined_entries))
+  # print(colnames(combined_entries))
   
   final_tibble <- combined_entries %>%
     dplyr::as_tibble() %>%
@@ -129,9 +131,11 @@ get_complete_scopus_data <- function(orcid, rv, api_key = NULL) {
       Citations    = if("citedby-count" %in% names(.)) as.numeric(`citedby-count`) else NA_real_,
       Journal      = if("prism:publicationName" %in% names(.)) `prism:publicationName` else NA_character_,
       Publisher    = if ("dc:publisher" %in% names(.)) `dc:publisher` else NA_character_,
-      Year         = if("prism:coverDate" %in% names(.)) substr(`prism:coverDate`, 1, 4) else NA_character_
+      Year         = if("prism:coverDate" %in% names(.)) substr(`prism:coverDate`, 1, 4) else NA_character_,
+      SCOPUS_ID    = if("dc:identifier" %in% names(.)) gsub(x = `dc:identifier`, pattern = "SCOPUS_ID:", replacement = "",fixed = T) else NA_character_,
+      orcid = paste0("https://orcid.org/",trimws(orcid))
     ) %>%
-    dplyr::select(Title, Authors, Author_Count, Citations, Journal, Publisher, Year)
+    dplyr::select(Title, Authors, Author_Count, Citations, Journal, Publisher, Year, orcid, SCOPUS_ID)
   
   return(final_tibble)
 }

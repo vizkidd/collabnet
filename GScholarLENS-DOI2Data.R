@@ -80,7 +80,8 @@ extract_ris <- function(doi_or_url,
   # message(paste("RIS TEXT 2:", ris_text))
   
   if (is.null(ris_text)) {
-    stop("Failed to retrieve RIS. The DOI may not support content negotiation and CrossRef doesn't have a transform for it.")
+    # stop("Failed to retrieve RIS. The DOI may not support content negotiation and CrossRef doesn't have a transform for it.")
+    return(NULL)
   }
   
   # Optionally write to file
@@ -416,61 +417,118 @@ construct_author_list_from_ris <- function(ris){
   }
 }
 
-doi2gscholarlens <- function(doi_input, rv, write_file = NULL){
+doi2gscholarlens <- function(doi_input, orcid, rv, write_file = NULL){
   if(is.null(doi_input) || length(doi_input) == 0 || is.na(doi_input[1]) || stringi::stri_length(doi_input[1]) <= 0){
     warning("Empty DOI")
     return(NULL)
   }
   
-  # message(paste("glens_env:"))
-  # message(glens_env$scopus_key)
+  # message(doi_input)
+  # message(orcid)
+  # message(str(doi_input))
+  # message(str(orcid))
+  # message(class(doi_input))
+  # message(class(orcid))
+  # # message(paste("glens_env:"))
+  # # message(glens_env$scopus_key)
   
-  doi_lines_input <- strsplit(doi_input, "\n")[[1]]
+  # if (rv$is_cancelled) return(NULL)
+  if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+  if(stringi::stri_isempty(doi_input)){
+    return(NULL)
+  }
   
-  return(dplyr::bind_rows(lapply(doi_lines_input, function(doi_line){
-    # if (rv$is_cancelled) return(NULL)
-    if(!fs::file_exists(file.path("run.lock"))) return(NULL)
-    if(stringi::stri_isempty(doi_line)){
-      return(NULL)
-    }
-    
-    ris <- extract_ris(doi_line, write_file = write_file)
-    ris_lines <- strsplit(ris, "\n")[[1]]
-    
-    journal_text <- construct_journal_from_ris(ris)
-    
-    publisher_text <- gsub(paste0("^PB\\s+-\\s+"), "", x = grep(pattern = "PB", ris_lines,value = T))
-    publisher_text <- ifelse(length(publisher_text) > 0,publisher_text, NA)
-    
-    publisher_year_text <- gsub(paste0("^(PY|Y1|Y2)\\s+-\\s+"), "", x = grep(pattern = "PY|Y1|Y2", ris_lines,value = T))
-    publisher_year_text <- ifelse(length(publisher_year_text) > 0,publisher_year_text, NA)
-    
-    author_list <- tidyr::tibble(na.omit(construct_author_list_from_ris(ris)))
-    
-    if(nrow(author_list) <=0){
-      return(NULL)
-    }
-    
-    author_text <- author_list$Authors 
-    author_text <- ifelse(length(author_text) > 0, author_text, NA)
-    title_text <- get_title_from_ris(ris)
-    # message(doi_line)
-    doi_citations <- get_citation_counts(doi_line)
-    
-    # Safely extract valid citations using standard base logic
-    valid_citations <- na.omit(unlist(doi_citations))
-    max_cit <- if (length(valid_citations) == 0) 0 else as.numeric(max(valid_citations))
-    
-    return(data.frame(
-      Title = title_text, 
-      Authors = author_text,
-      Author_Count = author_list$Author_Count, 
-      Citations = max_cit, 
-      Journal = journal_text, 
-      Publisher = publisher_text, 
-      Year = publisher_year_text
-    ))
-  })))
+  ris <- extract_ris(doi_input, write_file = write_file)
+  if(is.null(ris)){
+    rv$log_text <- paste(rv$log_text, paste("<span  style='color: red;'> RIS Extraction Failed for:",doi_input,"</span>"),sep="<br>")
+    return(NULL)
+  }
+  ris_lines <- strsplit(ris, "\n")[[1]]
+  
+  journal_text <- construct_journal_from_ris(ris)
+  
+  publisher_text <- gsub(paste0("^PB\\s+-\\s+"), "", x = grep(pattern = "PB", ris_lines,value = T))
+  publisher_text <- ifelse(length(publisher_text) > 0,publisher_text, NA)
+  
+  publisher_year_text <- gsub(paste0("^(PY|Y1|Y2)\\s+-\\s+"), "", x = grep(pattern = "PY|Y1|Y2", ris_lines,value = T))
+  publisher_year_text <- ifelse(length(publisher_year_text) > 0,publisher_year_text, NA)
+  
+  author_list <- tidyr::tibble(na.omit(construct_author_list_from_ris(ris)))
+  
+  if(nrow(author_list) <=0){
+    return(NULL)
+  }
+  
+  author_text <- author_list$Authors 
+  author_text <- ifelse(length(author_text) > 0, author_text, NA)
+  title_text <- get_title_from_ris(ris)
+  # message(doi_input)
+  doi_citations <- get_citation_counts(doi_input)
+  
+  # Safely extract valid citations using standard base logic
+  valid_citations <- na.omit(unlist(doi_citations))
+  max_cit <- if (length(valid_citations) == 0) 0 else as.numeric(max(valid_citations))
+  
+  return(data.frame(
+    Title = title_text, 
+    Authors = author_text,
+    Author_Count = author_list$Author_Count, 
+    Citations = max_cit, 
+    Journal = journal_text, 
+    Publisher = publisher_text, 
+    Year = publisher_year_text,
+    doi = trimws(doi_input),
+    orcid = trimws(orcid)
+  ))
+  
+  # doi_lines_input <- strsplit(doi_input, "\n")[[1]]
+  #
+  # return(dplyr::bind_rows(lapply(doi_lines_input, function(doi_line){
+  #   # if (rv$is_cancelled) return(NULL)
+  #   if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+  #   if(stringi::stri_isempty(doi_line)){
+  #     return(NULL)
+  #   }
+  #   
+  #   ris <- extract_ris(doi_line, write_file = write_file)
+  #   ris_lines <- strsplit(ris, "\n")[[1]]
+  #   
+  #   journal_text <- construct_journal_from_ris(ris)
+  #   
+  #   publisher_text <- gsub(paste0("^PB\\s+-\\s+"), "", x = grep(pattern = "PB", ris_lines,value = T))
+  #   publisher_text <- ifelse(length(publisher_text) > 0,publisher_text, NA)
+  #   
+  #   publisher_year_text <- gsub(paste0("^(PY|Y1|Y2)\\s+-\\s+"), "", x = grep(pattern = "PY|Y1|Y2", ris_lines,value = T))
+  #   publisher_year_text <- ifelse(length(publisher_year_text) > 0,publisher_year_text, NA)
+  #   
+  #   author_list <- tidyr::tibble(na.omit(construct_author_list_from_ris(ris)))
+  #   
+  #   if(nrow(author_list) <=0){
+  #     return(NULL)
+  #   }
+  #   
+  #   author_text <- author_list$Authors 
+  #   author_text <- ifelse(length(author_text) > 0, author_text, NA)
+  #   title_text <- get_title_from_ris(ris)
+  #   # message(doi_line)
+  #   doi_citations <- get_citation_counts(doi_line)
+  #   
+  #   # Safely extract valid citations using standard base logic
+  #   valid_citations <- na.omit(unlist(doi_citations))
+  #   max_cit <- if (length(valid_citations) == 0) 0 else as.numeric(max(valid_citations))
+  #   
+  #   return(data.frame(
+  #     Title = title_text, 
+  #     Authors = author_text,
+  #     Author_Count = author_list$Author_Count, 
+  #     Citations = max_cit, 
+  #     Journal = journal_text, 
+  #     Publisher = publisher_text, 
+  #     Year = publisher_year_text,
+  #     doi = trimws(doi_line),
+  #     orcid = trimws(orcid)
+  #   ))
+  # })))
 }
 
 # # If run as script with args, use them

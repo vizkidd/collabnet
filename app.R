@@ -57,6 +57,8 @@ font_add(
 theme_set(theme_minimal(base_family = "schibsted-grotesk"))
 showtext_auto()
 
+options(shiny.maxRequestSize = 1024 * 1024^2) #1GB
+
 # # 1. Verify showtext is active
 # print(showtext::showtext_auto())
 # # 2. List all fonts R currently 'sees' via systemfonts
