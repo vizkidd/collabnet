@@ -21,7 +21,11 @@ show_row_merge_modal <- function(rv, session) {
     uiOutput("row_merge_ui"),
     footer = tagList(
       modalButton("Cancel"),
-      actionButton("confirm_import", "Confirm & Finish Import", class = "btn-success")
+      # shinyjs::disabled(actionButton("confirm_import", "Confirm & Finish Import", class = "btn-success"))
+      actionButton("confirm_import", "Confirm & Finish Import", 
+                   class = "btn-success",
+                   disabled = "disabled", 
+                   style = "pointer-events: none; opacity: 0.5;")
     ),
     easyClose = FALSE
   ))
@@ -63,49 +67,110 @@ detect_vpn <- function(rv, output) {
 }
 
 #Flow functions
-extend_input_table <- function(rv) {
-  # print("target_variants_norm")
-  # print(rv$target_variants_norm)
-  # glens_extended_table <- dplyr::bind_rows(lapply(rv$target_variants_norm, function(curr_variant){
-  #   return(rv$glens_input_table %>%
-  #     rowwise() %>%
-  #     mutate(
-  #       dec = list(decide_label_for_target(Authors, curr_variant, rv$author_match_regex)),
-  #       label = dec$label,
-  #       matched_token = dec$matched_token
-  #     ) %>%
-  #     ungroup() %>%
-  #     filter(label != "Not_found") %>%
-  #     mutate(
-  #       First_Author = as.integer(label == "First_Author"),
-  #       Second_Author = as.integer(label == "Second_Author"),
-  #       Co_Author = as.integer(label == "Co_Author"),
-  #       Corresponding_Author = as.integer(label == "Corresponding_Author")
-  #     ) %>%
-  #     select(-dec) ) #END - return
-  # })) #END - lapply
-  
-  
-  
-  if(nrow(rv$glens_input_table) <= 0){
-    stop("Check author logical filter: rv$glens_input_table")  
+extend_input_table <- function(rv, df_tmp) {
+  print("extend_input_table(rv):")
+  if (nrow(df_tmp) <= 0) {
+    rv$log_text <- paste(rv$log_text, paste("No data to extend."), sep="<br>")
+    return(df_tmp)
   }
   
-  # filtered_glens_input_table <- apply_author_logic(
-  #   pubs_df          = rv$glens_input_table,
-  #   primary_regex    = rv$author_match_regex,
-  #   selected_authors = rv$selected_filter_authors, 
-  #   gate             = rv$author_logic_gate        
-  # )
-  # 
-  # if(nrow(filtered_glens_input_table) <= 0){
-  #  stop("Check author logical filter: filtered_glens_input_table") 
-  # }
+  # --- NEW BYPASS: Check if there are actually keywords to search for ---
+  kw_list <- unique(c(rv$target_variants_norm, rv$author_match_regex))
+  kw_list <- kw_list[!is.na(kw_list) & trimws(kw_list) != ""]
   
-  glens_extended_table <- rv$glens_input_table %>%
+  if (length(kw_list) == 0) {
+    # # # No keywords provided! Bypass filtering and show all data.
+    # # # We assign everything as a "Co_Author" with a weight of 1.0 so plots still render safely.
+    # df_tmp <- df_tmp %>%
+    #   mutate(
+    #     label = "No_Filter",
+    #     matched_token = NA_character_,
+    #     First_Author = 0L,
+    #     Second_Author = 0L,
+    #     Co_Author = 1L,
+    #     Corresponding_Author = 0L,
+    #     Author_Count = str_count(Authors, ",") + 1,
+    #     Adjustment_Weights = 1.0,
+    #     Adjusted_Citations = suppressWarnings(as.numeric(Citations)),
+    #     Year = as.integer(Year),
+    #     position_rank = 3L
+    #   ) %>%
+    #   arrange(desc(Adjusted_Citations))
+    
+    return(df_tmp) # Exit the function early
+  }
+  
+  # --- Retrieve toggles from rv (Fallback to TRUE if missing) ---
+  # Make sure you are syncing input$ext_match to rv$ext_match in your observeEvent!
+  ext_match <- if (!is.null(rv$ext_match)) rv$ext_match else TRUE
+  ignore_case <- if (!is.null(rv$ignore_case)) rv$ignore_case else TRUE
+  
+  # Fetch selected columns and delimiters from the extended controls panel
+  search_cols <- names(rv$detected_mv_cols)
+  delims <- rv$detected_mv_cols
+  
+  if (is.null(search_cols) || length(search_cols) == 0) {
+    search_cols <- "Authors"
+    delims <- list(Authors = ",")
+  }
+  
+  valid_search_cols <- intersect(search_cols, colnames(df_tmp))
+  
+  if(length(valid_search_cols) == 0) {
+    valid_search_cols <- "Authors"
+  }
+  
+  glens_extended_table <- df_tmp %>%
     rowwise() %>%
     mutate(
-      dec = list(decide_label_for_target(Authors, rv$target_variants_norm, rv$author_match_regex)),
+      dec = list({
+        best_match <- list(label = "Not_found", matched_token = NA)
+        
+        for (col in valid_search_cols) {
+          val <- get(col)
+          
+          if (!is.na(val) && val != "") {
+            
+            # Standardize delimiter
+            col_delim <- if (!is.null(delims[[col]])) delims[[col]] else ","
+            if (col_delim != ",") {
+              val <- gsub(escape_regex(col_delim), ",", val)
+            }
+            
+            # --- BRANCH: Extended Matching vs Basic Regex ---
+            if (ext_match) {
+              match_res <- decide_label_for_target(val, rv$target_variants_norm, rv$author_match_regex)
+              if (match_res$label != "Not_found") {
+                best_match <- match_res
+                break 
+              }
+            } else {
+              # Gather all keywords/regexes to test
+              kw_list <- unique(c(rv$target_variants_norm, rv$author_match_regex))
+              kw_list <- kw_list[!is.na(kw_list) & kw_list != ""]
+              
+              match_found <- FALSE
+              for (kw in kw_list) {
+                # tryCatch prevents malformed regex from crashing the app
+                is_match <- tryCatch(
+                  grepl(kw, val, ignore.case = ignore_case),
+                  error = function(e) FALSE
+                )
+                
+                if (is_match) {
+                  # Assign a generic label for a basic string match
+                  best_match <- list(label = "Generic_Match", matched_token = kw)
+                  match_found <- TRUE
+                  break
+                }
+              }
+              if (match_found) break
+            }
+            
+          }
+        }
+        best_match
+      }),
       label = dec$label,
       matched_token = dec$matched_token
     ) %>%
@@ -115,20 +180,29 @@ extend_input_table <- function(rv) {
       First_Author = as.integer(label == "First_Author"),
       Second_Author = as.integer(label == "Second_Author"),
       Co_Author = as.integer(label == "Co_Author"),
-      Corresponding_Author = as.integer(label == "Corresponding_Author")
+      Corresponding_Author = as.integer(label == "Corresponding_Author"),
+      Generic_Match = as.integer(label == "Generic_Match") 
     ) %>%
     select(-dec)
   
-  # Ensure Author_Count exists
+  if(nrow(glens_extended_table) <= 0) {
+    rv$log_text <- paste(rv$log_text, "Warning: No matches found during table extension.", sep="<br>")
+    return(glens_extended_table) 
+  }
+  
+  count_target_col <- if ("Authors" %in% valid_search_cols) "Authors" else valid_search_cols[1]
+  count_target_delim <- if (!is.null(delims[[count_target_col]])) delims[[count_target_col]] else ","
+  
   if (!"Author_Count" %in% colnames(glens_extended_table)) {
     glens_extended_table <- glens_extended_table %>%
-      mutate(Author_Count = str_count(Authors, ",") + 1)
+      mutate(Author_Count = str_count(!!sym(count_target_col), escape_regex(count_target_delim)) + 1)
   }
   
   # Correct weight logic
   glens_extended_table <- glens_extended_table %>%
     mutate(
       Adjustment_Weights = case_when(
+        label == "Generic_Match" ~ 1.00,        # Give basic string matches full weight
         label == "Corresponding_Author" ~ 1.00,
         label == "First_Author" ~ 0.90,
         label == "Second_Author" ~ 0.50,
@@ -139,16 +213,20 @@ extend_input_table <- function(rv) {
       Adjusted_Citations = as.numeric(Citations) * Adjustment_Weights
     )
   
-  # Clean numeric columns
   glens_extended_table$Adjusted_Citations <- suppressWarnings(as.numeric(glens_extended_table$Adjusted_Citations))
+  
+  # For downstream plotting safety, treat Generic Matches as Co-Authors 
+  # so at least one author flag column triggers as `1`
+  glens_extended_table <- glens_extended_table %>%
+    mutate(Co_Author = ifelse(Generic_Match == 1, 1L, Co_Author))
   
   for (col in c("First_Author","Second_Author","Co_Author","Corresponding_Author")) {
     glens_extended_table[[col]][is.na(glens_extended_table[[col]])] <- 0
     glens_extended_table[[col]] <- ifelse(glens_extended_table[[col]] >= 1, 1L, 0L)
   }
   
-  # Global ordering (consistent with file2.R logic)
-  rv$glens_etable_final <- glens_extended_table %>%
+  # Global ordering 
+  ret_df <- glens_extended_table %>%
     mutate(
       position_rank = case_when(
         First_Author == 1 ~ 1L,
@@ -160,15 +238,119 @@ extend_input_table <- function(rv) {
       adj_cit_for_sort = ifelse(is.na(Adjusted_Citations), -Inf, Adjusted_Citations)
     ) %>%
     arrange(position_rank, desc(adj_cit_for_sort)) %>%
-    select(-adj_cit_for_sort) %>%
+    select(-adj_cit_for_sort, -Generic_Match) %>%
     mutate(Year = as.integer(Year))
+  
+  return(ret_df)
 }
 
-compute_indices <- function(rv) {
+# extend_input_table <- function(rv) {
+#   # print("target_variants_norm")
+#   # print(rv$target_variants_norm)
+#   # glens_extended_table <- dplyr::bind_rows(lapply(rv$target_variants_norm, function(curr_variant){
+#   #   return(rv$glens_input_table %>%
+#   #     rowwise() %>%
+#   #     mutate(
+#   #       dec = list(decide_label_for_target(Authors, curr_variant, rv$author_match_regex)),
+#   #       label = dec$label,
+#   #       matched_token = dec$matched_token
+#   #     ) %>%
+#   #     ungroup() %>%
+#   #     filter(label != "Not_found") %>%
+#   #     mutate(
+#   #       First_Author = as.integer(label == "First_Author"),
+#   #       Second_Author = as.integer(label == "Second_Author"),
+#   #       Co_Author = as.integer(label == "Co_Author"),
+#   #       Corresponding_Author = as.integer(label == "Corresponding_Author")
+#   #     ) %>%
+#   #     select(-dec) ) #END - return
+#   # })) #END - lapply
+#   
+#   
+#   
+#   if(nrow(rv$glens_input_table) <= 0){
+#     rv$log_text <- paste(rv$log_text, paste("No data to extend."), sep="<br>")
+#     return()
+#   }
+#   
+#   # filtered_glens_input_table <- apply_author_logic(
+#   #   pubs_df          = rv$glens_input_table,
+#   #   primary_regex    = rv$author_match_regex,
+#   #   selected_authors = rv$selected_filter_authors, 
+#   #   gate             = rv$author_logic_gate        
+#   # )
+#   # 
+#   # if(nrow(filtered_glens_input_table) <= 0){
+#   #  stop("Check author logical filter: filtered_glens_input_table") 
+#   # }
+#   
+#   glens_extended_table <- rv$glens_input_table %>%
+#     rowwise() %>%
+#     mutate(
+#       dec = list(decide_label_for_target(Authors, rv$target_variants_norm, rv$author_match_regex)),
+#       label = dec$label,
+#       matched_token = dec$matched_token
+#     ) %>%
+#     ungroup() %>%
+#     filter(label != "Not_found") %>%
+#     mutate(
+#       First_Author = as.integer(label == "First_Author"),
+#       Second_Author = as.integer(label == "Second_Author"),
+#       Co_Author = as.integer(label == "Co_Author"),
+#       Corresponding_Author = as.integer(label == "Corresponding_Author")
+#     ) %>%
+#     select(-dec)
+#   
+#   # Ensure Author_Count exists
+#   if (!"Author_Count" %in% colnames(glens_extended_table)) {
+#     glens_extended_table <- glens_extended_table %>%
+#       mutate(Author_Count = str_count(Authors, ",") + 1)
+#   }
+#   
+#   # Correct weight logic
+#   glens_extended_table <- glens_extended_table %>%
+#     mutate(
+#       Adjustment_Weights = case_when(
+#         label == "Corresponding_Author" ~ 1.00,
+#         label == "First_Author" ~ 0.90,
+#         label == "Second_Author" ~ 0.50,
+#         label == "Co_Author" & Author_Count <= 6 ~ 0.25,
+#         label == "Co_Author" & Author_Count > 6 ~ 0.10,
+#         TRUE ~ 0
+#       ),
+#       Adjusted_Citations = as.numeric(Citations) * Adjustment_Weights
+#     )
+#   
+#   # Clean numeric columns
+#   glens_extended_table$Adjusted_Citations <- suppressWarnings(as.numeric(glens_extended_table$Adjusted_Citations))
+#   
+#   for (col in c("First_Author","Second_Author","Co_Author","Corresponding_Author")) {
+#     glens_extended_table[[col]][is.na(glens_extended_table[[col]])] <- 0
+#     glens_extended_table[[col]] <- ifelse(glens_extended_table[[col]] >= 1, 1L, 0L)
+#   }
+#   
+#   # Global ordering (consistent with file2.R logic)
+#   rv$glens_etable_final <- glens_extended_table %>%
+#     mutate(
+#       position_rank = case_when(
+#         First_Author == 1 ~ 1L,
+#         Second_Author == 1 ~ 2L,
+#         Co_Author == 1 ~ 3L,
+#         Corresponding_Author == 1 ~ 4L,
+#         TRUE ~ 99L
+#       ),
+#       adj_cit_for_sort = ifelse(is.na(Adjusted_Citations), -Inf, Adjusted_Citations)
+#     ) %>%
+#     arrange(position_rank, desc(adj_cit_for_sort)) %>%
+#     select(-adj_cit_for_sort) %>%
+#     mutate(Year = as.integer(Year))
+# }
+
+compute_indices <- function(rv, df) {
   
   # Use FINAL ordered table only
   # df <- rv$glens_etable_final
-  df <- rv$glens_year_filtered
+  # df <- rv$glens_year_filtered
   
   # Strict H-index (as you changed)
   compute_h_index <- function(citations_vec) {
@@ -189,6 +371,11 @@ compute_indices <- function(rv) {
                  "Second_Author",
                  "Co_Author",
                  "Corresponding_Author")
+  
+  if(!all(positions %in% colnames(df))){
+    rv$log_text <- paste(rv$log_text, paste("Cannot compute indices: Missing columns - ",paste(positions, collapse=",")),sep="<br>")
+    return()
+  }
   
   results <- list()
   
@@ -230,33 +417,34 @@ compute_indices <- function(rv) {
   shinyjs::show("sh_index")
   shinyjs::show("summary_table")
   shinyjs::show("extended_table")
+  
 }
 
-match_journals <- function(rv){
-  
+match_journals <- function(rv, df_tmp){
+  print("match_journals(rv):")
   need_cols <- c("Title","Authors","Adjusted_Citations","First_Author","Second_Author","Co_Author","Corresponding_Author")
-  missing_cols <- setdiff(need_cols, names(rv$glens_etable_final))
+  missing_cols <- setdiff(need_cols, names(df_tmp))
   if (length(missing_cols) > 0) {
     # warning(paste("Author-level file missing columns:", paste(missing_cols, collapse = ", ")))
     rv$log_text <- paste("<span style='color: red;'>Author-level file missing columns:", paste(missing_cols, collapse = ", "),"</span>",sep="<br>")
-    return()
+    return(df_tmp)
   }
   
   # --- Safely extract a target journal column to normalize ---
   # Look for User_Journal first, fallback to Journal
-  if ("User_Journal" %in% names(rv$glens_etable_final)) {
-    target_journal_col <- rv$glens_etable_final$User_Journal
-  } else if ("Journal" %in% names(rv$glens_etable_final)) {
-    target_journal_col <- rv$glens_etable_final$Journal
+  if ("User_Journal" %in% names(df_tmp)) {
+    target_journal_col <- df_tmp$User_Journal
+  } else if ("Journal" %in% names(df_tmp)) {
+    target_journal_col <- df_tmp$Journal
   } else {
     warning("No Journal or User_Journal column found to match against!")
-    return()
+    return(df_tmp)
   }
   
   unique_journals <- unique(target_journal_col)
   cat("Unique journals to match:", length(unique_journals), "\n")
   
-  rv$glens_etable_final$Name_norm <- sapply(target_journal_col, function(x) normalize_journal(x))
+  df_tmp$Name_norm <- sapply(target_journal_col, function(x) normalize_journal(x))
   
   match_idx <- unique(
     bind_rows(
@@ -273,66 +461,83 @@ match_journals <- function(rv){
     )
   )
   
+  print(paste("CHECK FLOW1:",colnames(jcr_names_norm),collapse=","))
+  print(paste("CHECK FLOW2:",colnames(match_idx),collapse=","))
+  # print(paste("match_idx:", paste(match_idx,collapse = ",")))
   if (nrow(match_idx) > 0) {
     jcr_matched <- inner_join(jcr_names_norm, match_idx, by = c("Name_norm", "Qscore", "JIF5Years"))
   } else {
-    jcr_matched <- jcr[0, ] 
+    jcr_matched <- jcr_names_norm[0, ] 
   }
   
-  # Clean up old columns to prevent duplication
-  rv$glens_etable_final$Qscore <- NULL
-  rv$glens_etable_final$JIF5Years <- NULL
+  # --- CRITICAL FIX: Isolate JCR columns before joining ---
+  jcr_subset <- jcr_matched %>%
+    dplyr::select(Name_norm, 
+                  JCR_Journal = Name, 
+                  JCR_Qscore = Qscore, 
+                  JCR_JIF5Years = JIF5Years) %>%
+    dplyr::distinct(Name_norm, .keep_all = TRUE)
   
-  # df_auth_joined contains your ENTIRE dataset now
-  df_auth_joined <- left_join(rv$glens_etable_final, jcr_matched, by = c("Name_norm"))
+  # --- NEW: PRE-JOIN CLEANUP ---
+  # If this runs multiple times, JCR_Journal will already exist in the app.
+  # We must drop it before the join to prevent .x and .y collisions!
+  if ("JCR_Journal" %in% names(df_tmp)) {
+    df_tmp <- df_tmp %>% dplyr::select(-JCR_Journal)
+  }
   
-  # --- 1. CRITICAL FIX: Bulletproof Journal Naming ---
-  # Grab all possible variations of the journal name columns
-  journal_cols <- intersect(names(df_auth_joined), 
-                            c("User_Journal", "Journal", "Journal.x", "Journal.y", "User_Journal.x", "User_Journal.y"))
+  print("CHECK FLOW3:")
+  # Perform the join. Because we dropped the old JCR_Journal, 
+  # NO OTHER COLUMNS will overlap, and no .x or .y suffixes can be created!
+  df_auth_joined <- dplyr::left_join(df_tmp, jcr_subset, by = "Name_norm")
   
-  if (length(journal_cols) > 0) {
-    final_journal <- rep(NA_character_, nrow(df_auth_joined))
-    
-    # Coalesce all available data into one unified vector
-    for (j_col in journal_cols) {
-      final_journal <- dplyr::coalesce(final_journal, as.character(df_auth_joined[[j_col]]))
-    }
-    
-    # Assign the master column
-    df_auth_joined$User_Journal <- final_journal
-    
-    # Erase the messy leftover columns
-    cols_to_remove <- setdiff(journal_cols, "User_Journal")
-    if(length(cols_to_remove) > 0) {
-      df_auth_joined <- df_auth_joined %>% dplyr::select(-dplyr::all_of(cols_to_remove))
-    }
+  # --- 1. Safely resolve Qscore ---
+  if ("Qscore" %in% names(df_auth_joined)) {
+    # If app already has Qscore, fill missing ones with JCR, but prioritize JCR
+    df_auth_joined <- df_auth_joined %>%
+      dplyr::mutate(Qscore = dplyr::coalesce(as.character(JCR_Qscore), as.character(Qscore))) %>%
+      dplyr::select(-JCR_Qscore)
   } else {
-    df_auth_joined$User_Journal <- NA_character_
+    # Otherwise just rename the newly brought over JCR column
+    df_auth_joined <- df_auth_joined %>% dplyr::rename(Qscore = JCR_Qscore)
   }
   
-  if ("Journal.y" %in% names(df_auth_joined)) {
-    df_auth_joined <- df_auth_joined %>% rename("JCR_Journal" = Journal.y)
-  } else if (!"JCR_Journal" %in% names(df_auth_joined)) {
-    df_auth_joined$JCR_Journal <- NA_character_
-  }
-  
-  # --- 2. Resolve Qscore .x and .y collisions ---
-  if ("Qscore.x" %in% names(df_auth_joined) && "Qscore.y" %in% names(df_auth_joined)) {
+  # --- 2. Safely resolve JIF5Years ---
+  if ("JIF5Years" %in% names(df_auth_joined)) {
     df_auth_joined <- df_auth_joined %>%
-      mutate(Qscore = coalesce(as.character(Qscore.y), as.character(Qscore.x))) %>% 
-      select(-Qscore.x, -Qscore.y)                      
-  } else if (!"Qscore" %in% names(df_auth_joined)) {
-    df_auth_joined$Qscore <- NA_character_
+      dplyr::mutate(JIF5Years = dplyr::coalesce(as.character(JCR_JIF5Years), as.character(JIF5Years))) %>%
+      dplyr::select(-JCR_JIF5Years)
+  } else {
+    df_auth_joined <- df_auth_joined %>% dplyr::rename(JIF5Years = JCR_JIF5Years)
   }
   
-  # --- 3. Resolve JIF5Years .x and .y collisions ---
-  if ("JIF5Years.x" %in% names(df_auth_joined) && "JIF5Years.y" %in% names(df_auth_joined)) {
+  # Perform the join. Because jcr_subset ONLY has Name_norm + 3 unique columns, 
+  # NO OTHER COLUMNS in df_tmp will be touched, renamed, or suffixed!
+  df_auth_joined <- dplyr::left_join(df_tmp, jcr_subset, by = "Name_norm")
+  
+  # --- 1. Safely resolve Qscore ---
+  if ("Qscore" %in% names(df_auth_joined)) {
+    # If app already has Qscore, fill missing ones with JCR, but prioritize JCR
     df_auth_joined <- df_auth_joined %>%
-      mutate(JIF5Years = coalesce(as.character(JIF5Years.y), as.character(JIF5Years.x))) %>%
-      select(-JIF5Years.x, -JIF5Years.y)
+      dplyr::mutate(Qscore = dplyr::coalesce(as.character(JCR_Qscore), as.character(Qscore))) %>%
+      dplyr::select(-JCR_Qscore)
+  } else {
+    # Otherwise just rename the newly brought over JCR column
+    df_auth_joined <- df_auth_joined %>% dplyr::rename(Qscore = JCR_Qscore)
   }
   
+  # --- 2. Safely resolve JIF5Years ---
+  if ("JIF5Years" %in% names(df_auth_joined)) {
+    df_auth_joined <- df_auth_joined %>%
+      dplyr::mutate(JIF5Years = dplyr::coalesce(as.character(JCR_JIF5Years), as.character(JIF5Years))) %>%
+      dplyr::select(-JCR_JIF5Years)
+  } else {
+    df_auth_joined <- df_auth_joined %>% dplyr::rename(JIF5Years = JCR_JIF5Years)
+  }
+  
+  print(paste("colnames(df_auth_joined):",paste(colnames(df_auth_joined), collapse=",")))
+  # Note: "User_Journal" and "Journal" are left completely intact exactly as they were!
+  
+  # --- 3. Fallback match for unmatched JCR_Journals ---
   unmatched <- which(is.na(df_auth_joined$JCR_Journal))
   if (length(unmatched) > 0) {
     cat("Trying fallback substring match for", length(unmatched), "journals...\n")
@@ -349,15 +554,21 @@ match_journals <- function(rv){
     }
   }
   
+  # Final formatting
   df_auth_joined <- df_auth_joined %>%
-    mutate(Qscore = if_else(is.na(Qscore), "Unranked", as.character(Qscore)))
+    dplyr::mutate(Qscore = dplyr::if_else(is.na(Qscore), "Unranked", as.character(Qscore)))
   
   n_unmatched <- length(which(is.na(df_auth_joined$JCR_Journal)))
   cat("Number of unmatched journal rows:", n_unmatched, "\n")
   
-  # --- 4. CRITICAL FIX: Do NOT bind_rows here! ---
-  # df_auth_joined already contains the full updated dataset. 
-  rv$glens_etable_final <- df_auth_joined %>% dplyr::distinct()
+  # Save the protected dataframe back to reactive values
+  # rv$glens_etable_final <- df_auth_joined %>% dplyr::distinct()
+  df_auth_joined <- df_auth_joined %>% dplyr::distinct()
+  return(df_auth_joined)
+}
+
+refresh_data <- function(rv, session){
+  
 }
 
 # match_journals <- function(rv){

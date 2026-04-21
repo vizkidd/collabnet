@@ -78,10 +78,18 @@ score_match <- function(token_clean, target_variants_norm) {
 }
 
 escape_regex <- function(x) gsub("([][{}()+*^$\\\\.|?])", "\\\\\\1", x)
-build_name_regex_for_variants <- function(vars) {
+build_name_regex_for_variants <- function(vars, ignore_case = TRUE) {
   parts <- sapply(vars, function(v) paste0("\\b", escape_regex(v), "\\b"))
-  paste0("(?i)(", paste(parts, collapse = "|"), ")")
+  if (ignore_case) {
+    paste0("(?i)(", paste(parts, collapse = "|"), ")")
+  } else {
+    paste0("(", paste(parts, collapse = "|"), ")")
+  }
 }
+# build_name_regex_for_variants <- function(vars) {
+#   parts <- sapply(vars, function(v) paste0("\\b", escape_regex(v), "\\b"))
+#   paste0("(?i)(", paste(parts, collapse = "|"), ")")
+# }
 
 # --------------------------------------------------------------
 # Tokenize authors & position rules
@@ -262,47 +270,63 @@ decide_label_for_target <- function(author_field, target_variants_norm, author_r
 #     select(-match_counts, -total_paper_authors) # Clean up the temporary columns
 # }
 
-apply_author_logic <- function(pubs_df, primary_regex, selected_authors, gate) {
-
-  # Failsafe: If no data or no secondary authors selected, return as-is
-  if (nrow(pubs_df) == 0 || is.null(selected_authors) || length(selected_authors) == 0) {
+apply_author_logic <- function(pubs_df, selected_authors, gate, ext_match = TRUE, ignore_case = TRUE, search_cols = "Authors") {
+  
+  selected_authors <- selected_authors[trimws(selected_authors) != ""]
+  
+  # If no authors are selected, OR if the gate tells us not to filter ("ANY"), 
+  # return the data instantly without running heavy Regex math!
+  if (length(selected_authors) == 0 || is.null(gate) || gate == "FULL") {
     return(pubs_df)
   }
-
-  # Clean list and remove empty strings
-  selected_authors <- selected_authors[trimws(selected_authors) != ""]
-  if (length(selected_authors) == 0) return(pubs_df)
-
-  # Escape special characters in names
-  escaped_authors <- gsub("([.|()\\^{}+$*?]|\\[|\\])", "\\\\\\1", selected_authors)
-
+  
   # Create a boolean matrix: rows = publications, cols = selected authors
-  match_matrix <- sapply(escaped_authors, function(rgx) {
-    grepl(rgx, pubs_df$Authors, ignore.case = TRUE)
+  match_matrix <- sapply(selected_authors, function(author) {
+    
+    # Apply Extended Match logic to the regex boundary
+    if (ext_match) {
+      rgx <- paste0("\\b", escape_regex(author), "\\b")
+    } else {
+      rgx <- escape_regex(author) # Allow partial string matches
+    }
+    
+    # Search across all selected columns. (Logical OR across the columns)
+    # If the author is found in ANY of the mapped columns, they count as a match.
+    col_matches <- lapply(search_cols, function(col) {
+      if (col %in% colnames(pubs_df)) {
+        grepl(rgx, pubs_df[[col]], ignore.case = ignore_case)
+      } else {
+        rep(FALSE, nrow(pubs_df)) # Safety fallback if column is missing
+      }
+    })
+    
+    # Combine the T/F results from all columns into a single vector
+    Reduce("|", col_matches)
   })
-
+  
   # Safely handle single-row or single-column matrix collapses
   if (!is.matrix(match_matrix)) {
-    match_matrix <- matrix(match_matrix, nrow = nrow(pubs_df), ncol = length(escaped_authors))
+    match_matrix <- matrix(match_matrix, nrow = nrow(pubs_df), ncol = length(selected_authors))
   }
-
-  N <- length(escaped_authors)
-
-  # Add counts to the dataframe temporarily and filter safely using case_when
-  pubs_df %>%
+  
+  N <- length(selected_authors)
+  
+  # Apply the logical gate
+  ret_df <- pubs_df %>%
     mutate(match_counts = rowSums(match_matrix)) %>%
     filter(
       case_when(
         is.null(gate)  ~ TRUE,
-        gate == "OR"   ~ match_counts > 0,  # Co-patriot: Has AT LEAST 1 of the selected authors
-        gate == "AND"  ~ match_counts == N, # Companion: Has ALL of the selected authors
-        gate == "XOR"  ~ match_counts == 1, # Rival: Has EXACTLY 1 of the selected authors (never together)
-        gate == "NOR"  ~ match_counts == 0, # Ignore: Has NONE of the selected authors
+        gate == "OR"   ~ match_counts > 0,  # Has AT LEAST 1 of the selected authors
+        gate == "AND"  ~ match_counts == N, # Has ALL of the selected authors
+        gate == "XOR"  ~ match_counts == 1, # Has EXACTLY 1 of the selected authors
+        gate == "NOR"  ~ match_counts == 0, # Has NONE of the selected authors
         gate == "NAND" ~ match_counts < N,  # Divide: NEVER has all of them together (can have some, or none)
         TRUE           ~ TRUE
       )
     ) %>%
-    select(-match_counts) # Clean up the temporary column
+    select(-match_counts)
+  return(ret_df)
 }
 
 # -----------------------------

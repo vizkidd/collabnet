@@ -180,9 +180,10 @@ source("GScholarLENS-helpers.R",local=TRUE)
 server <- function(input, output, session) {
   rv <- reactiveValues(
     author_list=list(),
-    glens_input_table = data.frame(),
+    glens_full_table = data.frame(),
     glens_etable_final = data.frame(),
     glens_year_filtered = data.frame(),
+    # glens_dropped_data = data.frame(),
     summary_table = data.frame(),
     scopus_df = data.frame(),
     scopus_future_list = list(),
@@ -193,6 +194,9 @@ server <- function(input, output, session) {
     is_glens_exec = F,
     is_cancelled = F,
     extended_controls = F,
+    auto_refresh_lookup = T,
+    ext_match = T,
+    ignore_case = T,
     log_text = NULL,
     acounts_plotly = NULL,
     ccounts_plotly = NULL,
@@ -200,6 +204,7 @@ server <- function(input, output, session) {
     aperc_plotly = NULL,
     cperc_plotly = NULL,
   )
+  
   shinyjs::hide(id =  "year_slider")
   shinyjs::hide("sh_index")
   shinyjs::hide("summary_table")
@@ -230,8 +235,12 @@ server <- function(input, output, session) {
   glens_env$scopus_key <- get_resolved_key("scopus.key", glens_env$scopus_key)
   if (!is.null(glens_env$scopus_key) && glens_env$scopus_key != "") {
     shinyjs::show("scopus_bar_container")
+    shinyjs::show("scopusid_label_wrapper")
+    shinyjs::show("scopusid_text")
   } else {
     shinyjs::hide("scopus_bar_container")
+    shinyjs::hide("scopusid_label_wrapper")
+    shinyjs::hide("scopusid_text")
   }
   # --- 2. Web of Science ---
   glens_env$wos_key <- get_resolved_key("wos.key", glens_env$wos_key)
@@ -301,6 +310,57 @@ server <- function(input, output, session) {
   #   )
   # })
   
+  output$extended_table <- DT::renderDataTable({
+    req(rv$glens_year_filtered, nrow(rv$glens_year_filtered) > 0)
+    # print(paste("Rows:", nrow(rv$glens_year_filtered)))
+    datatable(
+      rv$glens_year_filtered,
+      extensions = 'Buttons', # 1. Load the extension
+      options = list(
+        scrollY = "600px",
+        scrollX = TRUE,
+        paging = TRUE,
+        dom = 'Blfrtip',       # 2. Add 'B' to the layout (B = Buttons)
+        lengthMenu = list(c(10, 25, 50, 100, -1), c('10', '25', '50', '100', 'All')),
+        buttons = c('copy', 'csv', 'excel', 'pdf', 'print') # 3. Define buttons
+      )
+    )
+  })
+  
+  output$summary_table <- renderTable(rv$summary_table, striped = TRUE)
+  
+  output$sh_index <- renderUI({
+    # Only render if sh_index exists and is not NULL
+    req(rv$sh_index) 
+    
+    tags$div(
+      class = "sh-index-container", # Uses the CSS class for the badge look
+      style = "display: inline-flex; align-items: baseline; background-color: #f0f7ff; 
+               padding: 10px 18px; border-radius: 8px; border: 1px solid #cce4fc; 
+               margin-top: 5px;",
+      
+      # Label part
+      tags$span(
+        "Sh-Index", 
+        style = "color: #4a5568; font-size: 13px; font-weight: 600; text-transform: uppercase; 
+                 letter-spacing: 0.5px; margin-right: 12px;"
+      ),
+      
+      # Value part (Large and Bold)
+      tags$span(
+        rv$sh_index, 
+        style = "color: #4B8BBE; font-size: 26px; font-weight: 800; line-height: 1;"
+      )
+    )
+  })
+  
+  output$dynamic_source_ui <- renderUI({
+    req(rv$glens_etable_final, "Source" %in% colnames(rv$glens_etable_final))
+    available_sources <- levels(factor(rv$glens_etable_final$Source))
+    if (length(available_sources) == 0) return(p("Import: No sources identified yet.", style = "color: #888;"))
+    radioButtons("selected_source", label = NULL, choices = available_sources, selected = available_sources[1], inline = FALSE)
+  })
+  
   output$dynamic_author_filter <- renderUI({
     req(input$author_list)
     # 1. Get the raw text from the text area
@@ -316,12 +376,13 @@ server <- function(input, output, session) {
     if (length(author_list) > 1) {
       wellPanel(
         tags$h5(icon("users-cog"), " Relationship Filter", class = "text-primary"),
-        tags$p("Filter the publication list based on how the selected authors interact.", class = "text-muted"),
+        tags$p("Filter the publication list based on how the lookup keywords interact.", class = "text-muted"),
         
         radioButtons(
           inputId = "author_logic_gate",
           label = NULL,
           choices = c(
+            "Full Data" = "FULL",
             "Co-patriot/Collaborator (OR)" = "OR",
             "Companion (AND)"              = "AND",
             "Rival (XOR)"                  = "XOR",
@@ -337,81 +398,201 @@ server <- function(input, output, session) {
       return(NULL)
     }
   })
-  
+
   output$column_mapping_ui <- renderUI({
-    # if (is.null(rv$glens_etable_final) || ncol(rv$glens_etable_final) == 0) {
-    #   return(tags$div(class = "alert alert-warning", "No existing data to map to. Select 'All Columns'/'Map'."))
-    # }
     
-    # Only trigger if "Merge" is selected
-    req(input$col_import_type == "Map")
+    # Ensure we have data and an import type selected
+    req(rv$imported_data_list, input$col_import_type)
     
-    # # Safety checks
-    # if (is.null(rv$glens_etable_final) || ncol(rv$glens_etable_final) == 0) {
-    #   return(tags$div(class = "alert alert-warning", "No existing data to map to. Please select 'All Columns' instead."))
-    # }
-    if (is.null(rv$imported_data_list) || length(rv$imported_data_list) == 0) {
-      return(NULL)
+    # 1. Get all unique columns across all uploaded files
+    all_cols <- unique(unlist(lapply(rv$imported_data_list, names)))
+    
+    # Find columns common among the uploaded files themselves (in case they uploaded multiple CSVs at once)
+    uploaded_common <- Reduce(intersect, lapply(rv$imported_data_list, names))
+    
+    # Get the target App columns (Existing data, or the required template as a fallback)
+    app_cols <- if (!is.null(rv$glens_etable_final) && ncol(rv$glens_etable_final) > 0) {
+      names(rv$glens_etable_final)
+    } else {
+      collabnet_required_cols
     }
     
-    existing_cols <- c()
-    if (is.null(rv$glens_etable_final) || nrow(rv$glens_etable_final) == 0) {
-      existing_cols <- collabnet_required_cols
-    }else{
-      existing_cols <- names(rv$glens_etable_final)
+    # THE FIX: Intersect the uploaded columns with the actual App columns
+    common_cols <- intersect(uploaded_common, app_cols)
+    
+    # 2. Determine current import mode
+    import_type <- input$col_import_type
+    is_common_mode <- import_type == "Common Columns"
+    is_map_mode <- import_type == "Map"
+    has_no_common <- is_common_mode && length(common_cols) == 0
+    
+    # 3. Determine which columns to render
+    cols_to_render <- if (is_common_mode && !has_no_common) {
+      common_cols
+    } else {
+      all_cols
     }
     
-    # Extract all unique column names from the newly uploaded files
-    uploaded_cols <- unique(unlist(lapply(rv$imported_data_list, names)))
-    
-    # Build a row for every existing column
-    mapping_rows <- lapply(existing_cols, function(col_name) {
-      safe_id <- paste0("map_col_", make.names(col_name))
-      
-      # Auto-fill the text box if there is an exact name match in the uploaded file
-      default_val <- if (col_name %in% uploaded_cols) col_name else ""
-      
-      fluidRow(
-        style = "margin-top: 10px; align-items: flex-end; display: flex;",
-        column(6, 
-               tags$label("Target Column (App)", style = "font-size: 0.85em; font-weight: normal; color: #555;"),
-               # Disabled box showing available target column
-               tags$input(type = "text", value = col_name, disabled = TRUE, class = "form-control", style = "background-color: #e9ecef;")
-        ),
-        column(6, 
-               # Editable box for the user to type the uploaded column name
-               textInput(inputId = safe_id, label = "Source Column (Uploaded)", value = default_val, width = "100%")
-        )
+    # --- 4. Dynamic Info Boxes ---
+    info_box <- if (import_type == "All Columns") {
+      tags$div(
+        style = "background-color: #e3f2fd; border: 1px solid #90caf9; border-radius: 5px; padding: 10px; margin-bottom: 15px;",
+        tags$strong(icon("info-circle", style = "color: #1976d2;"), " Required CollabNET Columns:", style = "color: #1565c0;"),
+        tags$p(style = "margin-top: 5px; margin-bottom: 5px; font-family: monospace; font-size: 0.9em;", 
+               paste(collabnet_required_cols, collapse = ", ")),
+        tags$small(style = "color: #555;", "Rename your columns below to match these requirements where applicable.")
       )
+    } else if (is_common_mode) {
+      if (has_no_common) {
+        tags$div(
+          style = "background-color: #ffebee; border: 1px solid #ef9a9a; border-radius: 5px; padding: 10px; margin-bottom: 15px;",
+          tags$strong(icon("exclamation-triangle", style = "color: #d32f2f;"), " No Common Columns Found", style = "color: #c62828;"),
+          tags$p(style = "margin-top: 5px; margin-bottom: 0; font-size: 0.9em; color: #555;", 
+                 "None of the uploaded columns match the existing app dataset. Import is disabled.")
+        )
+      } else {
+        tags$div(
+          style = "background-color: #e8f5e9; border: 1px solid #a5d6a7; border-radius: 5px; padding: 10px; margin-bottom: 15px;",
+          tags$strong(icon("check-circle", style = "color: #388e3c;"), " Common Columns Found", style = "color: #2e7d32;"),
+          tags$p(style = "margin-top: 5px; margin-bottom: 0; font-size: 0.9em; color: #555;", 
+                 paste("Found", length(common_cols), "columns that match the existing app dataset."))
+        )
+      }
+    } else if (is_map_mode) {
+      tags$div(
+        style = "background-color: #fff3e0; border: 1px solid #ffcc80; border-radius: 5px; padding: 10px; margin-bottom: 15px;",
+        tags$strong(icon("exchange-alt", style = "color: #ef6c00;"), " Map & Align Columns:", style = "color: #e65100;"),
+        tags$p(style = "margin-top: 5px; margin-bottom: 5px; font-family: monospace; font-size: 0.9em;", 
+               paste(collabnet_required_cols, collapse = ", ")),
+        tags$small(style = "color: #555;", "Review auto-mapped columns on the right. Rename, combine, or split your uploaded columns on the left to match the dataset structure.")
+      )
+    } else {
+      NULL
+    }
+    
+    # --- 5. CSS for inline checkboxes ---
+    checkbox_css <- tags$style(HTML("
+    .mapping-row-checkbox .form-group { margin-bottom: 0 !important; }
+    .mapping-row-checkbox .checkbox { margin-top: 0 !important; margin-bottom: 0 !important; }
+    .mapping-row-checkbox label { margin-bottom: 0 !important; padding-top: 2px; }
+  "))
+    
+    # --- 6. Generate the UI rows for each column ---
+    column_rows <- lapply(cols_to_render, function(col) {
+      
+      safe_id <- make.names(col)
+      
+      # Disable UI if "Common Columns" is selected but none exist
+      is_disabled <- has_no_common
+      chk_val <- !has_no_common 
+      
+      # Auto-Mapping Logic: Match uploaded col to required col (case-insensitive)
+      mapped_val <- col 
+      if (exists("collabnet_required_cols")) {
+        match_idx <- match(tolower(col), tolower(collabnet_required_cols))
+        if (!is.na(match_idx)) {
+          mapped_val <- collabnet_required_cols[match_idx] # Apply exact case formatting of required col
+        }
+      }
+      
+      # 1. Checkbox
+      col_chk <- checkboxInput(paste0("map_chk_", safe_id), label = NULL, value = chk_val)
+      if (is_disabled) col_chk <- shinyjs::disabled(col_chk)
+      
+      # 2. Original Uploaded Column (Read-only Display for Map Mode)
+      orig_col_display <- tags$div(
+        style = "font-size: 0.9em; color: #495057; background-color: #e9ecef; border: 1px solid #ced4da; border-radius: 4px; padding: 6px 12px; height: 34px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+        title = paste("Uploaded Column:", col),
+        col
+      )
+      
+      # 3. Column Name Textbox (Pre-filled with auto-mapped value)
+      col_name_tb <- textInput(paste0("map_name_", safe_id), label = NULL, value = mapped_val, width = "100%")
+      if (is_disabled) col_name_tb <- shinyjs::disabled(col_name_tb)
+      
+      # 4. Delimiter Textbox 
+      col_delim_tb <- textInput(paste0("map_delim_", safe_id), label = NULL, placeholder = "Delim (e.g. ; |)", width = "100%")
+      if (is_disabled) col_delim_tb <- shinyjs::disabled(col_delim_tb)
+      
+      # 5. Action Buttons
+      btn_split <- actionButton(paste0("btn_split_", safe_id), "Split", icon = icon("cut"), class = "btn-sm btn-outline-primary", style = "padding: 4px 8px; font-size: 0.85em;")
+      btn_combine <- actionButton(paste0("btn_combine_", safe_id), "Combine", icon = icon("compress-arrows-alt"), class = "btn-sm btn-outline-success", style = "padding: 4px 8px; font-size: 0.85em;")
+      btn_drop <- actionButton(paste0("btn_drop_", safe_id), "Drop", icon = icon("trash"), class = "btn-sm btn-outline-danger", style = "padding: 4px 8px; font-size: 0.85em;")
+      
+      if (is_disabled) {
+        btn_split <- shinyjs::disabled(btn_split)
+        btn_combine <- shinyjs::disabled(btn_combine)
+        btn_drop <- shinyjs::disabled(btn_drop)
+      }
+      
+      # --- 7. Flexbox Layout Construction ---
+      # Apply a different structural layout if we are in Map Mode vs standard modes
+      
+      if (is_map_mode) {
+        # Map Mode: [Checkbox] [Original] -> [Mapped] [Delim] [Buttons]
+        tags$div(
+          style = "display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; padding: 5px; border-bottom: 1px solid #eee; width: 100%;",
+          
+          tags$div(class = "mapping-row-checkbox", style = "width: 5%; display: flex; justify-content: center; flex-shrink: 0;", col_chk),
+          tags$div(style = "width: 20%; padding-right: 5px; flex-shrink: 0;", orig_col_display),
+          tags$div(style = "width: 5%; display: flex; justify-content: center; color: #aaa; flex-shrink: 0;", icon("arrow-right")),
+          tags$div(style = "width: 20%; padding-right: 5px; flex-shrink: 0;", tags$div(style = "margin-bottom: 0;", col_name_tb)),
+          tags$div(style = "width: 15%; padding-right: 10px; flex-shrink: 0;", tags$div(style = "margin-bottom: 0;", col_delim_tb)),
+          tags$div(style = "width: 35%; display: flex; gap: 4px; justify-content: flex-end;", btn_split, btn_combine, btn_drop)
+        )
+      } else {
+        # Standard Mode: [Checkbox] [Column Name] [Delim] [Buttons]
+        tags$div(
+          style = "display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; padding: 5px; border-bottom: 1px solid #eee; width: 100%;",
+          
+          tags$div(class = "mapping-row-checkbox", style = "width: 5%; display: flex; justify-content: center; flex-shrink: 0;", col_chk),
+          tags$div(style = "width: 30%; padding-right: 5px; flex-shrink: 0;", tags$div(style = "margin-bottom: 0;", col_name_tb)),
+          tags$div(style = "width: 20%; padding-right: 10px; flex-shrink: 0;", tags$div(style = "margin-bottom: 0;", col_delim_tb)),
+          tags$div(style = "width: 45%; display: flex; gap: 4px; justify-content: flex-end;", btn_split, btn_combine, btn_drop)
+        )
+      }
     })
     
-    # A helpful display string showing the user what they can type
-    available_cols_text <- paste(uploaded_cols, collapse = ", ")
-    
+    # --- 8. Return the complete UI ---
     tagList(
-      tags$hr(),
-      tags$h5(icon("exchange-alt", lib="font-awesome"), " Map Columns"),
-      tags$p(style = "font-size: 0.9em; color: #666;", 
-             "Type the exact name of the uploaded column that matches each target column below."),
-      
-      # Display the available columns so the user doesn't have to guess
+      checkbox_css,
+      info_box,
       tags$div(
-        style = "background-color: #f8f9fa; padding: 10px; border-radius: 5px; font-size: 0.85em; margin-bottom: 15px; border: 1px solid #ddd;",
-        tags$strong("Available columns in your upload(s): "), 
-        tags$br(),
-        tags$span(style = "color: #0056b3;", available_cols_text)
+        style = "max-height: 350px; overflow-y: auto; overflow-x: hidden; padding-right: 5px;",
+        column_rows
       ),
-      
-      mapping_rows,
-      tags$hr()
+      # Wait 300ms for UI to paint, then strip the disabled attribute and restore pointer events
+      tags$script(HTML("
+        setTimeout(function(){ 
+          var btn = $('#next_row_merge');
+          btn.prop('disabled', false);
+          btn.css('pointer-events', 'auto');
+          btn.css('opacity', '1');
+        }, 300);
+      "))
     )
   })
   
   output$row_merge_ui <- renderUI({
-    if (is.null(rv$glens_etable_final) || ncol(rv$glens_etable_final) == 0) {
-      return(tags$div(class = "alert alert-warning", "No existing data to merge with. Selecting 'New'."))
-    }
+    # if (is.null(rv$glens_etable_final) || ncol(rv$glens_etable_final) == 0) {
+    #   return(tags$div(class = "alert alert-warning", "No existing data to merge with. Selecting 'New'."))
+    # }
     
+    unlock_script <- tags$script(HTML("
+      setTimeout(function(){ 
+        var btn = $('#confirm_import');
+        btn.prop('disabled', false);
+        btn.css('pointer-events', 'auto');
+        btn.css('opacity', '1');
+      }, 300);
+    "))
+    
+    if (is.null(rv$glens_etable_final) || ncol(rv$glens_etable_final) == 0) {
+      return(tagList(
+        tags$div(class = "alert alert-warning", "No existing data to merge with. Selecting 'New'."),
+        unlock_script # Make sure they can click confirm!
+      ))
+    }
     req(input$row_import_type == "Merge")
     
     if (!is.null(rv$glens_etable_final) && !is.null(rv$intermediate_merged_df)) {
@@ -439,7 +620,8 @@ server <- function(input, output, session) {
           
           tags$small(style = "color: #666;", 
                      "Missing data within joined rows will be intelligently backfilled regardless of join type.")
-        )
+        ),
+        unlock_script # Unlock when the merge UI finishes painting
       )
     }
   })
@@ -472,7 +654,7 @@ server <- function(input, output, session) {
     )
   })
   
-  output$extended_controls_panel <- renderUI({
+  output$lookup_controls_panel <- renderUI({
     # Determine which columns to show
     cols_to_show <- if (!is.null(rv$glens_etable_final) && ncol(rv$glens_etable_final) > 0) {
       names(rv$glens_etable_final)
@@ -480,41 +662,281 @@ server <- function(input, output, session) {
       collabnet_required_cols
     }
     
-    # Build a list of rows (Checkbox + Textbox)
+    current_selections <- isolate(rv$detected_mv_cols)
+    
+    # Build list of rows using Hex Encoded IDs
     control_rows <- lapply(cols_to_show, function(col) {
-      safe_id <- make.names(col)
+      
+      hex_str <- paste(as.character(charToRaw(col)), collapse = "")
+      chk_id <- paste0("lookup_chk_", hex_str)
+      delim_id <- paste0("lookup_delim_", hex_str)
+      
+      is_checked <- FALSE
+      delim_val <- ""
+      
+      # Restore existing selections safely
+      if (!is.null(current_selections) && length(current_selections) > 0) {
+        if (col %in% names(current_selections)) {
+          is_checked <- TRUE
+          delim_val <- current_selections[[col]]
+        }
+      } else {
+        # EXTENDED FALLBACK: Automatically check Authors, DOI, and ORCID/Author IDs on first load
+        if (grepl("^(Authors|DOI|ORCID|Author\\(s\\) ID)$", col, ignore.case = TRUE)) {
+          is_checked <- TRUE
+          delim_val <- ","
+        }
+      }
       
       fluidRow(
         style = "margin-bottom: 5px; align-items: center; display: flex;",
-        column(6, 
-               checkboxInput(paste0("ext_chk_", safe_id), col, value = FALSE)
-        ),
-        column(6, 
-               textInput(paste0("ext_delim_", safe_id), label = NULL, 
-                         placeholder = "Delimiters (e.g., ; , |)", width = "100%")
-        )
+        column(6, checkboxInput(chk_id, col, value = is_checked)),
+        column(6, textInput(delim_id, label = NULL, value = delim_val, placeholder = "Delimiters (e.g., ; , |)", width = "100%"))
       )
     })
     
-    # Wrap it all in an orange-styled panel
+    # Wrap it all in the panel
     tags$div(
       style = "background-color: #fff3e0; border: 2px solid #ff9800; border-radius: 8px; padding: 15px; margin-top: 15px;",
       
-      tags$h4(icon("cogs"), " Extended Controls", style = "color: #e65100; margin-top: 0;"),
-      tags$p(style = "font-size: 0.9em; color: #555;", 
-             "Select columns for look-up and their delimiters (if any)."),
+      # Header with inline Reset Button
+      tags$div(style = "display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;",
+               tags$h4(icon("cogs"), " Lookup Controls", style = "color: #e65100; margin-top: 0; margin-bottom: 0;"),
+               actionButton("reset_ext_controls", "Reset Defaults", icon = icon("undo"), class = "btn-danger", style = "white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 2px 8px; font-size: 0.8em;")
+      ),
       
-      # # --- Auto-Refresh Checkbox inside the panel ---
+      tags$p(style = "font-size: 0.9em; color: #555;", "Select columns for look-up and their delimiters (if any)."),
+      
       checkboxInput("auto_refresh_lookup", "Auto-Refresh Lookup", value = TRUE),
+      if (!is.null(glens_env$scopus_key)) {
+        tagList(
+          checkboxInput(
+            inputId = "map_orcid2scopusid", 
+            label = tagList(
+              "Map ORCiD -> SCOPUS ID ",
+              icon(
+                "circle-question",
+                "data-toggle" = "tooltip",
+                style = "color: #007bc2; cursor: help; margin-left: 5px;",
+                title = "Map ORCiD(s) to SCOPUS ID(s) one-way for faster retrieval. Auto-refresh does NOT apply to ORCiD -> SCOPUS ID Mapping. Run CollabNET."
+              )
+            ),
+            value = TRUE
+          ),
+          checkboxInput(
+            inputId = "autofill_scopusid_input", 
+            label = tagList(
+              "Autofill SCOPUS ID Input ",
+              icon(
+                "circle-question",
+                "data-toggle" = "tooltip",
+                style = "color: #007bc2; cursor: help; margin-left: 5px;",
+                title = "Automatically append the discovered SCOPUS IDs into the SCOPUS ID input text box above."
+              )
+            ),
+            value = TRUE
+          )
+        )
+      } else {
+        tagList(
+          shinyjs::disabled(checkboxInput(
+            inputId = "map_orcid2scopusid", 
+            label = tagList(
+              "Map ORCiD -> SCOPUS ID ",
+              icon(
+                "circle-question",
+                "data-toggle" = "tooltip",
+                style = "color: #007bc2; cursor: help; margin-left: 5px;",
+                title = "Map ORCiD(s) to SCOPUS ID(s) one-way for faster retrieval. Auto-refresh does NOT apply to ORCiD -> SCOPUS ID Mapping. Run CollabNET."
+              )
+            ),
+            value = FALSE
+          )),
+          shinyjs::disabled(checkboxInput(
+            inputId = "autofill_scopusid_input", 
+            label = tagList(
+              "Autofill SCOPUS ID Input ",
+              icon(
+                "circle-question",
+                "data-toggle" = "tooltip",
+                style = "color: #007bc2; cursor: help; margin-left: 5px;",
+                title = "Automatically append the discovered SCOPUS IDs into the text box above."
+              )
+            ),
+            value = FALSE
+          ))
+        )
+      },
+      checkboxInput("ext_match", "Extended Keyword Matching", value = TRUE),
+      checkboxInput("ignore_case", "Ignore Case", value = TRUE),
       
       tags$hr(style = "border-top: 1px solid #ffb74d; margin-top: 10px; margin-bottom: 10px;"),
-      
-      # Scrollable area so a massive dataframe doesn't break the UI
       tags$div(
         style = "max-height: 250px; overflow-y: auto; overflow-x: hidden; padding-right: 5px;",
         control_rows
       )
     )
+  })
+  
+  # 1. Gather all lookup controls into a single reactive list
+  raw_lookup_inputs <- reactive({
+    
+    # Base requirements
+    req(rv$glens_etable_final)
+    
+    # If you have dynamic inputs (like checkboxes and delimiters generated per column),
+    # you need to read them based on the columns that actually exist.
+    cols <- names(rv$glens_etable_final)
+    
+    # Fetch the dynamic checkbox and delimiter values
+    # (Change "lookup_chk_" and "lookup_delim_" to whatever prefix your UI uses)
+    dynamic_chks <- lapply(cols, function(c) input[[paste0("lookup_chk_", make.names(c))]])
+    dynamic_delims <- lapply(cols, function(c) input[[paste0("lookup_delim_", make.names(c))]])
+    dynamic_keywords <- lapply(cols, function(c) input[[paste0("lookup_text_", make.names(c))]])
+    
+    target_variants <- ""
+    if(length(input$author_list) > 0){
+      target_variants <- stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n")))
+      target_variants <- target_variants[target_variants != ""]
+      if(length(target_variants) > 0){
+        rv$target_variants_norm <- lapply(setNames(target_variants, target_variants), function(v) {
+          vn <- normalize_name(v)
+          list(norm = vn, parts = extract_parts(vn))
+        })
+        rv$author_match_regex <- build_name_regex_for_variants(target_variants)
+      }
+    }
+    # Return a list of EVERYTHING that should trigger a data update
+    list(
+      source = input$selected_source,
+      year = input$year_slider,
+      authors = target_variants,
+      logic_gate = input$author_logic_gate,
+      # orcids = input$orcid_text,
+      # dois = input$doi_text,
+      
+      # The dynamic controls
+      chks = dynamic_chks,
+      delims = dynamic_delims,
+      keywords = dynamic_keywords,
+      
+      # Add a data trigger so it re-runs automatically if a new file is uploaded
+      dataset_trigger = nrow(rv$glens_etable_final) 
+    )
+  })
+  
+  # 2. Add a delay (debounce). 
+  # It will wait until 800ms has passed since the LAST change to any input in the basket above.
+  debounced_inputs <- raw_lookup_inputs %>% debounce(800)
+  
+  observeEvent(input$reset_ext_controls, {
+    req(rv$glens_etable_final)
+    current_cols <- names(rv$glens_etable_final)
+    
+    # Loop through all columns currently displayed in the UI
+    for (col_name in current_cols) {
+      
+      # Recreate the exact Hex IDs so we can target the inputs
+      hex_str <- paste(as.character(charToRaw(col_name)), collapse = "")
+      chk_id <- paste0("lookup_chk_", hex_str)
+      delim_id <- paste0("lookup_delim_", hex_str)
+      
+      # If the column is Authors, DOI, or ORCID/Author IDs, check it and set delimiter to ','
+      if (grepl("^(Authors\\(s\\) ID)$", col_name, ignore.case = TRUE)) {
+        updateCheckboxInput(session, chk_id, value = TRUE)
+        updateTextInput(session, delim_id, value = ",")
+      } else {
+        # Otherwise, uncheck it and clear the delimiter
+        updateCheckboxInput(session, chk_id, value = FALSE)
+        updateTextInput(session, delim_id, value = "")
+      }
+    }
+  })
+  
+  observeEvent(input$row_import_type, {
+    if (input$row_import_type %in% c("New", "Append")) {
+      # If New or Append, no UI is needed, so unlock the button immediately
+      shinyjs::runjs("
+      var btn = $('#confirm_import');
+      btn.prop('disabled', false);
+      btn.css('pointer-events', 'auto');
+      btn.css('opacity', '1');
+    ")
+    } else if (input$row_import_type == "Merge") {
+      # If they click Merge, immediately lock the button until the UI finishes loading it
+      shinyjs::runjs("
+      var btn = $('#confirm_import');
+      btn.prop('disabled', true);
+      btn.css('pointer-events', 'none');
+      btn.css('opacity', '0.5');
+    ")
+    }
+  }, ignoreInit = TRUE)
+  
+  #observe for in-place split, combine, drop buttons
+  observe({
+    req(rv$imported_data_list)
+    uploaded_cols <- names(rv$imported_data_list[[1]])
+    
+    lapply(uploaded_cols, function(col) {
+      safe_id <- make.names(col)
+      
+      # Observe Split Button
+      observeEvent(input[[paste0("btn_split_", safe_id)]], {
+        message("Split triggered for column: ", col)
+        # Trigger split modal or logic here
+      }, ignoreInit = TRUE)
+      
+      # Observe Combine Button
+      observeEvent(input[[paste0("btn_combine_", safe_id)]], {
+        message("Combine triggered for column: ", col)
+        # Trigger combine modal or logic here
+      }, ignoreInit = TRUE)
+      
+      # Observe Drop Button
+      observeEvent(input[[paste0("btn_drop_", safe_id)]], {
+        message("Drop triggered for column: ", col)
+        # Example: update the checkbox to FALSE when dropped
+        updateCheckboxInput(session, paste0("map_chk_", safe_id), value = FALSE)
+      }, ignoreInit = TRUE)
+    })
+  })
+  
+  #observe for extended panel columns with delimiters
+  observe({
+    # Re-determine the columns that are currently rendered
+    current_cols <- if (!is.null(rv$glens_etable_final) && ncol(rv$glens_etable_final) > 0) {
+      names(rv$glens_etable_final)
+    } else {
+      collabnet_required_cols 
+    }
+    
+    # CRITICAL FIX: Ensure at least one column exists AND the UI has finished generating
+    req(length(current_cols) > 0)
+    req(!is.null(input[["lookup_chk_1"]])) # If input 1 is NULL, UI is still building. Abort to prevent wiping data!
+    
+    new_mv_cols <- list()
+    
+    # Loop through by numeric index
+    for (i in seq_along(current_cols)) {
+      col_name <- current_cols[i]
+      
+      # Read the Shiny inputs using the numeric ID
+      is_checked <- input[[paste0("lookup_chk_", i)]]
+      
+      if (!is.null(is_checked) && is_checked) {
+        delim <- input[[paste0("lookup_delim_", i)]]
+        
+        # Fallback to comma if they checked it but left the delimiter blank
+        if (is.null(delim) || trimws(delim) == "") delim <- "," 
+        
+        # Assign exactly using the original column name with spaces/symbols intact
+        new_mv_cols[[col_name]] <- delim
+      }
+    }
+    
+    # Save the mapped list to your reactive values
+    rv$detected_mv_cols <- new_mv_cols
   })
   
   #light to dark mode and vice versa
@@ -593,7 +1015,7 @@ server <- function(input, output, session) {
         
         # Reset the button visually and clear the HTML input value so the same file can be uploaded twice if needed
         shinyjs::runjs("
-          document.getElementById('upload_text').innerText = ' Upload File';
+          document.getElementById('upload_text').innerText = '';
           document.getElementById('upload_icon').className = 'fa fa-upload';
           document.getElementById('upload_icon').style.color = ''; 
           document.getElementById('upload_btn').value = ''; 
@@ -605,7 +1027,11 @@ server <- function(input, output, session) {
           uiOutput("column_mapping_ui"),
           footer = tagList(
             modalButton("Cancel"),
-            actionButton("next_row_merge", "Next: Configure Rows", class = "btn-primary")
+            # Native HTML disabled + CSS pointer-events blocker
+            actionButton("next_row_merge", "Next: Configure Rows", 
+                         class = "btn-primary", 
+                         disabled = "disabled", 
+                         style = "pointer-events: none; opacity: 0.5;")
           ),
           easyClose = FALSE # Force them to use the buttons
         ))
@@ -633,6 +1059,7 @@ server <- function(input, output, session) {
       
       # Tell the user what went wrong
       showNotification(paste("Failed to process file:", e$message), type = "error", duration = 5)
+      rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'>Failed to process file:", e$message, "</span>"), sep="<br>")
       
       # Reset the button after 3 seconds so they can try again
       shinyjs::delay(3000, {
@@ -688,92 +1115,89 @@ server <- function(input, output, session) {
     # Save the column choice so we don't lose it when Modal 1 closes
     rv$saved_col_import_type <- input$col_import_type 
     
-    # --- Apply Column Mapping ---
-    if (input$col_import_type == "Map") {
-      # BUG FIX: If fresh upload, use collabnet required cols, otherwise use existing app cols
-      existing_cols <- if (!is.null(rv$glens_etable_final) && ncol(rv$glens_etable_final) > 0) names(rv$glens_etable_final) else collabnet_required_cols
-      rename_map <- list()
+    # --- 1. Extract Inputs from New Dynamic UI ---
+    # Get all possible columns across the uploaded datasets
+    all_uploaded_cols <- unique(unlist(lapply(imported_data_list, names)))
+    
+    cols_to_keep <- c()
+    rename_map <- list()
+    detected_mv_cols <- list() # Store delimiters here now
+    
+    for (col in all_uploaded_cols) {
+      safe_id <- make.names(col)
       
-      for (target_col in existing_cols) {
-        safe_id <- paste0("map_col_", make.names(target_col))
-        source_col <- input[[safe_id]]
-        if (!is.null(source_col) && trimws(source_col) != "") {
-          rename_map[[trimws(source_col)]] <- target_col
+      # Check if the user selected this column for import via checkbox
+      is_checked <- input[[paste0("map_chk_", safe_id)]]
+      
+      # Safety fallback in case UI hasn't finished rendering yet
+      if (is.null(is_checked)) is_checked <- TRUE 
+      
+      if (isTRUE(is_checked)) {
+        cols_to_keep <- c(cols_to_keep, col)
+        
+        # Read the mapped name from the textbox
+        mapped_name <- input[[paste0("map_name_", safe_id)]]
+        final_name <- col # Default to original name
+        
+        # If the user changed the text box, save it to the rename map
+        if (!is.null(mapped_name) && trimws(mapped_name) != "" && trimws(mapped_name) != col) {
+          rename_map[[col]] <- trimws(mapped_name)
+          final_name <- trimws(mapped_name) # Track the new name for the delimiter
+        }
+        
+        # Read the delimiter from the new UI textbox
+        delim_val <- input[[paste0("map_delim_", safe_id)]]
+        if (!is.null(delim_val) && trimws(delim_val) != "") {
+          detected_mv_cols[[final_name]] <- trimws(delim_val)
+        }
+      }
+    }
+    
+    print("(COL) RENAME MAP:")
+    print(length(rename_map))
+    print(str(rename_map))
+    
+    # --- 2. Apply Column Subsetting and Mapping ---
+    imported_data_list <- lapply(imported_data_list, function(df) {
+      
+      # 1. Drop columns the user explicitly unchecked
+      valid_cols <- intersect(names(df), cols_to_keep)
+      df <- df[, valid_cols, drop = FALSE]
+      
+      # 2. Perform the actual renaming based on the map
+      current_names <- names(df)
+      for (i in seq_along(current_names)) {
+        check_name <- current_names[i]
+        if (check_name %in% names(rename_map)) {
+          current_names[i] <- rename_map[[check_name]]
         }
       }
       
-      print("(COL) RENAME MAP:")
-      print(length(rename_map))
-      print(str(rename_map))
+      # Handle potential duplicate column names if the user mapped two sources to the same target name
+      names(df) <- make.unique(current_names, sep = "_")
       
-      imported_data_list <- lapply(imported_data_list, function(df) {
-        
-        # 1. PREVENT DUPLICATE COLLISIONS (The "Authors...1" bug fix)
-        mapped_sources <- names(rename_map)
-        mapped_targets <- as.character(unlist(rename_map))
-        
-        # Find raw columns that match a Target name, but were NOT picked as the Source
-        # (e.g., Target is "Authors", Source is "Author full names". Drop the raw "Authors" column.)
-        cols_to_drop <- intersect(names(df), mapped_targets)
-        cols_to_drop <- setdiff(cols_to_drop, mapped_sources)
-        
-        # Safely drop the colliding columns from the dataframe
-        if (length(cols_to_drop) > 0) {
-          df <- df[, !(names(df) %in% cols_to_drop), drop = FALSE]
-        }
-        
-        # 2. Perform the actual renaming
-        current_names <- names(df)
-        for (i in seq_along(current_names)) {
-          check_name <- trimws(current_names[i])
-          if (check_name %in% names(rename_map)) {
-            current_names[i] <- as.character(rename_map[[check_name]])
-          }
-        }
-        names(df) <- current_names
-        
-        return(df)
-      })
-    }
+      return(df)
+    })
     
     # Combine the uploaded files into one intermediate dataframe
     merged_df <- dplyr::bind_rows(imported_data_list) %>% dplyr::distinct()
     
-    # "Common Columns" logic for the uploaded files among themselves
-    if (input$col_import_type == "Common Columns") {
-      common_cols <- Reduce(intersect, lapply(imported_data_list, names))
-      merged_df <- merged_df[, common_cols, drop = FALSE] 
-    }
-    
-    # Save this column-merged data for Step 2
+    # Save outputs to reactive values
     rv$intermediate_merged_df <- merged_df
+    rv$detected_mv_cols <- detected_mv_cols
+    
     removeModal()
     
-    # --- Display Modal 1.5 without regex detection ---
-    cols_to_check <- names(merged_df)
+    # --- 3. Route to Step 1.5 or Step 2 ---
+    # Since delimiters are now entered directly in Step 1, we only trigger the Step 1.5 
+    # modal if they actually typed a delimiter, acting as a final confirmation.
     
-    if (input$col_import_type == "Map" && exists("rename_map")) {
-      mapped_targets <- as.character(unlist(rename_map))
-      cols_to_check <- intersect(mapped_targets, names(merged_df))
-    }
-    
-    # Only show the modal if there are text columns to potentially split
-    text_cols <- cols_to_check[sapply(cols_to_check, function(c) is.character(merged_df[[c]]))]
-    
-    if (length(text_cols) > 0) {
-      # Prepare the list for the UI (defaulting the text box to a semicolon, but action is 'none')
-      detected_mv_cols <- list()
-      for (col in text_cols) {
-        detected_mv_cols[[col]] <- ";"
-      }
-      
-      rv$detected_mv_cols <- detected_mv_cols
-      
+    if (length(detected_mv_cols) > 0) {
       showModal(modalDialog(
-        title = tags$span(icon("cut", lib = "font-awesome"), " Step 1.5: Multi-Value Columns"),
+        title = tags$span(icon("cut", lib = "font-awesome"), " Step 1.5: Confirm Splits"),
         size = "l",
-        tags$p("Review your columns below. If a column contains multiple values in a single cell (like multiple authors or IDs separated by semicolons), you can choose to split them into separate rows."),
-        uiOutput("delimiter_ui"),
+        tags$p("You defined delimiters for the columns below. Review them before proceeding."),
+        uiOutput("delimiter_ui"), # Assuming delimiter_ui is built to read rv$detected_mv_cols
         footer = tagList(
           modalButton("Cancel"),
           actionButton("next_after_delim", "Apply Splits & Continue to Step 2", class = "btn-warning")
@@ -781,7 +1205,7 @@ server <- function(input, output, session) {
         easyClose = FALSE
       ))
     } else {
-      # If there are no text columns at all, just skip to Step 2
+      # If no delimiters were entered, skip completely to Step 2
       show_row_merge_modal(rv, session)
     }
   })
@@ -807,7 +1231,8 @@ server <- function(input, output, session) {
           merged_df[, final_common_cols, drop = FALSE]
         )
       } else {
-        rv$glens_etable_final <- dplyr::bind_rows(rv$glens_etable_final, merged_df)
+        print("MERGING:")
+        rv$glens_etable_final <- dplyr::bind_rows(rv$glens_etable_final %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character)), merged_df)
       }
       
     } else if (input$row_import_type == "Merge") {
@@ -865,7 +1290,8 @@ server <- function(input, output, session) {
         
       } else {
         warning("No join keys selected. Falling back to Append.")
-        rv$glens_etable_final <- dplyr::bind_rows(rv$glens_etable_final, merged_df)
+        # rv$glens_etable_final <- dplyr::bind_rows(rv$glens_etable_final, merged_df)
+        rv$glens_etable_final <- dplyr::bind_rows(rv$glens_etable_final %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character)), merged_df)
       }
     }
     
@@ -959,7 +1385,7 @@ server <- function(input, output, session) {
       missing_str <- paste(missing_cols, collapse=", ")
       # Update the log
       rv$log_text <- paste(rv$log_text, 
-                           paste0("<span style='color: red;'>Upload Failed: Missing required columns: ", missing_str, "</span>"), 
+                           paste0("<span style='color: red;'>Missing required columns: ", missing_str, "</span>"), 
                            sep="<br>")
       # Show the smaller, targeted notification
       showNotification(paste("Missing columns:", missing_str), type = "error", duration = 10)
@@ -979,43 +1405,75 @@ server <- function(input, output, session) {
     rv$intermediate_merged_df <- NULL
     rv$saved_col_import_type <- NULL
     rv$log_text <- paste(rv$log_text, paste("Post-Import Total:",nrow(rv$glens_etable_final),"lines..."),sep="<br>")
-    rv$glens_input_table <- rv$glens_etable_final
-    output$dynamic_source_ui <- renderUI({
-      req(rv$glens_input_table)
-      available_sources <- levels(factor(rv$glens_input_table$Source))
-      if (length(available_sources) == 0) return(p("No sources identified yet.", style = "color: #888;"))
-      radioButtons("selected_source", label = NULL, choices = available_sources, selected = available_sources[1], inline = FALSE)
-    })
-    target_variants <- stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n")))
-    target_variants <- target_variants[target_variants != ""]
-    rv$target_variants_norm <- lapply(setNames(target_variants, target_variants), function(v) {
-      vn <- normalize_name(v)
-      list(norm = vn, parts = extract_parts(vn))
-    })
-    rv$author_match_regex <- build_name_regex_for_variants(target_variants)
-    extend_input_table(rv)
+    # rv$glens_input_table <- rv$glens_etable_final
+    print("HERE2.1")
+    
+    # target_variants <- stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n")))
+    # target_variants <- target_variants[target_variants != ""]
+    # 
+    # # Apply normalization based on Extended Matching checkbox
+    # if (isTRUE(input$ext_match)) {
+    #   rv$target_variants_norm <- lapply(setNames(target_variants, target_variants), function(v) {
+    #     vn <- normalize_name(v)
+    #     list(norm = vn, parts = extract_parts(vn))
+    #   })
+    # } else {
+    #   # If Extended Matching is off, skip strict normalization but respect case preference
+    #   rv$target_variants_norm <- lapply(setNames(target_variants, target_variants), function(v) {
+    #     vn <- if(isTRUE(input$ignore_case)) tolower(v) else v
+    #     list(norm = vn, parts = list(vn))
+    #   })
+    # }
+    # 
+    # # Pass the ignore_case UI value into the regex builder
+    # rv$author_match_regex <- build_name_regex_for_variants(target_variants, ignore_case = input$ignore_case)
+    # 
+    # extend_input_table(rv)
     rv$glens_year_filtered <- rv$glens_etable_final
+    
+    # target_variants <- stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n")))
+    # target_variants <- target_variants[target_variants != ""]
+    # rv$target_variants_norm <- lapply(setNames(target_variants, target_variants), function(v) {
+    #   vn <- normalize_name(v)
+    #   list(norm = vn, parts = extract_parts(vn))
+    # })
+    # rv$author_match_regex <- build_name_regex_for_variants(target_variants)
+    # print("HERE2.2")
+    # extend_input_table(rv)
+    # print("HERE2.3")
+    # rv$glens_year_filtered <- rv$glens_etable_final
+    
     if (nrow(rv$glens_year_filtered) <= 0) {
-      rv$log_text <- paste(rv$log_text, "No names were matched.",sep="<br>")
-      shinyjs::enable("submit_button")
-      removeModal()
-      return()
+      rv$log_text <- paste(rv$log_text, "Import: No keywords were matched.",sep="<br>")
+      # shinyjs::enable("submit_button")
+      # removeModal()
+      # return()
+    }else{
+      print("HERE2.4")
+      # compute_indices(rv)
+      # output$summary_table <- renderTable(rv$summary_table, striped = TRUE)
+      # output$sh_index <- renderUI(HTML(paste("<b>Sh-Index:</b>", "NA")))
+      # output$extended_table <- DT::renderDataTable({
+      #   DT::datatable(rv$glens_year_filtered, options = list(scrollY = "600px", scrollX = TRUE, paging = TRUE))
+      # })
+      # match_journals(rv)
+      rv$glens_year_filtered <- rv$glens_etable_final
+      shinyjs::show("extended_table")
     }
-    compute_indices(rv)
-    output$summary_table <- renderTable(rv$summary_table, striped = TRUE)
-    output$sh_index <- renderUI(HTML(paste("<b>Sh-Index:</b>", rv$sh_index)))
-    output$extended_table <- DT::renderDataTable({
-      DT::datatable(rv$glens_year_filtered, options = list(scrollY = "600px", scrollX = TRUE, paging = TRUE))
-    })
-    match_journals(rv)
-    rv$glens_year_filtered <- rv$glens_etable_final
-    min_year <- min(as.numeric(rv$glens_year_filtered$Year), na.rm = TRUE)
-    max_year <- max(as.numeric(rv$glens_year_filtered$Year), na.rm = TRUE)
-    if (is.finite(min_year) && is.finite(max_year)) {
-      updateSliderInput(session, "year_slider", value = c(min_year, max_year), min = min_year, max = max_year)
-      shinyjs::show("year_slider")
+    print("HERE2.5")
+    if(length(na.omit(levels(factor(rv$glens_year_filtered$Year)))) > 1){
+      min_year <- min(as.numeric(rv$glens_year_filtered$Year), na.rm = TRUE)
+      max_year <- max(as.numeric(rv$glens_year_filtered$Year), na.rm = TRUE)
+      if (is.finite(min_year) && is.finite(max_year)) {
+        updateSliderInput(session, "year_slider", value = c(min_year, max_year), min = min_year, max = max_year)
+        shinyjs::show("year_slider")
+      }else{
+        shinyjs::hide("year_slider")
+      }
+    }else{
+      shinyjs::hide("year_slider")
     }
-    rv$extended_controls <- TRUE
+    # rv$extended_controls <- TRUE
     saveRDS(rv$glens_etable_final, "glens_etable_final.rds")
     
     removeModal()
@@ -1031,7 +1489,7 @@ server <- function(input, output, session) {
       shinyjs::show("extended_controls_container") 
       
       updateActionButton(session, "toggle_extended", 
-                         label = "Hide Extended Controls", 
+                         label = "Hide Lookup Controls", 
                          icon = icon("lock"))
       shinyjs::removeClass("toggle_extended", "btn-secondary")
       shinyjs::addClass("toggle_extended", "btn-warning") 
@@ -1047,14 +1505,30 @@ server <- function(input, output, session) {
       shinyjs::hide("extended_controls_container")
       
       updateActionButton(session, "toggle_extended", 
-                         label = "Show Extended Controls", 
-                         icon = icon("unlock"))
+                         label = "Show Lookup Controls", 
+                         icon = icon("magnifying-glass"))
       shinyjs::removeClass("toggle_extended", "btn-warning")
       shinyjs::addClass("toggle_extended", "btn-secondary")
       
       shinyjs::removeClass("submit_button", "btn-warning")
       shinyjs::addClass("submit_button", "btn-primary") 
     }
+  })
+  
+  observeEvent(input$ext_match, {
+    rv$ext_match <- input$ext_match
+    if (isTRUE(input$ext_match)) {
+      shinyjs::disable("ignore_case")
+      updateCheckboxInput(session, "ignore_case", value = TRUE)
+    } else {
+      updateCheckboxInput(session, "ignore_case", value = rv$ignore_case)
+      shinyjs::enable("ignore_case")
+    }
+  })
+  
+  observeEvent(input$ignore_case, {
+    rv$ignore_case <- input$ignore_case
+    updateCheckboxInput(session, "ignore_case", value = rv$ignore_case)
   })
   
   # API Keys Settings Button: Build UI safely
@@ -1081,11 +1555,11 @@ server <- function(input, output, session) {
     val_opencites <- if(!is.null(get_vfs_key("opencites.key"))) get_vfs_key("opencites.key") else glens_env$opencites_key
     
     # Evaluate boolean flags for the UI Badges (TRUE if we found a key anywhere)
-    has_scopus    <- !is.null(val_scopus) && val_scopus != ""
-    has_wos       <- !is.null(val_wos) && val_wos != ""
-    has_semantic  <- !is.null(val_semantic) && val_semantic != ""
-    has_crossref  <- !is.null(val_crossref) && val_crossref != ""
-    has_opencites <- !is.null(val_opencites) && val_opencites != ""
+    has_key_scopus    <- !is.null(val_scopus) && val_scopus != ""
+    has_key_wos       <- !is.null(val_wos) && val_wos != ""
+    has_key_semantic  <- !is.null(val_semantic) && val_semantic != ""
+    has_key_crossref  <- !is.null(val_crossref) && val_crossref != ""
+    has_key_opencites <- !is.null(val_opencites) && val_opencites != ""
     
     # --- BUILD MODAL ---
     showModal(modalDialog(
@@ -1107,7 +1581,7 @@ server <- function(input, output, session) {
                  </div>
                </span>
                
-               ', if(has_scopus) {
+               ', if(has_key_scopus) {
                  '<span class="status-badge badge-found" style="margin-left: auto; font-weight: normal; font-size: 12px;"><i class="fa fa-check"></i> Key Found</span>'
                } else {
                  '<span class="status-badge badge-missing" style="margin-left: auto; font-weight: normal; font-size: 12px; color: #dc3545;">Missing</span>'
@@ -1137,7 +1611,7 @@ server <- function(input, output, session) {
                               <a href="https://developer.clarivate.com/apis" target="_blank" style="text-decoration: underline; color: #007bff; font-weight: bold;">Clarivate Developer Portal</a>.
                             </div>
                           </span>
-                        ', if(has_wos) {
+                        ', if(has_key_wos) {
                           '<span class="status-badge badge-found" style="margin-left: auto; font-weight: normal; font-size: 12px;"><i class="fa fa-check"></i> Key Found</span>'
                         } else {
                           '<span class="status-badge badge-missing" style="margin-left: auto; font-weight: normal; font-size: 12px; color: #dc3545;">Missing</span>'
@@ -1164,7 +1638,7 @@ server <- function(input, output, session) {
                               <a href="https://www.semanticscholar.org/product/api#api-key" target="_blank" style="text-decoration: underline; color: #007bff; font-weight: bold;">Semantic Scholar API Form</a>.
                             </div>
                           </span>
-                        ', if(has_semantic) {
+                        ', if(has_key_semantic) {
                           '<span class="status-badge badge-found" style="margin-left: auto; font-weight: normal; font-size: 12px;"><i class="fa fa-check"></i> Key Found</span>'
                         } else {
                           '<span class="status-badge badge-missing" style="margin-left: auto; font-weight: normal; font-size: 12px; color: #dc3545;">Missing</span>'
@@ -1192,7 +1666,7 @@ server <- function(input, output, session) {
                  </div>
                </span>
                
-               ', if(has_crossref) {
+               ', if(has_key_crossref) {
                  '<span class="status-badge badge-found" style="margin-left: auto; font-weight: normal; font-size: 12px;"><i class="fa fa-check"></i> Key Found</span>'
                } else {
                  '<span class="status-badge badge-missing" style="margin-left: auto; font-weight: normal; font-size: 12px; color: #dc3545;">Missing</span>'
@@ -1223,7 +1697,7 @@ server <- function(input, output, session) {
                  </div>
                </span>
                
-               ', if(has_opencites) {
+               ', if(has_key_opencites) {
                  '<span class="status-badge badge-found" style="margin-left: auto; font-weight: normal; font-size: 12px;"><i class="fa fa-check"></i> Key Found</span>'
                } else {
                  '<span class="status-badge badge-missing" style="margin-left: auto; font-weight: normal; font-size: 12px; color: #dc3545;">Missing</span>'
@@ -1245,11 +1719,11 @@ server <- function(input, output, session) {
     
     # --- FILL TEXT INPUTS ---
     # Update the input boxes safely using the unified values
-    if(has_scopus) updateTextInput(session, "scopus_key", value = val_scopus)
-    if(has_wos) updateTextInput(session, "wos_key", value = val_wos)
-    if(has_semantic) updateTextInput(session, "semantic_key", value = val_semantic)
-    if(has_crossref) updateTextInput(session, "crossref_key", value = val_crossref)
-    if(has_opencites) updateTextInput(session, "opencites_key", value = val_opencites)
+    if(has_key_scopus) updateTextInput(session, "scopus_key", value = val_scopus)
+    if(has_key_wos) updateTextInput(session, "wos_key", value = val_wos)
+    if(has_key_semantic) updateTextInput(session, "semantic_key", value = val_semantic)
+    if(has_key_crossref) updateTextInput(session, "crossref_key", value = val_crossref)
+    if(has_key_opencites) updateTextInput(session, "opencites_key", value = val_opencites)
   })
   
   # Save handlers
@@ -1353,7 +1827,7 @@ server <- function(input, output, session) {
       }
       rv$is_cancelled <- TRUE
       # Immediately hide the overlay and re-enable the UI
-      shinyjs::hide("sh_index")
+      # shinyjs::hide("sh_index")
       shinyjs::hide("summary_table")
       shinyjs::hide("acounts_plot")
       shinyjs::hide("ccounts_plot")
@@ -1362,7 +1836,7 @@ server <- function(input, output, session) {
       shinyjs::hide("cperc_plot")
       shinyjs::hide("network_filtered")
       shinyjs::hide("network_full")
-      shinyjs::hide("extended_table")
+      # shinyjs::hide("extended_table")
       shinyjs::hide(id="year_slider")
       shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
       shinyjs::enable(id = "submit_button")
@@ -1373,34 +1847,77 @@ server <- function(input, output, session) {
   })
   
   observeEvent(rv$glens_year_filtered, {
+    filters <- debounced_inputs()
+    # print(paste("length(filters$authors):",length(filters$authors)))
+    
+    if("SCOPUS_ID" %in% colnames(rv$glens_year_filtered)){
+      # req("SCOPUS_ID" %in% colnames(rv$glens_year_filtered))
+      # 1. Safely extract the column (handles NULL if the table isn't ready)
+      scopus_col <- rv$glens_year_filtered$SCOPUS_ID
+      
+      if (is.null(scopus_col) || length(scopus_col) == 0) {
+        # Safe fallback if data isn't loaded yet
+        available_scoupusids <- character(0) 
+        
+      } else {
+        # 2. Split by comma, semicolon, or literal double-quote
+        raw_splits <- unlist(strsplit(as.character(scopus_col), split = "[,;\"]", perl = TRUE))
+        
+        # 3. Trim whitespace
+        trimmed_splits <- trimws(raw_splits)
+        
+        # 4. Remove empty strings and get unique values directly
+        available_scoupusids <- unique(trimmed_splits[trimmed_splits != ""])
+      }
+      # print(available_scoupusids)
+      req(length(na.omit(available_scoupusids)) > 0)
+      if (isTRUE(input$autofill_scopusid_input)) {
+        updateTextAreaInput(session, "scopusid_text", value=paste(available_scoupusids, collapse="\n"))
+      } else {
+        updateTextAreaInput(session, "scopusid_text", value=NULL)
+      }
+    }
+    print(paste("length(filters$authors):",length(filters$authors)))
+    print(paste("colnames(rv$glens_year_filtered):",paste(colnames(rv$glens_year_filtered),collapse=",")))
+    req(length(filters$authors) > 0)
+    print("HERE3.0")
+    req(all(c("First_Author","Second_Author","Co_Author","Corresponding_Author", "Adjusted_Citations", "Qscore") %in% colnames(rv$glens_year_filtered)))
+    print("HERE3.1")
+    rv$glens_year_filtered <- extend_input_table(rv, rv$glens_year_filtered)
+    compute_indices(rv, rv$glens_year_filtered)
     plot_glens_table(rv, session)
   })
   
-  #source selection, slider, author_list ,Slider Events
-  observeEvent(c(rv$glens_etable_final, input$selected_source, input$year_slider, input$author_list, input$author_logic_gate), {
+  # #source selection, slider, author_list ,Slider Events
+  # observeEvent(c(rv$glens_etable_final, input$selected_source, input$year_slider, input$author_list, input$author_logic_gate), {
+  # 3. Execute the logic when the debounced inputs finally settle
+  observeEvent(debounced_inputs(), {
   # observe({
-      req(rv$glens_etable_final, input$selected_source, input$year_slider, input$author_list)
+      filters <- debounced_inputs()
+      req(filters$source,filters$year)
+      req(rv$glens_etable_final, input$selected_source, input$year_slider) #input$author_list
       # message(paste("(post)nrow(rv$glens_etable_final):",nrow(rv$glens_etable_final)))
       # message(paste("(post)colnames(rv$glens_etable_final):",colnames(rv$glens_etable_final)))
       # req("Source" %in% names(rv$glens_etable_final))
       # req("Qscore" %in% names(rv$glens_etable_final))
     
-      if(isTRUE(is.null(input$author_logic_gate))){
+      if(isTRUE(is.null(filters$logic_gate))){
         author_logic_gate <- "OR"
       }else{
-        author_logic_gate <- input$author_logic_gate
+        author_logic_gate <- filters$logic_gate
       }
-      if(nrow(rv$glens_input_table)<=0){
+      if(nrow(rv$glens_etable_final)<=0){
         return()
       }
-      if(is.na(input$year_slider[1]) || is.na(input$year_slider[2])){
+      if(is.na(filters$year[1]) || is.na(filters$year[2])){
         return()
       }
       if(rv$is_glens_exec){
-        warning("input$year_slider - Warning: Executing.")
+        warning("ColabNET is Executing...")
         return()
       }
-      shinyjs::disable(id="year_slider")
+      # shinyjs::disable(id="year_slider")
+    
       # print("Changed range...")
       # output$log <- renderText("Changed range...")
       # extend_input_table(rv)
@@ -1413,69 +1930,123 @@ server <- function(input, output, session) {
       #   #   input$year_slider[2]
       #   # ))
       
-      rv$glens_year_filtered <- rv$glens_etable_final %>%
-        filter(
-          Year >= input$year_slider[1],
-          Year <= input$year_slider[2],
-          Source == input$selected_source # The new source-based filter logic
-        )
-      
-      # print("rv$glens_etable_final===>")
-      # print(rv$glens_etable_final %>%
-      #         filter(Year >= input$year_slider[1],
-      #                Year <= input$year_slider[2]))
-      if(nrow(rv$glens_year_filtered) <= 0){
-        # output$log <- renderText({paste("input$year_slider - Warning: No data found for this year range.")})
-        rv$log_text <- paste(rv$log_text, paste("input$year_slider - Warning: No data found for this year range."), sep="<br>")
-        warning("input$year_slider - Warning: No data found for this year range.")
-        shinyjs::hide("sh_index")
-        shinyjs::hide("summary_table")
+      yeardata_tmp <- data.frame()
+      if("Year" %in% colnames(rv$glens_etable_final) && "Source" %in% colnames(rv$glens_etable_final)){
+          year_levels <- levels(factor(rv$glens_etable_final[["Year"]]))
+          if(length(year_levels) > 1){
+            yeardata_tmp <- rv$glens_etable_final %>%
+              filter(
+                Year >= filters$year[1],
+                Year <= filters$year[2],
+                Source == filters$source # The new source-based filter logic
+              )
+            
+            # print("rv$glens_etable_final===>")
+            # print(rv$glens_etable_final %>%
+            #         filter(Year >= input$year_slider[1],
+            #                Year <= input$year_slider[2]))
+            if(nrow(yeardata_tmp) <= 0){
+              # output$log <- renderText({paste("input$year_slider - Warning: No data found for this year range.")})
+              rv$log_text <- paste(rv$log_text, paste("input$year_slider - Warning: No data found for this year range."), sep="<br>")
+              warning("input$year_slider - Warning: No data found for this year range.")
+              # shinyjs::hide("sh_index")
+              shinyjs::hide("summary_table")
+              shinyjs::hide("acounts_plot")
+              shinyjs::hide("ccounts_plot")
+              shinyjs::hide("cdist_plot")
+              shinyjs::hide("aperc_plot")
+              shinyjs::hide("cperc_plot")
+              shinyjs::hide("network_filtered")
+              # shinyjs::hide("extended_table")
+              shinyjs::enable(id="year_slider")
+              return()
+            }
+            
+            rv$log_text <- paste(rv$log_text,paste("(Slider:", input$year_slider[1], "-", input$year_slider[2],")","Filtered years to range...", min(yeardata_tmp$Year), "and",max(yeardata_tmp$Year)
+            ),paste("Source:", input$selected_source), sep="<br>")
+          }else if(length(year_levels) == 1){
+            yeardata_tmp <- rv$glens_etable_final %>%
+              filter(
+                Year >= year_levels,
+                Year <= year_levels,
+                Source == filters$source 
+              )
+          }else{
+            yeardata_tmp <- rv$glens_etable_final  
+          }
+      }else{
+        rv$log_text <- paste(rv$log_text,"'Year' & 'Source' columns are missing. Skipping filters", sep="<br>")  
+        yeardata_tmp <- rv$glens_etable_final  
+        }
+      # output$log <- renderText({ rv$log_text })
+      # print(paste("(Slider:", input$year_slider[1], "-", input$year_slider[2],")","Filtered years to range...", min(rv$glens_year_filtered$Year), "and",max(rv$glens_year_filtered$Year)))
+      # print(str(rv$glens_year_filtered$Year))
+      #Fetch author info only when auto_refresh_lookup is enabled
+      yeardata_tmp[["matched_token"]] <- NULL  
+    req(input$auto_refresh_lookup)
+      # if (isTRUE(input$auto_refresh_lookup)) {   
+      # raw_text <- filters$authors
+      print(paste("HERE2:RT:", filters$authors))
+      # Only apply the logic gate if the user has actually typed something
+      if (!is.null(filters$authors) && length(filters$authors) > 0){ #&& trimws(raw_text) != "") {
+        author_list <- filters$authors #unlist(strsplit(filters$authors, "[\n,]"))
+        author_list <- stringr::str_squish(author_list)
+        author_list <- stringr::str_to_title(author_list)
+        author_list <- author_list[author_list != ""]
+        
+        rv$author_list <- unique(author_list)
+        # Apply the logic gate function we built earlier
+        if (length(author_list) > 0) {
+          
+          # 1. Grab current toggle states (fallback to TRUE if NULL)
+          ext_match_flag <- if (!is.null(input$ext_match)) input$ext_match else TRUE
+          ignore_case_flag <- if (!is.null(input$ignore_case)) input$ignore_case else TRUE
+          
+          # 2. Identify which columns the user selected in the Lookup Controls
+          search_cols <- names(rv$detected_mv_cols)
+          if (is.null(search_cols) || length(search_cols) == 0) search_cols <- "Authors"
+          valid_search_cols <- intersect(search_cols, colnames(yeardata_tmp))
+          if (length(valid_search_cols) == 0) valid_search_cols <- "Authors"
+          
+          # 3. Apply the logic filter
+          filtered_df <- apply_author_logic(
+            pubs_df          = yeardata_tmp,
+            selected_authors = author_list, 
+            gate             = author_logic_gate,
+            ext_match        = ext_match_flag,
+            ignore_case      = ignore_case_flag,
+            search_cols      = valid_search_cols
+          )
+          print(paste("colnames(filtered_df):", paste(colnames(filtered_df), collapse=",")))
+          # 4. Save the newly filtered data to your reactive variable
+          yeardata_tmp <- filtered_df
+          
+          shinyjs::show("summary_table")
+          shinyjs::show("acounts_plot")
+          shinyjs::show("ccounts_plot")
+          shinyjs::show("cdist_plot")
+          shinyjs::show("aperc_plot")
+          shinyjs::show("cperc_plot")
+          shinyjs::show("network_filtered")
+        }
+      } else{
+        # hide plots because no keywords were given
+        # shinyjs::hide("sh_index")
+        # shinyjs::hide("summary_table")
+        print(paste("HERE2.1!!!!:", length(filters$authors)))
         shinyjs::hide("acounts_plot")
         shinyjs::hide("ccounts_plot")
         shinyjs::hide("cdist_plot")
         shinyjs::hide("aperc_plot")
         shinyjs::hide("cperc_plot")
         shinyjs::hide("network_filtered")
-        shinyjs::hide("extended_table")
         shinyjs::enable(id="year_slider")
         return()
       }
-      
-      rv$log_text <- paste(rv$log_text,paste("(Slider:", input$year_slider[1], "-", input$year_slider[2],")","Filtered years to range...", min(rv$glens_year_filtered$Year), "and",max(rv$glens_year_filtered$Year)
-      ), sep="<br>")
-      
-      # output$log <- renderText({ rv$log_text })
-      # print(paste("(Slider:", input$year_slider[1], "-", input$year_slider[2],")","Filtered years to range...", min(rv$glens_year_filtered$Year), "and",max(rv$glens_year_filtered$Year)))
-      # print(str(rv$glens_year_filtered$Year))
-      #Fetch author info only when auto_refresh_lookup is enabled
-      if (isTRUE(input$auto_refresh_lookup)) {   
-        raw_text <- input$author_list
-        # Only apply the logic gate if the user has actually typed something
-        if (!is.null(raw_text) && trimws(raw_text) != "") {
-          author_list <- unlist(strsplit(input$author_list, "[\n,]"))
-          author_list <- stringr::str_squish(author_list)
-          author_list <- stringr::str_to_title(author_list)
-          author_list <- author_list[author_list != ""]
-          
-          rv$author_list <- unique(author_list)
-          # Apply the logic gate function we built earlier
-          if (length(author_list) > 0) {
-            filtered_df <- apply_author_logic(
-              pubs_df          = rv$glens_year_filtered,
-              primary_regex    = rv$author_match_regex,
-              selected_authors = author_list, 
-              gate             = author_logic_gate        
-            )
-            # 3. Save the newly filtered data to your reactive variable
-            rv$glens_year_filtered <- filtered_df
-          }
-        }
-      }
-      
-      compute_indices(rv)
+      # }
       
       # output$extended_table <- renderTable(rv$glens_year_filtered, striped = TRUE)
-      output$summary_table <- renderTable(rv$summary_table, striped = TRUE)
+      # output$summary_table <- renderTable(rv$summary_table, striped = TRUE)
       # output$extended_table <- DT::renderDataTable({
       #   datatable(
       #     rv$glens_year_filtered,
@@ -1486,47 +2057,40 @@ server <- function(input, output, session) {
       #     )
       #   )
       # })
-      output$extended_table <- DT::renderDataTable({
-        datatable(
-          rv$glens_year_filtered,
-          extensions = 'Buttons', # 1. Load the extension
-          options = list(
-            scrollY = "600px",
-            scrollX = TRUE,
-            paging = TRUE,
-            dom = 'Blfrtip',       # 2. Add 'B' to the layout (B = Buttons)
-            lengthMenu = list(c(10, 25, 50, 100, -1), c('10', '25', '50', '100', 'All')),
-            buttons = c('copy', 'csv', 'excel', 'pdf', 'print') # 3. Define buttons
-          )
-        )
-      })
       
-      output$sh_index <- renderUI({
-        # Only render if sh_index exists and is not NULL
-        req(rv$sh_index) 
+      # output$extended_table <- DT::renderDataTable({
+      #   datatable(
+      #     rv$glens_year_filtered,
+      #     extensions = 'Buttons', # 1. Load the extension
+      #     options = list(
+      #       scrollY = "600px",
+      #       scrollX = TRUE,
+      #       paging = TRUE,
+      #       dom = 'Blfrtip',       # 2. Add 'B' to the layout (B = Buttons)
+      #       lengthMenu = list(c(10, 25, 50, 100, -1), c('10', '25', '50', '100', 'All')),
+      #       buttons = c('copy', 'csv', 'excel', 'pdf', 'print') # 3. Define buttons
+      #     )
+      #   )
+      # })
+      
+      req(rv$author_match_regex)
+      print("observeEvent(): rv$author_match_regex:")
+      print(str(rv$author_match_regex))
+      rv$glens_year_filtered <- extend_input_table(rv, yeardata_tmp)
+      # rv$glens_year_filtered <- rv$glens_etable_final
+      if (nrow(rv$glens_year_filtered) <= 0) {
+        rv$log_text <- paste(rv$log_text, "No keywords were matched.",sep="<br>")
+        # shinyjs::enable("submit_button")
+        # shinyjs::hide("progress_overlay")
+        # # req(nrow(rv$glens_year_filtered) > 0)
+      } else {
+        compute_indices(rv, yeardata_tmp)
         
-        tags$div(
-          class = "sh-index-container", # Uses the CSS class for the badge look
-          style = "display: inline-flex; align-items: baseline; background-color: #f0f7ff; 
-               padding: 10px 18px; border-radius: 8px; border: 1px solid #cce4fc; 
-               margin-top: 5px;",
-          
-          # Label part
-          tags$span(
-            "Sh-Index", 
-            style = "color: #4a5568; font-size: 13px; font-weight: 600; text-transform: uppercase; 
-                 letter-spacing: 0.5px; margin-right: 12px;"
-          ),
-          
-          # Value part (Large and Bold)
-          tags$span(
-            rv$sh_index, 
-            style = "color: #4B8BBE; font-size: 26px; font-weight: 800; line-height: 1;"
-          )
-        )
-      })
+        rv$glens_year_filtered <- yeardata_tmp
+        # shinyjs::show("extended_table")
+      }
       
-      plot_glens_table(rv, session)
+      # plot_glens_table(rv, session)
       # plot_glens_table(rv, output, session)
       # plot_glens_table()
       
@@ -1559,7 +2123,9 @@ server <- function(input, output, session) {
   
   #Submit Button Event
   observeEvent(input$submit_button, {   # same as bindEvent(input$submit_button)
-      # 1. Re-determine the exact list of columns the UI generated
+    req(input$map_orcid2scopusid)  
+    I
+    # 1. Re-determine the exact list of columns the UI generated
       cols_to_check <- if (!is.null(rv$glens_etable_final) && ncol(rv$glens_etable_final) > 0) {
         names(rv$glens_etable_final)
       } else {
@@ -1569,22 +2135,43 @@ server <- function(input, output, session) {
       # 2. Initialize an empty list to store our results
       columns_to_split <- list()
       
-      # 3. Loop through the columns and fetch the inputs
+      # 3. Loop through the columns and fetch the inputs using the safe Hex IDs
       for (col in cols_to_check) {
-        safe_id <- make.names(col)
+        hex_str <- paste(as.character(charToRaw(col)), collapse = "")
         
-        # Fetch the current value of the checkbox and textbox using double brackets
-        is_checked <- input[[paste0("ext_chk_", safe_id)]]
-        delims     <- input[[paste0("ext_delim_", safe_id)]]
+        # Fetch the current value of the checkbox and textbox
+        is_checked <- input[[paste0("lookup_chk_", hex_str)]]
+        delims     <- input[[paste0("lookup_delim_", hex_str)]]
         
         # If the checkbox exists in the UI and is actively checked:
         if (!is.null(is_checked) && isTRUE(is_checked)) {
+          # Fallback to comma if they checked it but left delimiter empty
+          if (is.null(delims) || trimws(delims) == "") delims <- ","
           
           # Store the delimiter string in our list, using the original column name as the key
           columns_to_split[[col]] <- delims
         }
       }
-      print(columns_to_split)
+      
+      # --- NEW LOGIC: Fallback for ORCID/DOI ---
+      has_orcid <- !is.null(input$orcid_text) && trimws(input$orcid_text) != ""
+      has_doi   <- !is.null(input$doi_text) && trimws(input$doi_text) != ""
+      has_scopus   <- !is.null(input$scopusid_text) && trimws(input$scopusid_text) != ""
+      
+      if ((has_scopus || has_orcid || has_doi) && !("Authors" %in% names(columns_to_split))) {
+        # 1. Add it to the backend list
+        columns_to_split[["Authors"]] <- ","
+        
+        # 2. Update the UI visually so the user sees it happened
+        authors_hex <- paste(as.character(charToRaw("Authors")), collapse = "")
+        updateCheckboxInput(session, paste0("lookup_chk_", authors_hex), value = TRUE)
+        updateTextInput(session, paste0("lookup_delim_", authors_hex), value = ",")
+      }
+      
+      # Save the final mapped list to rv so the rest of the app can use it!
+      rv$detected_mv_cols <- columns_to_split
+      
+      print(rv$detected_mv_cols)
       
       # basic input guard
       rv$is_cancelled <- FALSE
@@ -1609,15 +2196,12 @@ server <- function(input, output, session) {
       # check_orcid_input <- F
       # input_is_orcid <- F
       if (is.null(input$author_list) || stringi::stri_isempty(input$author_list)) {
-        rv$log_text <- paste(rv$log_text, "Author list required.\n")
-        # #INPUT IS PROLLY ORCID
-        # check_orcid_input <- T
-        # output$log <- renderText({rv$log_text})
-        shinyjs::enable(id = "submit_button")
-        shinyjs::hide("progress_overlay")
-        rv$is_glens_exec <- F
-        req(input$author_list)
-        return()
+        rv$log_text <- paste(rv$log_text, "Keyword list empty.", sep="<br>")
+        # shinyjs::enable(id = "submit_button")
+        # shinyjs::hide("progress_overlay")
+        # rv$is_glens_exec <- F
+        # req(input$author_list)
+        # return()
       }
       
       shinyjs::disable(id = "submit_button")
@@ -1625,25 +2209,16 @@ server <- function(input, output, session) {
       shinyjs::show("progress_overlay")
         
       if (is.null(input$doi_text) || stringi::stri_isempty(input$doi_text)) {
-        rv$log_text <- paste(rv$log_text, "No DOIs provided in Input.\n")
-        
-        #INPUT IS PROLLY ORCID
-        # check_orcid_input <- T
+        rv$log_text <- paste(rv$log_text, "No DOIs provided in Input.", sep="<br>")
       }
       orcid_list <- str_split(input$orcid_text, "\n")[[1]]
+      scopus_list <- str_split(input$scopusid_text, "\n")[[1]]
       print(orcid_list)
       # print(length(orcid_list))
       # if(check_orcid_input){
       if (is.null(input$orcid_text) || stringi::stri_isempty(input$orcid_text) || length(orcid_list) == 0) {
         rv$log_text <- paste(rv$log_text, "Empty ORC-ID input.\n")
-        
-        # output$log <- renderText({rv$log_text})
-        # shinyjs::enable(id = "submit_button")
-        # rv$is_glens_exec <- F
-        # return()
       } 
-      #   input_is_orcid <- T
-      # }
       
       doi_lines <- c()
       # print(orcid_list)
@@ -1660,50 +2235,165 @@ server <- function(input, output, session) {
       
       # --- 1. SCOPUS ---
       if (!is.null(glens_env$scopus_key) && glens_env$scopus_key != "") {
-        rv$log_text <- paste(rv$log_text, "Found Scopus API key!\n")
-        has_scopus <- T
+        rv$log_text <- paste(rv$log_text, "Found Scopus API key!", sep="\n")
+        has_key_scopus <- T
       } else {
-        rv$log_text <- paste(rv$log_text, "No Scopus key found. Skipping Scopus.\n")
-        has_scopus <- F
+        rv$log_text <- paste(rv$log_text, "No Scopus key found. Skipping Scopus.", sep="\n")
+        has_key_scopus <- F
       }
       # --- 2. Web of Science ---
       if (!is.null(glens_env$wos_key) && glens_env$wos_key != "") {
-        rv$log_text <- paste(rv$log_text, "Found Web of Science API key!\n")
-        has_wos <- T
+        rv$log_text <- paste(rv$log_text, "Found Web of Science API key!", sep="\n")
+        has_key_wos <- T
       } else {
-        rv$log_text <- paste(rv$log_text, "No WoS key found. Skipping WoS.\n")
-        has_wos <- F
+        rv$log_text <- paste(rv$log_text, "No WoS key found. Skipping WoS.", sep="\n")
+        has_key_wos <- F
       }
       # --- 3. Semantic Scholar ---
       if (!is.null(glens_env$semantic_key) && glens_env$semantic_key != "") {
-        rv$log_text <- paste(rv$log_text, "Found Semantic Scholar API key!\n")
-        has_semantic <- T
+        rv$log_text <- paste(rv$log_text, "Found Semantic Scholar API key!", sep="\n")
+        has_key_semantic <- T
       } else {
-        rv$log_text <- paste(rv$log_text, "No Semantic Scholar key found. Skipping Semantic Scholar.\n")
-        has_semantic <- F
+        rv$log_text <- paste(rv$log_text, "No Semantic Scholar key found. Skipping Semantic Scholar.", sep="\n")
+        has_key_semantic <- F
       }
       # --- 4. Crossref ---
       if (!is.null(glens_env$crossref_key) && glens_env$crossref_key != "") {
-        rv$log_text <- paste(rv$log_text, "Found Crossref API key!\n")
+        rv$log_text <- paste(rv$log_text, "Found Crossref API key!", sep="\n")
         have_crossref <- T
       } else {
-        rv$log_text <- paste(rv$log_text, "No Crossref key found.\n")
+        rv$log_text <- paste(rv$log_text, "No Crossref key found.", sep="\n")
         have_crossref <- F
       }
       # --- 5. OpenCitations ---
       if (!is.null(glens_env$opencites_key) && glens_env$opencites_key != "") {
-        rv$log_text <- paste(rv$log_text, "Found OpenCitations API key!\n")
+        rv$log_text <- paste(rv$log_text, "Found OpenCitations API key!", sep="\n")
         have_opencites <- T
       } else {
-        rv$log_text <- paste(rv$log_text, "No OpenCitations key found.\n")
+        rv$log_text <- paste(rv$log_text, "No OpenCitations key found.", sep="\n")
         have_opencites <- F
+      }
+      
+      # ==============================================================================
+      # PHASE 1: ORCID -> SCOPUS Mapping
+      # ==============================================================================
+      
+      # 1. Strictly clean the lists first so setdiff() matches perfectly!
+      orcid_list <- trimws(orcid_list)
+      orcid_list <- orcid_list[orcid_list != ""]
+      
+      scopus_list <- trimws(scopus_list)
+      scopus_list <- scopus_list[scopus_list != ""]
+      
+      scopus_count <- length(scopus_list)
+      orcid_count <- length(orcid_list)
+      
+      # 2. Check the CORRECT API key boolean (has_key_scopus)
+      if(input$map_orcid2scopusid && has_key_scopus && orcid_count > 0){
+        rv$log_text <- paste(rv$log_text, "Matching ORCiD(s) to SCOPUS ID(s)...", sep="<br>")
+        
+        # Map using the actual string values
+        oid_mappings <- lapply(orcid_list, function(actual_orcid){
+          return(get_author_mapping(actual_orcid, id_type = "ORCID", glens_env$scopus_key))
+        })
+        
+        clean_oid_mappings <- Filter(Negate(is.null), oid_mappings)
+        
+        if (length(clean_oid_mappings) > 0) {
+          mapping_df <- dplyr::bind_rows(clean_oid_mappings)
+          
+          # 3. ONLY extract rows where Scopus actually returned a valid AU-ID
+          successful_mappings <- mapping_df[!is.na(mapping_df$Mapped_AUID) & trimws(mapping_df$Mapped_AUID) != "", ]
+          
+          if (nrow(successful_mappings) > 0) {
+            mapped_orcids <- successful_mappings$Searched_ID
+            mapped_auids <- successful_mappings$Mapped_AUID
+            
+            # Remove ONLY the successfully mapped ORCIDs from the orcid_list
+            orcid_list <- setdiff(orcid_list, mapped_orcids)
+            
+            # Append the newly discovered AU-IDs to the scopus_list & deduplicate
+            scopus_list <- unique(c(scopus_list, mapped_auids))
+            
+            # Log the optimization
+            rv$log_text <- paste(rv$log_text, 
+                                 sprintf("<span style='color: green;'>Optimization: Re-routed %d ORCID(s) to the Scopus Author pipeline!</span>", length(mapped_auids)), 
+                                 sep="<br>")
+          } else {
+            rv$log_text <- paste(rv$log_text, "No underlying Scopus Author IDs found for these ORCIDs.", sep="<br>")
+          }
+        }
+      }
+      
+      # Refresh counts post-mapping
+      scopus_count <- length(scopus_list) 
+      orcid_count <- length(orcid_list)
+      
+      if(scopus_count > 0){
+        progress_state$scopus_done <- 0
+        scopusid_promise <- future({
+          tryCatch({ 
+            # if (rv$is_cancelled) return(NULL)
+            if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+            
+            # Handle missing key gracefully & update progress bar
+            if (!has_key_scopus) {
+              shinyWidgets::updateProgressBar(
+                session, id = "prog_scopus", value = scopus_count , total = max(1, scopus_count),
+                title = sprintf("Scopus ID Skipped (No Key): %d%%", 100), status = "warning"
+              )
+              return(promise_resolve(NULL))
+            }
+            
+            # INCREMENT PROGRESS BAR
+            prog_scopus_reactive <- reactive({ progress_state$scopus_done + 1 })
+            # progress_state$scopus_done <- progress_state$scopus_done + 1
+            pct <- round(( isolate(prog_scopus_reactive()) / max(1, scopus_count) ) * 100)
+            shinyWidgets::updateProgressBar(
+              session, id = "prog_scopus", value = scopus_count, total = max(1, scopus_count),
+              title = sprintf("Scopus ID: %d%% (%d/%d)", pct, isolate(prog_scopus_reactive()) , scopus_count),
+              status = if(pct == 100) "success" else "info"
+            ) #value = isolate(prog_scopus_reactive())
+            progress_state$scopus_done <- isolate(prog_scopus_reactive())
+            return(get_scopus_data_id(scopus_list, rv, glens_env$scopus_key))
+            
+          }, error = function(e){
+            # message("ERROR (get_scopus_data_id()):",str(e),e)
+            rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'>SCOPUS: Error fetching ID(s):",e,"</span>"), sep="<br>")
+            })
+        }, 
+        globals = c("get_scopus_data_id", "scopus_list","scopus_count", "has_key_scopus", "glens_env", "glens_env$scopus_key", "rv", "session", "progress_state", "print_log"),
+        packages = c("shinyWidgets","dplyr", "httr2", "jsonlite", "tidyr", "purrr", "shiny"), seed = TRUE 
+        ) %...>% (function(res) {
+          # if (rv$is_cancelled) return(NULL)
+          if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+          return(res) 
+        }) %...!% (function(res) {
+          # if (rv$is_cancelled) return(NULL)
+          if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+          progress_state$scopus_done <- progress_state$scopus_done + 1 
+          shinyWidgets::updateProgressBar(session, id = "prog_scopus", value =  progress_state$scopus_done , status = "danger", title = "Process Failed!")
+          # output$log <- renderText(sprintf("Failed in SCOPUS Processing: %s", conditionMessage(err)))
+          warning("Failed SCOPUS ID Processing:", err)
+          shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
+          shinyjs::enable("submit_button")
+          if (is.list(res) && !is.null(res$error)) {
+            rv$log_text <- paste(rv$log_text, paste("Scopus ID Error:", res$error), sep="<br>")
+            # output$log <- renderText({rv$log_text})
+            return(NULL)
+          }
+        })
+        
+        # Wrap all Scopus promises into one master promise
+        master_scopusid_promise <- promise_all(scopusid_promise)
+      }else{
+        master_scopusid_promise <- promise_resolve(list())
       }
       
       # ==============================================================================
       # PHASE 1: ORCID -> DOI EXTRACTION (ASYNC)
       # ==============================================================================
-      
-      if (length(orcid_list) > 0) {
+      if (orcid_count > 0) {
         rv$log_text <- paste(rv$log_text, sprintf("\nProcessing %d ORC-ID(s)...\n", length(orcid_list)))
         
         # output$log <- renderText({rv$log_text})
@@ -1801,47 +2491,151 @@ server <- function(input, output, session) {
       # ==============================================================================
       # PHASE 2: LAUNCH SCOPUS IMMEDIATELY (Doesn't wait for ORCID extraction)
       # ==============================================================================
-      scopus_count <- length(orcid_list)
       
       # rv$log_text <- paste(rv$log_text, "Launching Scopus fetching in parallel...\n")
       # output$log <- renderText({rv$log_text})
-      
-      # --- STREAM B: PARALLEL SCOPUS PROCESSING ---
-      scopus_promises <- lapply(seq_along(orcid_list), function(i) {
+      if(orcid_count > 0){
         
-          orcid_target <- orcid_list[i]
-          
-          # 1. Handle missing key gracefully & update progress bar
-          if (!has_scopus) {
-            progress_state$scopus_done <- progress_state$scopus_done + 1 
-            pct <- round(( progress_state$scopus_done / max(1, scopus_count) ) * 100)
-            shinyWidgets::updateProgressBar(
-              session, id = "prog_scopus", value = progress_state$scopus_done , total = max(1, scopus_count),
-              title = sprintf("Scopus Skipped (No Key): %d%%", pct), status = "warning"
-            )
-            return(promise_resolve(NULL))
+        
+        # scopus_promises <- lapply(seq_along(orcid_list), function(i) {
+        #   
+        #     orcid_target <- orcid_list[i]
+        #     
+        #     # 1. Handle missing key gracefully & update progress bar
+        #     if (!has_key_scopus) {
+        #       progress_state$scopus_done <- progress_state$scopus_done + 1 
+        #       pct <- round(( progress_state$scopus_done / max(1, orcid_count) ) * 100)
+        #       shinyWidgets::updateProgressBar(
+        #         session, id = "prog_scopus", value = progress_state$scopus_done , total = max(1, orcid_count),
+        #         title = sprintf("Scopus Skipped (No Key): %d%%", pct), status = "warning"
+        #       )
+        #       return(promise_resolve(NULL))
+        #     }
+        #     
+        #     # 2. Launch the Future Worker
+        #     future({
+        #       tryCatch({ 
+        #         # if (rv$is_cancelled) return(NULL)
+        #         if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+        #         # INCREMENT PROGRESS BAR
+        #         prog_scopus_reactive <- reactive({ progress_state$scopus_done + 1 })
+        #         # progress_state$scopus_done <- progress_state$scopus_done + 1
+        #         pct <- round(( isolate(prog_scopus_reactive()) / max(1, orcid_count) ) * 100)
+        #         shinyWidgets::updateProgressBar(
+        #           session, id = "prog_scopus", value = isolate(prog_scopus_reactive()), total = max(1, orcid_count),
+        #           title = sprintf("Scopus: %d%% (%d/%d)", pct, isolate(prog_scopus_reactive()) , orcid_count),
+        #           status = if(pct == 100) "success" else "info"
+        #         )
+        #         progress_state$scopus_done <- isolate(prog_scopus_reactive())
+        #         return(get_scopus_data_orcid(orcid_target, scopusid_target, rv, glens_env$scopus_key))
+        #         
+        #       }, error = function(e) message("ERROR (get_scopus_data_orcid()):",str(e),e))
+        #     }, 
+        #     globals = c("get_scopus_data_orcid", "orcid_count", "glens_env", "orcid_target", "scopusid_target", "rv", "session", "progress_state", "print_log"),
+        #     packages = c("shinyWidgets","dplyr", "httr2", "jsonlite", "tidyr", "purrr", "shiny"), seed = TRUE 
+        #     ) %...>% (function(res) {
+        #       # if (rv$is_cancelled) return(NULL)
+        #       if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+        #       return(res) 
+        #     }) %...!% (function(res) {
+        #       # if (rv$is_cancelled) return(NULL)
+        #       if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+        #       progress_state$scopus_done <- progress_state$scopus_done + 1 
+        #       shinyWidgets::updateProgressBar(session, id = "prog_scopus", value =  progress_state$scopus_done , status = "danger", title = "Process Failed!")
+        #       # output$log <- renderText(sprintf("Failed in SCOPUS Processing: %s", conditionMessage(err)))
+        #       warning("Failed SCOPUS Processing:", err)
+        #       shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
+        #       shinyjs::enable("submit_button")
+        #       if (is.list(res) && !is.null(res$error)) {
+        #         rv$log_text <- paste(rv$log_text, "\nScopus Error for", orcid_target, ":", res$error)
+        #         
+        #         # output$log <- renderText({rv$log_text})
+        #         return(NULL)
+        #       }
+        #     })
+        #   
+        # })
+        
+        #wait till SCOPUS ID fetch is complete before querying SCOPUS with ORCiD
+        master_scopusdf_promise <- master_scopusid_promise %...>% (function(scopus_results){
+          # if (rv$is_cancelled) return(NULL)
+          if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+          # print(paste("orcid_results: ", colnames(orcid_results),collapse=","))
+          scopus_df_tmp <- data.frame()
+          # 1. Combine DOIs extracted from ORCIDs with manually typed DOIs
+          extracted_scopus_dfs <- purrr::compact(scopus_results) 
+          scopus_combo <- data.frame()
+          if (length(extracted_scopus_dfs) > 0) {
+            orcid_combo <- dplyr::bind_rows(extracted_scopus_dfs)
+            missing_url <- is.na(scopus_combo$external_id_url)
+            scopus_combo[missing_url, "external_id_url"] <- scopus_combo[missing_url, "external_id_value"]
+            # doi_lines <- unique(c(doi_lines, orcid_combo$external_id_url))
+            scopus_df_tmp <- scopus_combo %>% dplyr::select(external_id_url, external_id_value, orcid) %>% dplyr::rename(doi_url=external_id_url) %>% dplyr::rename(doi=external_id_value)
           }
-          
-          # 2. Launch the Future Worker
-          future({
+          print(paste("scopus_combo: ",paste(colnames(scopus_combo),collapse=",")))
+          print(str(scopus_combo))
+          print(str(scopus_df_tmp))
+          if(nrow(scopus_df_tmp) > 0){
+            scopus_df_tmp$doi <- scopus_df_tmp$doi[!is.na(scopus_df_tmp$doi) & trimws(scopus_df_tmp$doi) != ""]
+            
+            # Safely parse text box line-by-line
+            scopus_lines <- unlist(strsplit(input$scopusid_text, "\n"))
+            scopus_lines <- scopus_lines[trimws(scopus_lines) != ""]
+            
+            if (length(scopus_lines) > 0) {
+              # bind_rows is safer than full_join here because the columns (DOI vs SCOPUS_ID) don't match
+              scopus_df_tmp <- dplyr::bind_rows(scopus_df_tmp, data.frame(SCOPUS_ID = scopus_lines))
+            }
+          }else{
+            # Safely parse text box line-by-line
+            scopus_lines <- unlist(strsplit(input$scopusid_text, "\n"))
+            scopus_lines <- scopus_lines[trimws(scopus_lines) != ""]  
+            
+            # Using rep() prevents the "0, 1" row error!
+            scopus_df_tmp <- data.frame(
+              doi = scopus_lines, 
+              orcid = rep(NA_character_, length(scopus_lines)), 
+              doi_url = scopus_lines
+            )
+          }
+          scopus_df_tmp <- scopus_df_tmp %>% dplyr::distinct()
+          return(scopus_df_tmp)
+        })
+        
+        progress_state$scopus_done <- 0
+        # --- STREAM B: PARALLEL SCOPUS PROCESSING ---
+        scopus_promise <- future({
             tryCatch({ 
               # if (rv$is_cancelled) return(NULL)
               if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+            
+              # Handle missing key gracefully & update progress bar
+              if (!has_key_scopus) {
+                shinyWidgets::updateProgressBar(
+                  session, id = "prog_scopus", value = orcid_count , total = max(1, orcid_count),
+                  title = sprintf("Scopus Skipped (No Key): %d%%", 100), status = "warning"
+                )
+                return(promise_resolve(NULL))
+              }
+          
               # INCREMENT PROGRESS BAR
               prog_scopus_reactive <- reactive({ progress_state$scopus_done + 1 })
               # progress_state$scopus_done <- progress_state$scopus_done + 1
-              pct <- round(( isolate(prog_scopus_reactive()) / max(1, scopus_count) ) * 100)
+              pct <- round(( isolate(prog_scopus_reactive()) / max(1, orcid_count) ) * 100)
               shinyWidgets::updateProgressBar(
-                session, id = "prog_scopus", value = isolate(prog_scopus_reactive()), total = max(1, scopus_count),
-                title = sprintf("Scopus: %d%% (%d/%d)", pct, isolate(prog_scopus_reactive()) , scopus_count),
+                session, id = "prog_scopus", value = orcid_count, total = max(1, orcid_count),
+                title = sprintf("Scopus: %d%% (%d/%d)", pct, isolate(prog_scopus_reactive()) , orcid_count),
                 status = if(pct == 100) "success" else "info"
-              )
+              ) #value = isolate(prog_scopus_reactive())
               progress_state$scopus_done <- isolate(prog_scopus_reactive())
-              return(get_complete_scopus_data(orcid_target, rv, glens_env$scopus_key))
+              return(get_scopus_data_orcid(orcid_list, rv, glens_env$scopus_key))
               
-            }, error = function(e) message("ERROR (get_complete_scopus_data()):",str(e),e))
+            }, error = function(e){
+              # message("ERROR (get_scopus_data_orcid()):",str(e),e)
+              rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'>SCOPUS: Error fetching ORCiD(s):",e,"</span>"), sep="<br>")
+              })
           }, 
-          globals = c("get_complete_scopus_data", "scopus_count", "glens_env", "orcid_target", "rv", "session", "progress_state", "print_log"),
+          globals = c("get_scopus_data_orcid", "orcid_list","orcid_count", "has_key_scopus", "glens_env", "glens_env$scopus_key", "rv", "session", "progress_state", "print_log"),
           packages = c("shinyWidgets","dplyr", "httr2", "jsonlite", "tidyr", "purrr", "shiny"), seed = TRUE 
           ) %...>% (function(res) {
             # if (rv$is_cancelled) return(NULL)
@@ -1857,61 +2651,58 @@ server <- function(input, output, session) {
             shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
             shinyjs::enable("submit_button")
             if (is.list(res) && !is.null(res$error)) {
-              rv$log_text <- paste(rv$log_text, "\nScopus Error for", orcid_target, ":", res$error)
-              
+              rv$log_text <- paste(rv$log_text, paste("Scopus Error:", res$error), sep="<br>")
               # output$log <- renderText({rv$log_text})
               return(NULL)
             }
           })
         
-      })
-      
-      # Wrap all Scopus promises into one master promise
-      master_scopus_promise <- promise_all(.list = scopus_promises)
-      
-      
-      # ==============================================================================
-      # PHASE 3: WAIT FOR ORCIDS -> THEN LAUNCH DOI
-      # ==============================================================================
-      # Notice we assign this to `master_doi_promise`
-      master_doi_promise <- master_orcid_promise %...>% (function(orcid_results) {
-        # if (rv$is_cancelled) return(NULL)
-        if(!fs::file_exists(file.path("run.lock"))) return(NULL)
-        # print(paste("orcid_results: ", colnames(orcid_results),collapse=","))
-        doi_df <- data.frame()
-        # 1. Combine DOIs extracted from ORCIDs with manually typed DOIs
-        extracted_orcid_dfs <- purrr::compact(orcid_results) 
-        if (length(extracted_orcid_dfs) > 0) {
-          orcid_combo <- dplyr::bind_rows(extracted_orcid_dfs)
-          missing_url <- is.na(orcid_combo$external_id_url)
-          orcid_combo[missing_url, "external_id_url"] <- orcid_combo[missing_url, "external_id_value"]
-          # doi_lines <- unique(c(doi_lines, orcid_combo$external_id_url))
-          doi_df <- orcid_combo %>% dplyr::select(external_id_url, external_id_value, orcid) %>% dplyr::rename(doi_url=external_id_url) %>% dplyr::rename(doi=external_id_value)
-        }
-        print(paste("orcid_combo: ",paste(colnames(orcid_combo),collapse=",")))
-        print(str(orcid_combo))
-        print(str(doi_df))
-        if(nrow(doi_df) > 0){
-          doi_df$doi <- doi_df$doi[!is.na(doi_df$doi) & trimws(doi_df$doi) != ""]  
-          doi_df <- dplyr::full_join(doi_df, data.frame(doi=input$doi_text))
-        }else{
-          doi_lines <- input$doi_text[!is.na(input$doi_text) & trimws(input$doi_text) != ""]  
-          doi_df <- data.frame(doi=doi_lines, orcid=NA, doi_url=doi_lines)
-        }
-        doi_df <- doi_df %>% dplyr::distinct()
-        # doi_count <- length(doi_lines)
-        rv$doi_count <- nrow(doi_df)
-        message(paste("DOI COUNT:", rv$doi_count))
-        rv$log_text <- paste(rv$log_text, sprintf("\nExtracted %d total DOIs. Launching DOIs...\n", rv$doi_count))
+        # Wrap all Scopus promises into one master promise
+        master_scopus_promise <- promise_all(scopus_promise)
         
-        # output$log <- renderText({rv$log_text})
-        
-        # --- STREAM A: PARALLEL DOI PROCESSING ---
-        doi_promises <- lapply(seq(nrow(doi_df)), function(i) {
-          # doi_target <- doi_lines[i]
-          doi_target <- doi_df[i,]
-            future({
-              tryCatch({ 
+        # ==============================================================================
+        # PHASE 3: WAIT FOR ORCIDS -> THEN LAUNCH DOI
+        # ==============================================================================
+        # Notice we assign this to `master_doi_promise`
+        master_doi_promise <- master_orcid_promise %...>% (function(orcid_results) {
+          # if (rv$is_cancelled) return(NULL)
+          if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+          # print(paste("orcid_results: ", colnames(orcid_results),collapse=","))
+          doi_df <- data.frame()
+          # 1. Combine DOIs extracted from ORCIDs with manually typed DOIs
+          extracted_orcid_dfs <- purrr::compact(orcid_results) 
+          orcid_combo <- data.frame()
+          if (length(extracted_orcid_dfs) > 0) {
+            orcid_combo <- dplyr::bind_rows(extracted_orcid_dfs)
+            missing_url <- is.na(orcid_combo$external_id_url)
+            orcid_combo[missing_url, "external_id_url"] <- orcid_combo[missing_url, "external_id_value"]
+            # doi_lines <- unique(c(doi_lines, orcid_combo$external_id_url))
+            doi_df <- orcid_combo %>% dplyr::select(external_id_url, external_id_value, orcid) %>% dplyr::rename(doi_url=external_id_url) %>% dplyr::rename(doi=external_id_value)
+          }
+          print(paste("orcid_combo: ",paste(colnames(orcid_combo),collapse=",")))
+          print(str(orcid_combo))
+          print(str(doi_df))
+          if(nrow(doi_df) > 0){
+            doi_df$doi <- doi_df$doi[!is.na(doi_df$doi) & trimws(doi_df$doi) != ""]  
+            doi_df <- dplyr::full_join(doi_df, data.frame(doi=input$doi_text))
+          }else{
+            doi_lines <- input$doi_text[!is.na(input$doi_text) & trimws(input$doi_text) != ""]  
+            doi_df <- data.frame(doi=doi_lines, orcid=NA, doi_url=doi_lines)
+          }
+          doi_df <- doi_df %>% dplyr::distinct()
+          # doi_count <- length(doi_lines)
+          rv$doi_count <- nrow(doi_df)
+          message(paste("DOI COUNT:", rv$doi_count))
+          rv$log_text <- paste(rv$log_text, sprintf("\nExtracted %d total DOIs. Launching DOIs...\n", rv$doi_count))
+          
+          # If doi/orcid was given as input and we were able to extract DOIs
+          if(nrow(doi_df) > 0){
+            # --- STREAM A: PARALLEL DOI PROCESSING ---
+            doi_promises <- lapply(seq(nrow(doi_df)), function(i) {
+              # doi_target <- doi_lines[i]
+              doi_target <- doi_df[i,]
+              future({
+                tryCatch({ 
                   # if (rv$is_cancelled) return(NULL)
                   if(!fs::file_exists(file.path("run.lock"))) return(NULL)
                   ret_df <- doi2gscholarlens(doi_target[["doi"]], doi_target[["orcid"]], rv) 
@@ -1928,11 +2719,11 @@ server <- function(input, output, session) {
                 }, error = function(e){ 
                   message(paste("ERROR (doi2gscholarlens()):", e))
                   warning(traceback()) })
-            }, globals = c("glens_env", "doi_target", "doi2gscholarlens", "rv", "session", "progress_state"), packages = c("shinyWidgets", "stringi", "dplyr", "shiny"), seed = TRUE) %...>% (function(res_df) {
-              # if (rv$is_cancelled) return(NULL)
-              if(!fs::file_exists(file.path("run.lock"))) return(NULL)
-              return(res_df)
-            }) %...!% (function(err) {
+              }, globals = c("glens_env", "doi_target", "doi2gscholarlens", "rv", "session", "progress_state"), packages = c("shinyWidgets", "stringi", "dplyr", "shiny"), seed = TRUE) %...>% (function(res_df) {
+                # if (rv$is_cancelled) return(NULL)
+                if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+                return(res_df)
+              }) %...!% (function(err) {
                 # if (rv$is_cancelled) return(NULL)
                 if(!fs::file_exists(file.path("run.lock"))) return(NULL)
                 progress_state$doi_done <- progress_state$doi_done + 1 
@@ -1944,58 +2735,71 @@ server <- function(input, output, session) {
                 shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
                 shinyjs::enable("submit_button")
               })
-          
+              
+            })
+            
+            # RETURN the resolved DOI promises to `master_doi_promise`
+            return(promise_all(.list = doi_promises))
+          }else{
+            return(doi_df)
+          }
         })
-          
-        # RETURN the resolved DOI promises to `master_doi_promise`
-        return(promise_all(.list = doi_promises))
-      })
+      }else{
+          # Fallback: if no ORCIDs were provided, resolve immediately to an empty list
+          master_scopus_promise <- promise_resolve(list())
+          master_scopusdf_promise <- master_scopusid_promise
+          master_doi_promise <- promise_resolve(list())
+      }
       
       promise_all(
         dois = master_doi_promise,
-        scopus = master_scopus_promise
+        scopus_orcid = master_scopus_promise,
+        scopus_id = master_scopusdf_promise
       ) %...>% (function(results) {
         # if (rv$is_cancelled) return(NULL)
         if(!fs::file_exists(file.path("run.lock"))) return(NULL)
-        # print("DOI:")
-        # # # print(str(results$dois[[1]]))
-        # # print(class(results$dois[[8]]))
-        # # print(str(results$dois[[8]]))
-        # print(str(results$dois))
-        # print(length(results$dois))
-        rv$log_text <- paste(rv$log_text,paste("<span style='color: red;'> Failed RIS Extraction Count:",abs(rv$doi_count - sum(sapply(results$dois, is.null))),"</span>"),sep="<br>")
-        # Merge DOIs
+        
+        failed_doi_count <- length(Filter(is.null, results$dois))
+        rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'>Failed RIS Extraction Count:", abs(rv$doi_count - failed_doi_count), "</span>"), sep="<br>")
+        
         # Merge DOIs safely
         clean_dois <- Filter(Negate(is.null), results$dois)
         valid_dois <- Filter(is.data.frame, clean_dois)
         accumulated_df <- dplyr::bind_rows(valid_dois)
         if (nrow(accumulated_df) > 0) accumulated_df <- accumulated_df %>% dplyr::distinct() %>% dplyr::mutate(Source = "DOI/ORCID")
         
-        # print("SCOPUS:")
-        # print(str(results$scopus))
-        # print(results$scopus[[1]])
-        clean_scopus <- Filter(Negate(is.null), results$scopus)
+        clean_scopus_orcid <- Filter(Negate(is.null), results$scopus_orcid)
+        clean_scopus_id <- Filter(Negate(is.null), results$scopus_id)
+        rv$scopus_df <- dplyr::bind_rows(purrr::compact(Filter(is.data.frame, clean_scopus_orcid)), purrr::compact(Filter(is.data.frame, clean_scopus_id))) %>% dplyr::distinct()
+        if(has_key_scopus){
+          rv$log_text <- paste(rv$log_text, paste("SCOPUS (ORCiD) Rows:", length(clean_scopus_orcid)), sep="<br>")
+          rv$log_text <- paste(rv$log_text, paste("SCOPUS (ID) Rows:", length(clean_scopus_id)), sep="<br>")
+          rv$log_text <- paste(rv$log_text, paste("Total SCOPUS Rows:", nrow(rv$scopus_df)), sep="<br>")
+        }
         # Merge Scopus
-        rv$scopus_df <- dplyr::bind_rows(purrr::compact(Filter(is.data.frame, clean_scopus)))
+        # rv$scopus_df <- dplyr::bind_rows(purrr::compact(Filter(is.data.frame, clean_scopus)))
         if (nrow(rv$scopus_df) > 0) rv$scopus_df <- rv$scopus_df %>% dplyr::distinct() %>% dplyr::mutate(Source = "SCOPUS")
-        # print("BIND ROWS:")
+        intrm_tmp <- dplyr::bind_rows(accumulated_df %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character)), rv$scopus_df %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character)))
         # Final Table
-        rv$glens_input_table <- dplyr::bind_rows(accumulated_df, rv$scopus_df)
-        # print("BUILT INPUT TABLE:")
-        # message(paste("(pre)nrow(rv$glens_input_table):",nrow(rv$glens_input_table)))
-        # message(paste("(pre)colnames(rv$glens_input_table):",colnames(rv$glens_input_table)))
-        rv$log_text <- paste(rv$log_text, sprintf("\nDone. Found %d total records.\n", nrow(rv$glens_input_table)))
-        # output$log <- renderText(rv$log_text)
         
-        # message(colnames(rv$glens_input_table))
-        # message(nrow(rv$glens_input_table))
+        if(nrow(rv$glens_full_table) > 0){
+          rv$glens_full_table <- dplyr::bind_rows(rv$glens_full_table %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character)), intrm_tmp)
+        }else{
+          rv$glens_full_table <- intrm_tmp
+        }
         
-        output$dynamic_source_ui <- renderUI({
-          req(rv$glens_input_table)
-          available_sources <- levels(factor(rv$glens_input_table$Source))
-          if (length(available_sources) == 0) return(p("No sources identified yet.", style = "color: #888;"))
-          radioButtons("selected_source", label = NULL, choices = available_sources, selected = available_sources[1], inline = FALSE)
-        })
+        rv$log_text <- paste(rv$log_text, sprintf("\nDone. Found %d total records.\n", nrow(intrm_tmp)))
+        
+        # output$dynamic_source_ui <- renderUI({
+        #   req(rv$glens_input_table)
+        #   req(nrow(rv$glens_input_table) > 0)
+        #   available_sources <- levels(factor(rv$glens_input_table$Source))
+        #   if (length(available_sources) == 0){ 
+        #       return(p("No sources identified yet.", style = "color: #888;")) 
+        #     }else{
+        #       radioButtons("selected_source", label = NULL, choices = available_sources, selected = available_sources[1], inline = FALSE)
+        #     }
+        # })
         
         # --- SCRIPTS 2 & 3: STATS & PLOTTING ---
         target_variants <- stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n")))
@@ -2006,70 +2810,64 @@ server <- function(input, output, session) {
           list(norm = vn, parts = extract_parts(vn))
         })
         rv$author_match_regex <- build_name_regex_for_variants(target_variants)
-        
-        extend_input_table(rv)
-        rv$glens_year_filtered <- rv$glens_etable_final
-        
-        if (nrow(rv$glens_year_filtered) <= 0) {
-          # output$log <- renderText(paste(rv$log, "No names were matched.",sep="<br>"))
-          rv$log_text <- paste(rv$log_text, "No names were matched.",sep="<br>")
-          shinyjs::enable("submit_button")
-          shinyjs::hide("progress_overlay")
-          return()
+        print(" rv$author_match_regex:")
+        print(str(rv$author_match_regex))
+        rv$glens_full_table <- extend_input_table(rv, rv$glens_full_table)
+        # rv$glens_year_filtered <- rv$glens_etable_final
+        if (nrow(rv$glens_full_table) <= 0) {
+          rv$log_text <- paste(rv$log_text, "No keywords were matched.",sep="<br>")
+          # shinyjs::enable("submit_button")
+          # shinyjs::hide("progress_overlay")
+          # # req(nrow(rv$glens_year_filtered) > 0)
+        } else {
+          print("HERE1.1")
+          compute_indices(rv, rv$glens_full_table)
+          
+          # output$summary_table <- renderTable(rv$summary_table, striped = TRUE)
+          # output$sh_index <- renderUI(HTML(paste("<b>Sh-Index:</b>", rv$sh_index)))
+          # output$extended_table <- DT::renderDataTable({
+          #   DT::datatable(rv$glens_year_filtered, options = list(scrollY = "600px", scrollX = TRUE, paging = TRUE))
+          # })
+          
+          print(str(jcr_names_norm))
+          # 1. Match Journals and create Qscore FIRST
+          # rv$glens_year_filtered <- match_journals(rv, rv$glens_full_table)
+          rv$glens_full_table <- match_journals(rv, rv$glens_full_table)
+          rv$glens_etable_final <- rv$glens_full_table
+          rv$glens_year_filtered <- rv$glens_etable_final
+          shinyjs::show("extended_table")
         }
-        
-        compute_indices(rv)
-        
-        output$summary_table <- renderTable(rv$summary_table, striped = TRUE)
-        output$sh_index <- renderUI(HTML(paste("<b>Sh-Index:</b>", rv$sh_index)))
-        output$extended_table <- DT::renderDataTable({
-          DT::datatable(rv$glens_year_filtered, options = list(scrollY = "600px", scrollX = TRUE, paging = TRUE))
-        })
-        
-        print(str(jcr_names_norm))
-        # 1. Match Journals and create Qscore FIRST
-        match_journals(rv)
-        
-        rv$glens_year_filtered <- rv$glens_etable_final
         
         # 3. Render the initial plots
         render_skeleton_plots(rv, output)
+        
         plot_glens_table(rv, session)
-        # plot_glens_table(rv, output, session)
         
-        # plot_glens_table()
         # 2. Update the Slider SECOND (now it's safe to trigger observers)
-        min_year <- min(as.numeric(rv$glens_year_filtered$Year), na.rm = TRUE)
-        max_year <- max(as.numeric(rv$glens_year_filtered$Year), na.rm = TRUE)
-        if (is.finite(min_year) && is.finite(max_year)) {
-          updateSliderInput(session, "year_slider", value = c(min_year, max_year), min = min_year, max = max_year)
-          shinyjs::show("year_slider")
+        if(length(na.omit(levels(factor(rv$glens_year_filtered$Year)))) > 1){
+          min_year <- min(as.numeric(rv$glens_year_filtered$Year), na.rm = TRUE)
+          max_year <- max(as.numeric(rv$glens_year_filtered$Year), na.rm = TRUE)
+          if (is.finite(min_year) && is.finite(max_year)) {
+            updateSliderInput(session, "year_slider", value = c(min_year, max_year), min = min_year, max = max_year)
+            shinyjs::show("year_slider")
+          }else{
+            shinyjs::hide("year_slider")
+          }
+        }else{
+          shinyjs::hide("year_slider")
         }
-        
         # Render Full Data Network
         output$network_full <- renderVisNetwork({
           req(rv$glens_etable_final) # Ensure data exists
+          req(nrow(rv$glens_etable_final) > 0)
           
           net_data <- build_collaboration_network(rv$glens_etable_final, rv$author_list)
           
           visNetwork(net_data$nodes, net_data$edges, width = "100%", height = "500px") %>%
             visNodes(font = list(size = 14)) %>%
             visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = TRUE) %>%
-            # Add physics for a nice floating layout
-            # visPhysics(solver = "forceAtlas2Based", forceAtlas2Based = list(gravitationalConstant = -50)) %>%
-            # visPhysics(
-            #   solver = "barnesHut", 
-            #   barnesHut = list(
-            #     gravitationalConstant = -2000, 
-            #     springConstant = 0.04, # Stiffer springs respect 'length' better
-            #     avoidOverlap = 0.1     # Prevents nodes from perfectly stacking
-            #   ),
-            #   stabilization = list(enabled = TRUE, iterations = 200)
-            # ) %>%
-            #IgraphLayout overrides physics and is fast
             visIgraphLayout(layout = "layout_with_fr") %>%
             visOptions(highlightNearest = list(enabled = TRUE, degree = 1), nodesIdSelection = TRUE) %>%
-            # visLegend() %>%
             addFontAwesome() 
         })
         shinyjs::show("network_full")
@@ -2081,10 +2879,8 @@ server <- function(input, output, session) {
         shinyjs::enable("submit_button")
         
       }) %...!% (function(err) {
-        # if (rv$is_cancelled) return(NULL)
         if(!fs::file_exists(file.path("run.lock"))) return(NULL)
         shinyWidgets::updateProgressBar(session, id = "prog_doi", value = 100, status = "danger", title = "Process Failed!")
-        # output$log <- renderText(sprintf("(Master) Failed in DOI/Scopus Processing: %s", conditionMessage(err)))
         rv$log_text <- paste(rv$log_text, sprintf("\n(Master) Failed in DOI/Scopus Processing: %s", conditionMessage(err)),sep="<br>")
         shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
         shinyjs::enable("submit_button")
@@ -2092,6 +2888,11 @@ server <- function(input, output, session) {
   }) #observeEVENT(submit_button)
   
   # Tell Shiny to render this UI in the background even while the parent div is hidden.
-  outputOptions(output, "extended_controls_panel", suspendWhenHidden = FALSE)
+  outputOptions(output, "lookup_controls_panel", suspendWhenHidden = FALSE)
+  outputOptions(output, "extended_table", suspendWhenHidden = FALSE)
+  
+  outputOptions(output, "sh_index", suspendWhenHidden = FALSE)
+  outputOptions(output, "summary_table", suspendWhenHidden = FALSE)
+  outputOptions(output, "network_filtered", suspendWhenHidden = FALSE)
   
 } #server end

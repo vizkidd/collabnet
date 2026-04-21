@@ -21,6 +21,7 @@ suppressPackageStartupMessages(require(uuid))
 suppressPackageStartupMessages(require(openssl))
 suppressPackageStartupMessages(require(xfun))
 suppressPackageStartupMessages(require(visNetwork))
+suppressPackageStartupMessages(require(bslib))
 
 is_WASM <- grepl(pattern="wasm",x=Sys.info()["machine"])
 # # use a multisession plan so futures run in background R sessions
@@ -34,8 +35,72 @@ is_WASM <- grepl(pattern="wasm",x=Sys.info()["machine"])
 
 ui <- fluidPage(
   shinyjs::useShinyjs(),
+  # theme = bs_theme(version = 5),
+  # 1. The unconditional warning wall
+  tags$div(
+    id = "js-dependency-warning",
+    style = "position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background-color: rgba(30, 30, 30, 0.98); color: #ff9800; z-index: 9999999; display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: sans-serif; text-align: center; padding: 20px;",
+    tags$h1(style = "font-size: 3em; margin-bottom: 20px;", "JavaScript is Disabled"),
+    tags$p(style = "font-size: 1.5em; color: white;", "CollabNET requires JavaScript to function properly."),
+    tags$p(style = "font-size: 1.2em; color: #ccc;", "Please enable JavaScript in your browser settings and refresh the page.")
+  ),
+  
+  # 2. The script that destroys the wall if JS is enabled
+  tags$script(HTML("
+    document.addEventListener('DOMContentLoaded', function() {
+      var warning = document.getElementById('js-dependency-warning');
+      if (warning) {
+        warning.style.display = 'none';
+      }
+    });
+  ")),
   tags$head(
+    tags$noscript(
+      HTML("
+        <style>
+          #noscript-warning {
+            position: fixed;
+            top: 0; 
+            left: 0; 
+            width: 100%; 
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.95);
+            color: #ff9800;
+            z-index: 999999;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            font-family: Arial, sans-serif;
+            text-align: center;
+            padding: 20px;
+          }
+          #noscript-warning h1 {
+            font-size: 2.5em;
+            margin-bottom: 20px;
+          }
+          #noscript-warning p {
+            font-size: 1.2em;
+            color: #ffffff;
+          }
+        </style>
+        <div id='noscript-warning'>
+          <h1>JavaScript is Disabled</h1>
+          <p>This Shiny application relies heavily on JavaScript for interactivity and server communication.</p>
+          <p>Please enable JavaScript in your browser settings and refresh this page to continue.</p>
+        </div>
+      ")
+    ),
     tags$script(src = "https://cdn.jsdelivr.net/npm/plotly.js-dist/plotly.min.js"),
+    tags$script(HTML("
+      $(document).ready(function(){
+        // Initialize all Bootstrap 3 tooltips on the page
+        $('[data-toggle=\"tooltip\"]').tooltip({
+          placement: 'top', // You can change this to 'right', 'bottom', or 'left'
+          container: 'body' // Prevents the tooltip from breaking inside hidden divs
+        });
+      });
+    ")),
     tags$style(HTML("
       @font-face {
         font-family: 'schibsted-grotesk';
@@ -570,7 +635,7 @@ ui <- fluidPage(
         class = "btn btn-default btn-outline-white",
         style = "margin-bottom: 0; font-weight: normal; cursor: pointer;",
         icon("key", lib = "font-awesome"),
-        tags$input(id="keys_btn", type="button", style = "display: none;")
+        tags$input(id="keys_btn", type="button", class="action-button", style = "display: none;")
       ),
       actionButton("theme_toggle", "🌙 Dark Mode", icon = icon("moon", lib = "font-awesome"), class = "btn-outline-white")
     )
@@ -589,30 +654,58 @@ ui <- fluidPage(
         class = "custom-card",
         style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; margin-bottom: 25px;",
         h4("Search & Identification", style = "margin-top: 0; font-weight: bold; font-size: 16px;"),
-        textAreaInput("doi_text", "DOI input:", value = "", rows = 2, width = "100%"),
-        textAreaInput("author_list",  "Lookup Keywords :", value = "", rows = 2, width = "100%"),
-        # # --- Flexbox layout for Label + Checkbox ---
-        # tags$div(
-        #   style = "display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;",
-        #   tags$label("Lookup Keywords :", style = "font-weight: bold; margin-bottom: 0;"),
-        #   # Wrap the checkbox to remove Shiny's default spacing so it aligns perfectly
-        #   tags$div(
-        #     style = "margin-bottom: 0; margin-top: 0;", 
-        #     checkboxInput("auto_refresh_lookup", "Auto-Refresh", value = TRUE)
-        #   )
-        # ),
-        # # The text area itself (label set to NULL since we built a custom one above)
-        # textAreaInput("author_list", label = NULL, value = "", rows = 2, width = "100%"),
-        # # ------------------------------------------------
+        div(
+          style = "display: inline-flex; align-items: center; gap: 5px;",
+          tags$b("DOI input:"),
+          icon(
+            "circle-question",
+            "data-toggle" = "tooltip",
+            style = "color: #007bc2; cursor: help;",
+            title = "Type the DOI(s) here line-by-line and run CollabNET. Auto-refresh does NOT apply to DOI(s)."
+            )
+        ),
+        textAreaInput("doi_text", value = "", rows = 2, width = "100%", label = NULL),
+        div(
+          style = "display: inline-flex; align-items: center; gap: 5px;",
+          tags$b("Lookup Keywords:"),
+          icon(
+            "circle-question",
+            "data-toggle" = "tooltip",
+            style = "color: #007bc2; cursor: help;",
+            title = "Type the lookup-keywords here line-by-line."
+            )
+        ),
+        textAreaInput("author_list",  value = "", rows = 2, width = "100%", label = NULL),
         uiOutput("dynamic_author_filter"),
-        textAreaInput("orcid_text", "ORCiD input:", value = "", rows = 2, width = "100%"),
+        div(
+          style = "display: inline-flex; align-items: center; gap: 5px;",
+          tags$b("ORCiD input:"),
+          icon("circle-question",
+               "data-toggle" = "tooltip",
+               style = "color: #007bc2; cursor: help;",
+               title = "Type the ORCiD(s) here line-by-line and run CollabNET. Auto-refresh does NOT apply to ORCiD(s)."
+               )
+        ),
+        textAreaInput("orcid_text", value = "", rows = 2, width = "100%", label = NULL),
+        shinyjs::hidden(div(
+          id = "scopusid_label_wrapper", 
+          style = "display: inline-flex; align-items: center; gap: 5px;",
+          tags$b("SCOPUS IDs:"),
+          icon(
+            "circle-question",
+            "data-toggle" = "tooltip",
+            style = "color: #007bc2; cursor: help;",
+            title = "Type the SCOPUS Author ID(s) here line-by-line and run CollabNET. Auto-refresh does NOT apply to SCOPUS ID(s)."
+            )
+        )),
+        shinyjs::hidden(textAreaInput("scopusid_text", value = "", rows = 2, width = "100%", label = NULL)),
         actionButton("submit_button", "Run CollabNET", icon = icon("play", lib = "font-awesome"), class = "btn-primary", style = "width: 100%; font-weight: bold; margin-top: 10px; background-color: #4B8BBE; border: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"),
         # The Toggle Lock Button
-        actionButton("toggle_extended", "Show Extended Controls", icon = icon("unlock"), 
+        actionButton("toggle_extended", "Show Lookup Controls", icon = icon("magnifying-glass"), 
                      class = "btn-secondary", style = "margin-top: 10px; width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"),
         shinyjs::hidden(
           tags$div(id = "extended_controls_container",
-                   uiOutput("extended_controls_panel")
+                   uiOutput("lookup_controls_panel")
           )
         )
       ),
@@ -621,7 +714,7 @@ ui <- fluidPage(
       #   style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; margin-bottom: 25px;",
       #   h4("Extended Controls", style = "margin-top: 0; font-weight: bold; font-size: 16px;"),
       #   # The container for the extended controls
-      #   uiOutput("extended_controls_panel")
+      #   uiOutput("lookup_controls_panel")
       # ),
       # Section 2: Timeline
       tags$div(
@@ -713,6 +806,7 @@ ui <- fluidPage(
         h3("Detailed Publication Record", style = "color: #D6A77A; margin-top: 0; font-weight: bold;"),
         hr(),
         DT::DTOutput("extended_table")
+        # DT::dataTableOutput("extended_table")
       ),
       # 6) Network graph - filtered
       tags$div(

@@ -164,10 +164,10 @@ build_collaboration_network <- function(df, main_authors_list) {
 
 
 plot_glens_table <- function(rv,session){
-  req(rv$glens_year_filtered, nrow(rv$glens_year_filtered) > 0)
-  if(is.null(rv$glens_year_filtered) || nrow(rv$glens_year_filtered) <= 0){
-    rv$log_text <- paste(rv$log_text, "Warning: No data available for these filters!\n", sep="")
-    warning("Warning: No data available for these filters!")
+  # req(rv$glens_year_filtered, nrow(rv$glens_year_filtered) > 0)
+  if(is.null(rv$glens_year_filtered) || nrow(rv$glens_year_filtered) <= 0 || !all(c("First_Author", "Second_Author", "Co_Author", "Corresponding_Author", "Adjusted_Citations") %in% colnames(rv$glens_year_filtered)) ){
+    rv$log_text <- paste(rv$log_text, "plot_glens_table(): Warning: No data available for these filters!\n", sep="")
+    warning("plot_glens_table(): Warning: No data available for these filters!")
     shinyjs::hide("sh_index")
     shinyjs::hide("summary_table")
     shinyjs::hide("acounts_plot")
@@ -176,7 +176,7 @@ plot_glens_table <- function(rv,session){
     shinyjs::hide("aperc_plot")
     shinyjs::hide("cperc_plot")
     shinyjs::hide("network_filtered")
-    shinyjs::hide("extended_table")
+    # shinyjs::hide("extended_table")
     return() # Stop execution here
   }
   shinyjs::show("acounts_plot")
@@ -576,6 +576,24 @@ plot_glens_table <- function(rv,session){
 }
 
 render_skeleton_plots <- function(rv, output){
+  # print("HERE1.2.1")
+  # print(str(rv$glens_year_filtered))
+  # req(rv$glens_year_filtered, nrow(rv$glens_year_filtered) > 0)
+  # print("HERE1.2.2")
+  if(is.null(rv$glens_year_filtered) || nrow(rv$glens_year_filtered) <= 0){
+    rv$log_text <- paste(rv$log_text, "render_skeleton_plots(): Warning: No data available for these filters!", sep="<br>")
+    warning("render_skeleton_plots(): Warning: No data available for these filters!")
+    shinyjs::hide("sh_index")
+    shinyjs::hide("summary_table")
+    shinyjs::hide("acounts_plot")
+    shinyjs::hide("ccounts_plot")
+    shinyjs::hide("cdist_plot")
+    shinyjs::hide("aperc_plot")
+    shinyjs::hide("cperc_plot")
+    shinyjs::hide("network_filtered")
+    # shinyjs::hide("extended_table")
+    return() # Stop execution here
+  }
   df_ordered_debug <- rv$glens_year_filtered %>%
     mutate(position_rank = case_when(
       as.numeric(First_Author) == 1 ~ 1L,
@@ -760,6 +778,7 @@ render_skeleton_plots <- function(rv, output){
     # print(str(pb$x$data))
     rv$acounts_plotly
   })
+  outputOptions(output, "acounts_plot", suspendWhenHidden = FALSE)
   
   output$ccounts_plot <- renderPlotly({
     # p_cites <- ggplot(agg_all, aes(x = Position, y = SumCitations, fill = Position, color = Position, alpha = Qscore, group=Qscore, text = paste(
@@ -837,6 +856,7 @@ render_skeleton_plots <- function(rv, output){
     # print(str(pb$x$data))
     rv$ccounts_plotly
   })
+  outputOptions(output, "ccounts_plot", suspendWhenHidden = FALSE)
   
   # p_citesdist <- ggplot(df_plot, aes(x = position_rank, y = Citations, fill = position_rank, group=position_rank, colour = Qscore,size=Adjusted_Citations, text = paste0(
   #   "<b>Position:</b> ", position_rank,
@@ -939,6 +959,7 @@ render_skeleton_plots <- function(rv, output){
       )
     rv$cdist_plotly
   })
+  outputOptions(output, "cdist_plot", suspendWhenHidden = FALSE)
   
   output$aperc_plot <- renderPlotly({
     p <- plot_ly()
@@ -980,6 +1001,7 @@ render_skeleton_plots <- function(rv, output){
       title = list(text = "Author Contribution in % based on Authorship", x = 0.5)
     )
   })
+  outputOptions(output, "aperc_plot", suspendWhenHidden = FALSE)
   
   output$cperc_plot <- renderPlotly({
     p <- plot_ly()
@@ -1009,5 +1031,6 @@ render_skeleton_plots <- function(rv, output){
       title = list(text = "Citation Contribution in % based on Authorship", x = 0.5)
     )
   })
+  outputOptions(output, "cperc_plot", suspendWhenHidden = FALSE)
   
 } # End - Plot skeleton renders
