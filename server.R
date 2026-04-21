@@ -2123,8 +2123,7 @@ server <- function(input, output, session) {
   
   #Submit Button Event
   observeEvent(input$submit_button, {   # same as bindEvent(input$submit_button)
-    req(input$map_orcid2scopusid)  
-    I
+
     # 1. Re-determine the exact list of columns the UI generated
       cols_to_check <- if (!is.null(rv$glens_etable_final) && ncol(rv$glens_etable_final) > 0) {
         names(rv$glens_etable_final)
