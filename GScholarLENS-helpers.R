@@ -59,7 +59,7 @@ detect_vpn <- function(rv, output) {
     rv$log_text <- paste(
       rv$log_text,
       "Warning: Detected VPN. Skipping APIs.",
-      sep = "\n"
+      sep = "<br>"
     )
     # output$log <- renderText({ rv$log_text })
   }
@@ -67,11 +67,11 @@ detect_vpn <- function(rv, output) {
 }
 
 #Flow functions
-extend_input_table <- function(rv, df_tmp) {
+extend_input_table <- function(rv, df, author_match_regex, target_variants_norm) {
   print("extend_input_table(rv):")
-  if (nrow(df_tmp) <= 0) {
+  if (nrow(df) <= 0) {
     rv$log_text <- paste(rv$log_text, paste("No data to extend."), sep="<br>")
-    return(df_tmp)
+    return(df)
   }
   
   # --- NEW BYPASS: Check if there are actually keywords to search for ---
@@ -81,7 +81,7 @@ extend_input_table <- function(rv, df_tmp) {
   if (length(kw_list) == 0) {
     # # # No keywords provided! Bypass filtering and show all data.
     # # # We assign everything as a "Co_Author" with a weight of 1.0 so plots still render safely.
-    # df_tmp <- df_tmp %>%
+    # df <- df %>%
     #   mutate(
     #     label = "No_Filter",
     #     matched_token = NA_character_,
@@ -96,8 +96,21 @@ extend_input_table <- function(rv, df_tmp) {
     #     position_rank = 3L
     #   ) %>%
     #   arrange(desc(Adjusted_Citations))
-    
-    return(df_tmp) # Exit the function early
+    df <- df %>%
+      dplyr::mutate(
+        label = "No_Filter",
+        matched_token = NA_character_,
+        First_Author = 0L,
+        Second_Author = 0L,
+        Co_Author = 0L,
+        Corresponding_Author = 0L,
+        Author_Count = stringr::str_count(Authors, ",") + 1,
+        Adjustment_Weights = 0.0,
+        Adjusted_Citations = suppressWarnings(as.numeric(Citations)),
+        Year = as.integer(Year),
+        position_rank = 0L # 3 represents Co_Author
+      )
+    return(df) # Exit the function early
   }
   
   # --- Retrieve toggles from rv (Fallback to TRUE if missing) ---
@@ -114,13 +127,13 @@ extend_input_table <- function(rv, df_tmp) {
     delims <- list(Authors = ",")
   }
   
-  valid_search_cols <- intersect(search_cols, colnames(df_tmp))
+  valid_search_cols <- intersect(search_cols, colnames(df))
   
   if(length(valid_search_cols) == 0) {
     valid_search_cols <- "Authors"
   }
   
-  glens_extended_table <- df_tmp %>%
+  glens_extended_table <- df %>%
     rowwise() %>%
     mutate(
       dec = list({
@@ -348,40 +361,34 @@ extend_input_table <- function(rv, df_tmp) {
 
 compute_indices <- function(rv, df) {
   
-  # Use FINAL ordered table only
-  # df <- rv$glens_etable_final
-  # df <- rv$glens_year_filtered
-  
-  # Strict H-index (as you changed)
+  # Strict H-index (Requires a NUMERIC VECTOR)
   compute_h_index <- function(citations_vec) {
+    # Ensure the input is safely numeric, not characters!
+    citations_vec <- suppressWarnings(as.numeric(citations_vec))
     v <- citations_vec[!is.na(citations_vec)]
+    
     if (length(v) == 0) return(0L)
     v <- sort(v, decreasing = TRUE)
     h <- 0L
     for (i in seq_along(v)) {
-      #STRICT
-      #if (v[i] > i) h <- i else break 
-      #Correct/Standard way
       if (v[i] >= i) h <- i else break 
     }
     as.integer(h)
   }
   
-  positions <- c("First_Author",
-                 "Second_Author",
-                 "Co_Author",
-                 "Corresponding_Author")
+  positions <- c("First_Author", "Second_Author", "Co_Author", "Corresponding_Author")
   
-  if(!all(positions %in% colnames(df))){
-    rv$log_text <- paste(rv$log_text, paste("Cannot compute indices: Missing columns - ",paste(positions, collapse=",")),sep="<br>")
-    return()
+  # Return NULL safely if data isn't ready
+  if(!all(positions %in% colnames(df))) {
+    return(NULL) 
   }
   
   results <- list()
-  
   for (pos in positions) {
     sub <- df %>% filter(.data[[pos]] == 1)
-    h <- compute_h_index(sub %>% arrange(Citations) %>% select(Citations))
+    
+    # FIX: Use pull() to extract a vector, not select() which returns a tibble
+    h <- compute_h_index(sub %>% pull(Citations))
     results[[pos]] <- list(
       h_index = h,
       n_papers = nrow(sub)
@@ -389,182 +396,226 @@ compute_indices <- function(rv, df) {
   }
   
   # Classical H-indices
-  h_cites <- compute_h_index(df %>% arrange(Citations) %>% select(Citations))
-  h_adjcites <- compute_h_index(df %>% arrange(Adjusted_Citations) %>% select(Adjusted_Citations))
+  h_cites <- compute_h_index(df %>% pull(Citations))
+  h_adjcites <- compute_h_index(df %>% pull(Adjusted_Citations))
   
-  rv$summary_table <- tibble(
+  # Build table safely into a local variable
+  summary_tab <- tibble(
     Position = positions,
     H_index = sapply(results, function(x) x$h_index),
     Num_papers = sapply(results, function(x) x$n_papers)
   )
   
-  rv$summary_table <- rv$summary_table %>%
+  summary_tab <- summary_tab %>%
     add_row(Position = "h-index(Citations)",
             H_index = h_cites,
             Num_papers = nrow(df))
-  # %>%
-  #   add_row(Position = "h-index(Adj.Citations)",
-  #           H_index = h_adjcites,
-  #           Num_papers = nrow(df))
   
-  # # Correct Sh-index: sum ONLY the 4 positional H indices
-  # rv$sh_index <- sum(rv$summary_table$H_index[
-  #   rv$summary_table$Position %in% positions
-  # ], na.rm = TRUE)
-  
-  rv$sh_index <- h_adjcites
-  
-  shinyjs::show("sh_index")
-  shinyjs::show("summary_table")
-  shinyjs::show("extended_table")
-  
+  # Return pure data! No rv$ assignments, no shinyjs calls.
+  return(list(
+    sh_index = h_adjcites, 
+    summary_table = summary_tab
+  ))
 }
 
-match_journals <- function(rv, df_tmp){
-  print("match_journals(rv):")
+match_journals <- function(rv, df){
+  # print("match_journals(rv):")
+  # need_cols <- c("Title","Authors","Adjusted_Citations","First_Author","Second_Author","Co_Author","Corresponding_Author")
+  # missing_cols <- setdiff(need_cols, names(df))
+  # if (length(missing_cols) > 0) {
+  #   # warning(paste("Author-level file missing columns:", paste(missing_cols, collapse = ", ")))
+  #   rv$log_text <- paste("<span style='color: red;'>Author-level file missing columns:", paste(missing_cols, collapse = ", "),"</span>",sep="<br>")
+  #   return(df)
+  # }
+  # 
+  # # --- Safely extract a target journal column to normalize ---
+  # # Look for User_Journal first, fallback to Journal
+  # if ("User_Journal" %in% names(df)) {
+  #   target_journal_col <- df$User_Journal
+  # } else if ("Journal" %in% names(df)) {
+  #   target_journal_col <- df$Journal
+  # } else {
+  #   warning("No Journal or User_Journal column found to match against!")
+  #   return(df)
+  # }
+  # 
+  # unique_journals <- unique(target_journal_col)
+  # cat("Unique journals to match:", length(unique_journals), "\n")
+  # 
+  # df$Name_norm <- sapply(target_journal_col, function(x) normalize_journal(x))
+  # 
+  # match_idx <- unique(
+  #   bind_rows(
+  #     future_sapply(
+  #       seq_len(length(unique_journals)),
+  #       getExcelColumns,
+  #       unique_journals = unique_journals,
+  #       jsonData = jcr_names_norm,
+  #       simplify = FALSE,
+  #       future.packages = c("stringr", "dplyr"),
+  #       future.globals = c("jcr_names_norm", "getExcelColumns"),
+  #       future.seed = TRUE
+  #     )
+  #   )
+  # )
+  # 
+  # print(paste("CHECK FLOW1:",colnames(jcr_names_norm),collapse=","))
+  # print(paste("CHECK FLOW2:",colnames(match_idx),collapse=","))
+  # # print(paste("match_idx:", paste(match_idx,collapse = ",")))
+  # if (nrow(match_idx) > 0) {
+  #   jcr_matched <- inner_join(jcr_names_norm, match_idx, by = c("Name_norm", "Qscore", "JIF5Years"))
+  # } else {
+  #   jcr_matched <- jcr_names_norm[0, ] 
+  # }
+  # 
+  # # --- CRITICAL FIX: Isolate JCR columns before joining ---
+  # jcr_subset <- jcr_matched %>%
+  #   dplyr::select(Name_norm, 
+  #                 JCR_Journal = Name, 
+  #                 JCR_Qscore = Qscore, 
+  #                 JCR_JIF5Years = JIF5Years) %>%
+  #   dplyr::distinct(Name_norm, .keep_all = TRUE)
+  # 
+  # # --- NEW: PRE-JOIN CLEANUP ---
+  # # If this runs multiple times, JCR_Journal will already exist in the app.
+  # # We must drop it before the join to prevent .x and .y collisions!
+  # if ("JCR_Journal" %in% names(df)) {
+  #   df <- df %>% dplyr::select(-JCR_Journal)
+  # }
+  # 
+  # print("CHECK FLOW3:")
+  # # Perform the join. Because we dropped the old JCR_Journal, 
+  # # NO OTHER COLUMNS will overlap, and no .x or .y suffixes can be created!
+  # df_auth_joined <- dplyr::left_join(df, jcr_subset, by = "Name_norm")
+  # 
+  # # --- 1. Safely resolve Qscore ---
+  # if ("Qscore" %in% names(df_auth_joined)) {
+  #   # If app already has Qscore, fill missing ones with JCR, but prioritize JCR
+  #   df_auth_joined <- df_auth_joined %>%
+  #     dplyr::mutate(Qscore = dplyr::coalesce(as.character(JCR_Qscore), as.character(Qscore))) %>%
+  #     dplyr::select(-JCR_Qscore)
+  # } else {
+  #   # Otherwise just rename the newly brought over JCR column
+  #   df_auth_joined <- df_auth_joined %>% dplyr::rename(Qscore = JCR_Qscore)
+  # }
+  # 
+  # # --- 2. Safely resolve JIF5Years ---
+  # if ("JIF5Years" %in% names(df_auth_joined)) {
+  #   df_auth_joined <- df_auth_joined %>%
+  #     dplyr::mutate(JIF5Years = dplyr::coalesce(as.character(JCR_JIF5Years), as.character(JIF5Years))) %>%
+  #     dplyr::select(-JCR_JIF5Years)
+  # } else {
+  #   df_auth_joined <- df_auth_joined %>% dplyr::rename(JIF5Years = JCR_JIF5Years)
+  # }
+  # 
+  # # Perform the join. Because jcr_subset ONLY has Name_norm + 3 unique columns, 
+  # # NO OTHER COLUMNS in df will be touched, renamed, or suffixed!
+  # df_auth_joined <- dplyr::left_join(df, jcr_subset, by = "Name_norm")
+  # 
+  # # --- 1. Safely resolve Qscore ---
+  # if ("Qscore" %in% names(df_auth_joined)) {
+  #   # If app already has Qscore, fill missing ones with JCR, but prioritize JCR
+  #   df_auth_joined <- df_auth_joined %>%
+  #     dplyr::mutate(Qscore = dplyr::coalesce(as.character(JCR_Qscore), as.character(Qscore))) %>%
+  #     dplyr::select(-JCR_Qscore)
+  # } else {
+  #   # Otherwise just rename the newly brought over JCR column
+  #   df_auth_joined <- df_auth_joined %>% dplyr::rename(Qscore = JCR_Qscore)
+  # }
+  # 
+  # # --- 2. Safely resolve JIF5Years ---
+  # if ("JIF5Years" %in% names(df_auth_joined)) {
+  #   df_auth_joined <- df_auth_joined %>%
+  #     dplyr::mutate(JIF5Years = dplyr::coalesce(as.character(JCR_JIF5Years), as.character(JIF5Years))) %>%
+  #     dplyr::select(-JCR_JIF5Years)
+  # } else {
+  #   df_auth_joined <- df_auth_joined %>% dplyr::rename(JIF5Years = JCR_JIF5Years)
+  # }
+  # 
+  # print(paste("colnames(df_auth_joined):",paste(colnames(df_auth_joined), collapse=",")))
+  # # Note: "User_Journal" and "Journal" are left completely intact exactly as they were!
+  
+  print("match_journals(rv): Starting matching...")
+  
+  # 1. Validation
   need_cols <- c("Title","Authors","Adjusted_Citations","First_Author","Second_Author","Co_Author","Corresponding_Author")
-  missing_cols <- setdiff(need_cols, names(df_tmp))
+  missing_cols <- setdiff(need_cols, names(df))
   if (length(missing_cols) > 0) {
-    # warning(paste("Author-level file missing columns:", paste(missing_cols, collapse = ", ")))
-    rv$log_text <- paste("<span style='color: red;'>Author-level file missing columns:", paste(missing_cols, collapse = ", "),"</span>",sep="<br>")
-    return(df_tmp)
+    rv$log_text <- paste(rv$log_text, paste0("<span style='color: red;'>Missing columns: ", paste(missing_cols, collapse = ", "), "</span>"), sep="<br>")
+    return(df) # Return early if data is broken
   }
   
-  # --- Safely extract a target journal column to normalize ---
-  # Look for User_Journal first, fallback to Journal
-  if ("User_Journal" %in% names(df_tmp)) {
-    target_journal_col <- df_tmp$User_Journal
-  } else if ("Journal" %in% names(df_tmp)) {
-    target_journal_col <- df_tmp$Journal
-  } else {
-    warning("No Journal or User_Journal column found to match against!")
-    return(df_tmp)
+  # 2. Determine Column
+  target_journal_col <- if ("User_Journal" %in% names(df)) df$User_Journal else df$Journal
+  if (is.null(target_journal_col)) {
+    return(df)
   }
   
+  # 3. Normalization & Matching
+  df$Name_norm <- sapply(target_journal_col, normalize_journal)
   unique_journals <- unique(target_journal_col)
-  cat("Unique journals to match:", length(unique_journals), "\n")
   
-  df_tmp$Name_norm <- sapply(target_journal_col, function(x) normalize_journal(x))
+  match_idx <- unique(bind_rows(
+    future_sapply(seq_along(unique_journals), getExcelColumns, 
+                  unique_journals = unique_journals, jsonData = jcr_names_norm, 
+                  simplify = FALSE, future.packages = c("stringr", "dplyr"))
+  ))
   
-  match_idx <- unique(
-    bind_rows(
-      future_sapply(
-        seq_len(length(unique_journals)),
-        getExcelColumns,
-        unique_journals = unique_journals,
-        jsonData = jcr_names_norm,
-        simplify = FALSE,
-        future.packages = c("stringr", "dplyr"),
-        future.globals = c("jcr_names_norm", "getExcelColumns"),
-        future.seed = TRUE
-      )
-    )
-  )
-  
-  print(paste("CHECK FLOW1:",colnames(jcr_names_norm),collapse=","))
-  print(paste("CHECK FLOW2:",colnames(match_idx),collapse=","))
-  # print(paste("match_idx:", paste(match_idx,collapse = ",")))
-  if (nrow(match_idx) > 0) {
-    jcr_matched <- inner_join(jcr_names_norm, match_idx, by = c("Name_norm", "Qscore", "JIF5Years"))
+  # 4. Join with JCR Data
+  jcr_subset <- if (nrow(match_idx) > 0) {
+    inner_join(jcr_names_norm, match_idx, by = c("Name_norm", "Qscore", "JIF5Years")) %>%
+      dplyr::select(Name_norm, JCR_Journal = Name, JCR_Qscore = Qscore, JCR_JIF5Years = JIF5Years) %>%
+      dplyr::distinct(Name_norm, .keep_all = TRUE)
   } else {
-    jcr_matched <- jcr_names_norm[0, ] 
+    NULL
   }
   
-  # --- CRITICAL FIX: Isolate JCR columns before joining ---
-  jcr_subset <- jcr_matched %>%
-    dplyr::select(Name_norm, 
-                  JCR_Journal = Name, 
-                  JCR_Qscore = Qscore, 
-                  JCR_JIF5Years = JIF5Years) %>%
-    dplyr::distinct(Name_norm, .keep_all = TRUE)
+  # 5. Clean up existing columns to prevent .x / .y conflicts
+  df <- df %>% dplyr::select(-any_of(c("JCR_Journal", "JCR_Qscore", "JCR_JIF5Years")))
   
-  # --- NEW: PRE-JOIN CLEANUP ---
-  # If this runs multiple times, JCR_Journal will already exist in the app.
-  # We must drop it before the join to prevent .x and .y collisions!
-  if ("JCR_Journal" %in% names(df_tmp)) {
-    df_tmp <- df_tmp %>% dplyr::select(-JCR_Journal)
+  # 6. Merge and Coalesce
+  if (!is.null(jcr_subset)) {
+    # Ensure columns exist before coalescing to avoid errors
+    if (!"Qscore" %in% names(df)) df$Qscore <- "NA"
+    if (!"JIF5Years" %in% names(df)) df$JIF5Years <- "0"
+    
+    df <- left_join(df, jcr_subset, by = "Name_norm") %>%
+      mutate(
+        # Use JCR data if available, otherwise keep existing/default
+        Qscore = coalesce(as.character(JCR_Qscore), as.character(Qscore)),
+        JIF5Years = coalesce(as.character(JCR_JIF5Years), as.character(JIF5Years))
+      ) %>%
+      dplyr::select(-any_of(c("JCR_Qscore", "JCR_JIF5Years")))
   }
   
-  print("CHECK FLOW3:")
-  # Perform the join. Because we dropped the old JCR_Journal, 
-  # NO OTHER COLUMNS will overlap, and no .x or .y suffixes can be created!
-  df_auth_joined <- dplyr::left_join(df_tmp, jcr_subset, by = "Name_norm")
-  
-  # --- 1. Safely resolve Qscore ---
-  if ("Qscore" %in% names(df_auth_joined)) {
-    # If app already has Qscore, fill missing ones with JCR, but prioritize JCR
-    df_auth_joined <- df_auth_joined %>%
-      dplyr::mutate(Qscore = dplyr::coalesce(as.character(JCR_Qscore), as.character(Qscore))) %>%
-      dplyr::select(-JCR_Qscore)
-  } else {
-    # Otherwise just rename the newly brought over JCR column
-    df_auth_joined <- df_auth_joined %>% dplyr::rename(Qscore = JCR_Qscore)
-  }
-  
-  # --- 2. Safely resolve JIF5Years ---
-  if ("JIF5Years" %in% names(df_auth_joined)) {
-    df_auth_joined <- df_auth_joined %>%
-      dplyr::mutate(JIF5Years = dplyr::coalesce(as.character(JCR_JIF5Years), as.character(JIF5Years))) %>%
-      dplyr::select(-JCR_JIF5Years)
-  } else {
-    df_auth_joined <- df_auth_joined %>% dplyr::rename(JIF5Years = JCR_JIF5Years)
-  }
-  
-  # Perform the join. Because jcr_subset ONLY has Name_norm + 3 unique columns, 
-  # NO OTHER COLUMNS in df_tmp will be touched, renamed, or suffixed!
-  df_auth_joined <- dplyr::left_join(df_tmp, jcr_subset, by = "Name_norm")
-  
-  # --- 1. Safely resolve Qscore ---
-  if ("Qscore" %in% names(df_auth_joined)) {
-    # If app already has Qscore, fill missing ones with JCR, but prioritize JCR
-    df_auth_joined <- df_auth_joined %>%
-      dplyr::mutate(Qscore = dplyr::coalesce(as.character(JCR_Qscore), as.character(Qscore))) %>%
-      dplyr::select(-JCR_Qscore)
-  } else {
-    # Otherwise just rename the newly brought over JCR column
-    df_auth_joined <- df_auth_joined %>% dplyr::rename(Qscore = JCR_Qscore)
-  }
-  
-  # --- 2. Safely resolve JIF5Years ---
-  if ("JIF5Years" %in% names(df_auth_joined)) {
-    df_auth_joined <- df_auth_joined %>%
-      dplyr::mutate(JIF5Years = dplyr::coalesce(as.character(JCR_JIF5Years), as.character(JIF5Years))) %>%
-      dplyr::select(-JCR_JIF5Years)
-  } else {
-    df_auth_joined <- df_auth_joined %>% dplyr::rename(JIF5Years = JCR_JIF5Years)
-  }
-  
-  print(paste("colnames(df_auth_joined):",paste(colnames(df_auth_joined), collapse=",")))
-  # Note: "User_Journal" and "Journal" are left completely intact exactly as they were!
-  
-  # --- 3. Fallback match for unmatched JCR_Journals ---
-  unmatched <- which(is.na(df_auth_joined$JCR_Journal))
+  # 7. Fallback Regex Matching (Simplified loop)
+  unmatched <- which(is.na(df$JCR_Journal))
   if (length(unmatched) > 0) {
     cat("Trying fallback substring match for", length(unmatched), "journals...\n")
     for (i in unmatched) {
-      jn <- df_auth_joined$Name_norm[i]
+      jn <- df$Name_norm[i]
       if (is.na(jn) || nchar(jn) < 3) next
       hits <- grep(jn, jcr_names_norm$Name_norm, value = TRUE)
       
       if (length(hits) == 1) {
         idx <- which(jcr_names_norm$Name_norm == hits)[1]
-        df_auth_joined$JCR_Journal[i] <- jcr_names_norm$Name[idx]
-        df_auth_joined$Qscore[i] <- as.character(jcr_names_norm$Qscore[idx])
+        df$JCR_Journal[i] <- jcr_names_norm$Name[idx]
+        df$Qscore[i] <- as.character(jcr_names_norm$Qscore[idx])
       }
     }
   }
   
   # Final formatting
-  df_auth_joined <- df_auth_joined %>%
+  df <- df %>%
     dplyr::mutate(Qscore = dplyr::if_else(is.na(Qscore), "Unranked", as.character(Qscore)))
   
-  n_unmatched <- length(which(is.na(df_auth_joined$JCR_Journal)))
+  n_unmatched <- length(which(is.na(df$JCR_Journal)))
   cat("Number of unmatched journal rows:", n_unmatched, "\n")
   
   # Save the protected dataframe back to reactive values
   # rv$glens_etable_final <- df_auth_joined %>% dplyr::distinct()
-  df_auth_joined <- df_auth_joined %>% dplyr::distinct()
-  return(df_auth_joined)
+  df <- df %>% dplyr::distinct()
+  return(df)
 }
 
 refresh_data <- function(rv, session){

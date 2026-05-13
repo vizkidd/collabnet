@@ -1,6 +1,7 @@
 # server.R (or inside server function)
 suppressPackageStartupMessages(require(shiny))
 suppressPackageStartupMessages(require(shinyjs))
+suppressPackageStartupMessages(require(shinyWidgets))
 suppressPackageStartupMessages(require(promises))
 suppressPackageStartupMessages(require(future))
 suppressPackageStartupMessages(require(dplyr))
@@ -589,6 +590,50 @@ ui <- fluidPage(
     
       });
     ")),
+    tags$script(HTML("
+    $(document).ready(function() {
+      // 1. Wait a moment for Shiny to render the initial UI
+      setTimeout(function() {
+        
+        // 2. Loop through every custom-card
+        $('.custom-card').each(function() {
+          // Find the first element (usually your header/title like h3 or div)
+          var firstChild = $(this).children().first();
+          
+          // Force it to use flexbox so we can push the button to the right
+          firstChild.css({
+            'display': 'flex', 
+            'justify-content': 'space-between', 
+            'align-items': 'center',
+            'cursor': 'pointer' // Make the whole header look clickable
+          });
+          
+          // Inject the minimize button
+          firstChild.append('<button type=\"button\" class=\"btn-minimize\" style=\"background:transparent; border:none; font-size:1.5em; line-height:1; cursor:pointer; color:inherit;\">&minus;</button>');
+        });
+
+        // 3. Attach the click event to toggle the content
+        $(document).on('click', '.btn-minimize, .custom-card > :first-child', function(e) {
+          // Prevent double-triggering if they click the button directly
+          e.stopPropagation(); 
+          
+          var card = $(this).closest('.custom-card');
+          var button = card.find('.btn-minimize');
+          
+          // Toggle everything in the card EXCEPT the header
+          card.children().not(':first').slideToggle(300, function() {
+            // Swap the minus/plus icon based on visibility
+            if ($(this).is(':visible')) {
+              button.html('&minus;');
+            } else {
+              button.html('&#43;'); // Plus symbol
+            }
+          });
+        });
+        
+      }, 500); // 500ms delay ensures UI is loaded
+    });
+  ")),
   ),
   
   # 1. Custom Title Header with Settings & Dark Mode
@@ -672,7 +717,7 @@ ui <- fluidPage(
             "circle-question",
             "data-toggle" = "tooltip",
             style = "color: #007bc2; cursor: help;",
-            title = "Type the lookup-keywords here line-by-line."
+            title = "Type the lookup-keywords here line-by-line. Keywords are matched in-order."
             )
         ),
         textAreaInput("author_list",  value = "", rows = 2, width = "100%", label = NULL),
@@ -753,7 +798,21 @@ ui <- fluidPage(
                             word-wrap: break-word; 
                             max-height: 400px; 
                             overflow-y: auto;"
-                          )
+                          ),
+               tags$div(style = "display: flex; justify-content: center; margin-bottom: 15px; padding-top: 10px;",
+                        
+                        shinyWidgets::actionBttn(
+                          inputId = "clear_log", 
+                          label = "Clear Log", 
+                          icon = icon("trash-can"),
+                          style = "minimal", 
+                          color = "danger",
+                          size = "xs",       # Options: "xs", "sm", "md" (default), "lg"
+                          no_outline = TRUE,
+                          block = FALSE      # Set to FALSE (or remove) to stop it from stretching
+                        )
+                        
+               )
       )
     ),
     
@@ -763,7 +822,7 @@ ui <- fluidPage(
       tags$div(
         class = "custom-card",
         style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; margin-bottom: 25px;",
-        h3("Author Impact Metrics", style = "color: #4B8BBE; margin-top: 0; font-weight: bold;"),
+        h3("Collaboration Metrics", style = "color: #4B8BBE; margin-top: 0; font-weight: bold;"),
         hr(style = "border-top: 1px solid #edf2f7; margin-bottom: 20px;"), # Softened the hr() line
         
         fluidRow(
@@ -811,16 +870,16 @@ ui <- fluidPage(
       # 6) Network graph - filtered
       tags$div(
         class = "custom-card",
-        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #D6A77A; margin-bottom: 25px;",
-        h3("Network Graph - Filtered", style = "color: #D6A77A; margin-top: 0; font-weight: bold;"),
+        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #C96480; margin-bottom: 25px;",
+        h3("Network Graph - Filtered", style = "color: #C96480; margin-top: 0; font-weight: bold;"),
         hr(),
         visNetwork::visNetworkOutput("network_filtered"),
       ),
       # 7) Network graph - full
       tags$div(
         class = "custom-card",
-        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #D6A77A; margin-bottom: 25px;",
-        h3("Network Graph - Full", style = "color: #D6A77A; margin-top: 0; font-weight: bold;"),
+        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #554348; margin-bottom: 25px;",
+        h3("Network Graph - Full", style = "color: #554348; margin-top: 0; font-weight: bold;"),
         hr(),
         visNetwork::visNetworkOutput("network_full"),
       ),
@@ -839,7 +898,7 @@ ui <- fluidPage(
                box-shadow: 0 10px 25px rgba(0,0,0,0.5); width: 40%; min-width: 400px;
                text-align: center; border-top: 6px solid #f39c12;",
             
-            h3("Processing Data", style = "margin-top: 0; color: #2c3e50; font-weight: bold;"),
+            h3("Processing Data...", style = "margin-top: 0; color: #2c3e50; font-weight: bold;"),
             p("Please wait while CollabNET fetches and analyzes the records. This may take a moment.", 
               style = "color: #7f8c8d; margin-bottom: 25px;"),
             
