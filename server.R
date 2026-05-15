@@ -28,6 +28,8 @@ suppressPackageStartupMessages(require(httr2))
 suppressPackageStartupMessages(require(jsonlite))
 suppressPackageStartupMessages(require(ipc))
 suppressPackageStartupMessages(require(parallel))
+suppressPackageStartupMessages(require(ipc))
+# suppressPackageStartupMessages(require(QuickBLAST))
 
 is_WASM <- grepl(pattern="wasm",x=Sys.info()["machine"])
 
@@ -56,7 +58,7 @@ if(xfun::is_windows()){
   system("ioreg -l | grep IOPlatformSerialNumber", intern = TRUE)
 }else{
   stop("Could not find operating system!")
-}
+} 
 }, error=function(e){
   #Probably running in webR with WASM so lets take the session cookie
   # We are likely in WebR/WASM. System commands are sandboxed.
@@ -211,15 +213,15 @@ server <- function(input, output, session) {
   )
   
   shinyjs::hide(id =  "year_slider")
-  shinyjs::hide("sh_index")
-  shinyjs::hide("summary_table")
+  # shinyjs::hide("sh_index")
+  # shinyjs::hide("summary_table")
   shinyjs::hide("acounts_plot")
   shinyjs::hide("ccounts_plot")
   shinyjs::hide("cdist_plot")
   shinyjs::hide("aperc_plot")
   shinyjs::hide("cperc_plot")
   shinyjs::hide("network_filtered")
-  shinyjs::hide("network_full")
+  # shinyjs::hide("network_full")
   # shinyjs::hide("extended_table")
   shinyjs::hide("progress_overlay") 
   
@@ -231,7 +233,7 @@ server <- function(input, output, session) {
       tryCatch({
         dec <- sodium::data_decrypt(readRDS(path), key=openssl::sha256(glens_env$privkey_dec))
         return(trimws(rawToChar(dec)))
-      }, error = function(e) return(env_fallback)) # Fallback on decrypt error
+      }, error = function(e) { return(env_fallback) }) # Fallback on decrypt error
     }
     return(env_fallback) # Fallback if file is missing (WebR refresh)
   }
@@ -384,19 +386,416 @@ server <- function(input, output, session) {
   #   )
   # })
   
+  observeEvent(input$upload_btn, {
+    
+    tryCatch({
+      # --- SUCCESS STATE ---
+      shinyjs::runjs("
+      document.getElementById('upload_text').innerText = ' Upload Success!';
+      document.getElementById('upload_icon').className = 'fa fa-check';
+      document.getElementById('upload_icon').style.color = '#28a745';
+    ")
+      
+      message("FILE UPLOADED!")
+      
+      # 2. Iterate through each uploaded file
+      imported_data_list <- lapply(seq_len(nrow(input$upload_btn)), function(i) {
+        file_name <- input$upload_btn$name[i]
+        file_path <- input$upload_btn$datapath[i]
+        ext <- tolower(tools::file_ext(file_name))
+        
+        df <- switch(ext,
+                     "csv"  = read.csv(file_path, stringsAsFactors = FALSE, check.names = FALSE),
+                     "tsv"  = read.delim(file_path, sep = "\t", stringsAsFactors = FALSE, check.names = FALSE),
+                     "xlsx" = readxl::read_excel(file_path),
+                     "xls"  = readxl::read_excel(file_path),
+                     {
+                       warning(paste("Unsupported file extension:", ext))
+                       NULL 
+                     }
+        )
+        return(df)
+      })
+      
+      rv$imported_data_list <- Filter(Negate(is.null), imported_data_list)
+      
+      # --- TRANSITION DELAY ---
+      shinyjs::delay(1500, {
+        shinyjs::runjs("
+        document.getElementById('upload_text').innerText = '';
+        document.getElementById('upload_icon').className = 'fa fa-upload';
+        document.getElementById('upload_icon').style.color = ''; 
+        document.getElementById('upload_btn').value = ''; 
+      ")
+        
+        showModal(modalDialog(
+          title = tags$span(icon("columns", lib = "font-awesome"), " Step 1: Column Mapping"),
+          size = "m",
+          radioButtons("col_import_type", label = "Choose Column import type:", inline = TRUE, choices = c("Common Columns", "All Columns", "Map")),
+          uiOutput("column_mapping_ui"),
+          footer = tagList(
+            modalButton("Cancel"),
+            actionButton("next_row_merge", "Next: Configure Rows", 
+                         class = "btn-primary", 
+                         disabled = "disabled", 
+                         style = "pointer-events: none; opacity: 0.5;")
+          ),
+          easyClose = FALSE
+        ))
+        
+        if (is.null(rv$glens_full_table) || ncol(rv$glens_full_table) == 0) {
+          updateRadioButtons(session, "col_import_type", selected = "All Columns")
+          shinyjs::delay(100, {
+            shinyjs::runjs("$('input[name=\"col_import_type\"][value=\"Common Columns\"]').prop('disabled', true);")
+          })
+        }
+      })
+    }, error = function(e) {
+      shinyjs::runjs("
+      document.getElementById('upload_text').innerText = ' Upload Failed';
+      document.getElementById('upload_icon').className = 'fa fa-times';
+      document.getElementById('upload_icon').style.color = '#dc3545';
+    ")
+      showNotification(paste("Failed to process file:", e$message), type = "error", duration = 5)
+      rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'>Failed to process file:", e$message, "</span>"), sep="<br>")
+      
+      shinyjs::delay(3000, {
+        shinyjs::runjs("
+        document.getElementById('upload_text').innerText = '';
+        document.getElementById('upload_icon').className = 'fa fa-upload';
+        document.getElementById('upload_icon').style.color = '';
+        document.getElementById('upload_btn').value = '';
+      ")
+      })
+    })
+  })
+  
+  observeEvent(input$next_row_merge, {
+    req(rv$imported_data_list)
+    imported_data_list <- rv$imported_data_list
+    print("HERE2!!!!")
+    rv$saved_col_import_type <- input$col_import_type 
+    all_uploaded_cols <- unique(unlist(lapply(imported_data_list, names)))
+    
+    cols_to_keep <- c()
+    rename_map <- list()
+    detected_mv_cols <- list()
+    
+    for (col in all_uploaded_cols) {
+      safe_id <- make.names(col)
+      is_checked <- input[[paste0("map_chk_", safe_id)]]
+      if (is.null(is_checked)) is_checked <- TRUE 
+      
+      if (isTRUE(is_checked)) {
+        cols_to_keep <- c(cols_to_keep, col)
+        mapped_name <- input[[paste0("map_name_", safe_id)]]
+        final_name <- col
+        
+        if (!is.null(mapped_name) && trimws(mapped_name) != "" && trimws(mapped_name) != col) {
+          rename_map[[col]] <- trimws(mapped_name)
+          final_name <- trimws(mapped_name)
+        }
+        
+        delim_val <- input[[paste0("map_delim_", safe_id)]]
+        if (!is.null(delim_val) && trimws(delim_val) != "") {
+          detected_mv_cols[[final_name]] <- trimws(delim_val)
+        }
+      }
+    }
+    
+    imported_data_list <- lapply(imported_data_list, function(df) {
+      valid_cols <- intersect(names(df), cols_to_keep)
+      df <- df[, valid_cols, drop = FALSE]
+      current_names <- names(df)
+      for (i in seq_along(current_names)) {
+        if (current_names[i] %in% names(rename_map)) {
+          current_names[i] <- rename_map[[current_names[i]]]
+        }
+      }
+      names(df) <- make.unique(current_names, sep = "_")
+      return(df)
+    })
+    
+    merged_df <- dplyr::bind_rows(imported_data_list) %>% dplyr::distinct()
+    rv$intermediate_merged_df <- merged_df
+    rv$detected_mv_cols <- detected_mv_cols
+    
+    removeModal()
+    
+    if (length(detected_mv_cols) > 0) {
+      showModal(modalDialog(
+        title = tags$span(icon("cut", lib = "font-awesome"), " Step 1.5: Confirm Splits"),
+        size = "l",
+        uiOutput("delimiter_ui"),
+        footer = tagList(
+          modalButton("Cancel"),
+          actionButton("next_after_delim", "Apply Splits & Continue to Step 2", class = "btn-warning")
+        ),
+        easyClose = FALSE
+      ))
+    } else {
+      show_row_merge_modal(rv, session)
+    }
+  })
+  
+  observeEvent(input$next_after_delim, {
+    req(rv$intermediate_merged_df, rv$detected_mv_cols)
+    merged_df <- rv$intermediate_merged_df
+    
+    for(col in names(rv$detected_mv_cols)) {
+      action <- input[[paste0("delim_action_", make.names(col))]]
+      delim_val <- input[[paste0("delim_val_", make.names(col))]]
+      
+      if (!is.null(action) && action == "rows" && !is.null(delim_val) && trimws(delim_val) != "") {
+        sep_regex <- paste0("\\s*", escape_regex_inline(delim_val), "\\s*")
+        merged_df <- merged_df %>% 
+          tidyr::separate_rows(dplyr::all_of(col), sep = sep_regex) %>%
+          dplyr::mutate(!!col := trimws(.data[[col]]))
+      }
+    }
+    
+    rv$intermediate_merged_df <- merged_df
+    removeModal()
+    show_row_merge_modal(rv, session)
+  })
+  
+  observeEvent(input$confirm_import, {
+    req(rv$intermediate_merged_df)
+    merged_df <- rv$intermediate_merged_df
+    rv$glens_full_table_tmp <- rv$glens_full_table
+    
+    # Force all columns in both datasets to be character text.
+    raw_df <- merged_df %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character))
+    
+    # -------------------------------------------------------------------------
+    # --- 1. SAFELY CONSOLIDATE & RENAME KNOWN COLUMNS (MOVED UP) ---
+    # -------------------------------------------------------------------------
+    target_mappings <- list(
+      "orcid" = c("orcid", "ORCiD", "Orcid", "ORCID"),
+      "SCOPUS_ID" = c("SCOPUS_ID", "SCOPUS ID", "Scopus ID", "Author(s) ID"),
+      "Citations" = c("Citations", "Cited by", "citedby-count"),
+      "User_Journal" = c("User_Journal", "Source title", "prism:publicationName"),
+      "doi" = c("doi", "DOI"),
+      "Authors" = c("Authors", "author")
+    )
+    
+    for(targ in names(target_mappings)) {
+      aliases <- target_mappings[[targ]]
+      # Find which of the aliases actually exist in the current dataframe
+      found_cols <- intersect(aliases, colnames(raw_df))
+      
+      if (length(found_cols) > 0) {
+        master_vec <- rep(NA_character_, nrow(raw_df))
+        
+        # Coalesce all found columns into one master vector
+        for(fc in found_cols) {
+          master_vec <- dplyr::coalesce(master_vec, as.character(raw_df[[fc]]))
+        }
+        
+        # Assign the master merged column
+        raw_df[[targ]] <- master_vec
+        
+        # Drop the old alias columns so the dataset stays clean
+        drop_cols <- setdiff(found_cols, targ)
+        if (length(drop_cols) > 0) {
+          raw_df <- raw_df %>% dplyr::select(-dplyr::all_of(drop_cols))
+        }
+      }
+    }
+    
+    # --- 2. PARSE THE TARGET AUTHORS ---
+    target_variants <- stringi::stri_omit_empty(stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n"))))
+    target_variants <- target_variants[target_variants != ""]
+    
+    if(length(target_variants) > 0) {
+      rv$target_variants_norm <- lapply(setNames(target_variants, target_variants), function(v) {
+        vn <- normalize_name(v)
+        list(norm = vn, parts = extract_parts(vn))
+      })
+      rv$author_match_regex <- build_name_regex_for_variants(target_variants)
+    } else {
+      rv$target_variants_norm <- NULL
+      rv$author_match_regex <- NULL
+    }
+    
+    print("confirm_import:extend_input_table():")
+    # --- 3. THE HEAVY LIFTING (Hybrid Paradigm) ---
+    # NOW raw_df has standardized column names!
+    extended_df <- extend_input_table(rv, raw_df, rv$author_match_regex, rv$target_variants_norm)
+    merged_df <- match_journals(rv, extended_df)
+    
+    # --- 4. NA REMOVAL ---
+    # Keep rows if ANY column has a non-NA value (drops rows where ALL are NA)
+    merged_df <- merged_df %>%
+      dplyr::filter(dplyr::if_any(dplyr::everything(), ~ !is.na(.)))
+    
+    # Keep columns if they don't have ALL NA values (drops columns where ALL are NA)
+    merged_df <- merged_df %>%
+      dplyr::select(dplyr::where(~ !all(is.na(.))))
+    
+    # --- 5. HANDLE ROW LOGIC ---
+    if (input$row_import_type == "New" || is.null(rv$glens_full_table)) {
+      glens_full_table <- merged_df
+      
+    } else if (input$row_import_type == "Append") {
+      
+      if (rv$saved_col_import_type == "Common Columns") {
+        final_common_cols <- intersect(names(rv$glens_full_table), names(merged_df))
+        glens_full_table <- dplyr::bind_rows(
+          rv$glens_full_table[, final_common_cols, drop = FALSE],
+          merged_df[, final_common_cols, drop = FALSE]
+        )
+      } else {
+        print("MERGING:")
+        glens_full_table <- dplyr::bind_rows(rv$glens_full_table %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character)), merged_df)
+      }
+      
+    } else if (input$row_import_type == "Merge") {
+      
+      join_keys <- input$row_merge_keys
+      join_type <- input$join_type 
+      
+      print("join_keys:")
+      print(join_keys)
+      print("join_type:")
+      print(join_type)
+      
+      if (!is.null(join_keys) && length(join_keys) > 0) {
+        
+        overlap_cols <- setdiff(intersect(names(rv$glens_full_table), names(merged_df)), join_keys)
+        
+        join_func <- switch(join_type,
+                            "inner" = dplyr::inner_join,
+                            "left"  = dplyr::left_join,
+                            "right" = dplyr::right_join,
+                            "full"  = dplyr::full_join)
+        
+        joined_df <- join_func(
+          rv$glens_full_table, 
+          merged_df, 
+          by = join_keys,  
+          suffix = c(".old", ".new"),
+          relationship = "many-to-many" 
+        )
+        
+        for(col in overlap_cols) {
+          old_col <- paste0(col, ".old")
+          new_col <- paste0(col, ".new")
+          
+          old_vals <- as.character(joined_df[[old_col]])
+          new_vals <- as.character(joined_df[[new_col]])
+          
+          joined_df[[col]] <- dplyr::coalesce(old_vals, new_vals)
+          
+          joined_df[[old_col]] <- NULL
+          joined_df[[new_col]] <- NULL
+        }
+        
+        joined_df <- joined_df %>%
+          dplyr::group_by(dplyr::across(dplyr::all_of(join_keys))) %>%
+          tidyr::fill(dplyr::everything(), .direction = "downup") %>%
+          dplyr::ungroup()
+        
+        glens_full_table <- joined_df
+        
+      } else {
+        warning("No join keys selected. Falling back to Append.")
+        glens_full_table <- dplyr::bind_rows(rv$glens_full_table %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character)), merged_df)
+      }
+    }
+    
+    if(nrow(glens_full_table) <= 0){
+      showNotification("Data import/merge returned empty rows. Try different options", type = "error", duration = 10)
+      rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'>Data import/merge returned empty rows. Try different options </span>"),sep="<br>")
+      rv$imported_data_list <- NULL
+      rv$intermediate_merged_df <- NULL
+      rv$saved_col_import_type <- NULL
+      rv$glens_full_table <- rv$glens_full_table_tmp
+      removeModal()
+      return()
+    }
+    
+    # --- 6. CHECK FOR MISSING REQUIRED COLUMNS ---
+    missing_cols <- setdiff(collabnet_required_cols, colnames(glens_full_table))
+    if(length(missing_cols) > 0) {
+      missing_str <- paste(missing_cols, collapse=", ")
+      rv$log_text <- paste(rv$log_text, 
+                           paste0("<span style='color: red;'>Missing required columns: ", missing_str, "</span>"), 
+                           sep="<br>")
+      showNotification(paste("Missing columns:", missing_str), type = "error", duration = 10)
+    }
+    
+    # Cleanup & Finalize
+    rv$glens_full_table <- dplyr::distinct(glens_full_table)
+    rv$imported_data_list <- NULL
+    rv$intermediate_merged_df <- NULL
+    rv$saved_col_import_type <- NULL
+    rv$log_text <- paste(rv$log_text, paste("Post-Import Total:",nrow(rv$glens_full_table),"lines..."),sep="<br>")
+    
+    saveRDS(rv$glens_full_table, "glens_full_table.rds")
+    
+    removeModal()
+  })
+  
+  # output$dynamic_author_filter <- renderUI({
+  #   req(input$author_list)
+  #   # 1. Get the raw text from the text area
+  #   raw_text <- input$author_list
+  #   # 2. If it's empty or NULL, don't show the panel
+  #   if (is.null(raw_text) || trimws(raw_text) == "") {
+  #     return(NULL)
+  #   }
+  #   # 3. Split by newline and remove any empty/blank lines
+  #   author_list <- strsplit(raw_text, "\n")[[1]]
+  #   author_list <- author_list[trimws(author_list) != ""]
+  #   # 4. If there is more than 1 valid author name, render the wellPanel
+  #   if (length(author_list) > 1) {
+  #     wellPanel(
+  #       tags$h5(icon("users-cog"), " Relationship Filter", class = "text-primary"),
+  #       tags$p("Filter the publication list based on how the lookup keywords interact.", class = "text-muted"),
+  #       
+  #       radioButtons(
+  #         inputId = "author_logic_gate",
+  #         label = NULL,
+  #         choices = c(
+  #           "Full Data" = "FULL",
+  #           "Co-patriot/Collaborator (OR)" = "OR",
+  #           "Companion (AND)"              = "AND",
+  #           "Rival (XOR)"                  = "XOR",
+  #           "Ignore (NOR)"                 = "NOR",
+  #           "Divide & Exclude (NAND)"                = "NAND"
+  #         ),
+  #         selected = "OR",
+  #         width = "100%"
+  #       )
+  #     )
+  #   } else {
+  #     # If 1 or 0 authors, hide the panel
+  #     return(NULL)
+  #   }
+  # })
   
   output$dynamic_author_filter <- renderUI({
     req(input$author_list)
-    # 1. Get the raw text from the text area
+    
+    # 1. Get the raw text
     raw_text <- input$author_list
-    # 2. If it's empty or NULL, don't show the panel
-    if (is.null(raw_text) || trimws(raw_text) == "") {
-      return(NULL)
-    }
-    # 3. Split by newline and remove any empty/blank lines
+    if (is.null(raw_text) || trimws(raw_text) == "") return(NULL)
+    
+    # 2. Parse the author list
     author_list <- strsplit(raw_text, "\n")[[1]]
     author_list <- author_list[trimws(author_list) != ""]
-    # 4. If there is more than 1 valid author name, render the wellPanel
+    
+    # --- STATE PRESERVATION LOGIC ---
+    # Check if the user has already selected something. 
+    # Use isolate() so that changing the radio button itself doesn't trigger this renderUI.
+    current_selection <- isolate(input$author_logic_gate)
+    
+    # Fallback to "OR" if nothing is selected yet
+    final_selected <- if (!is.null(current_selection)) current_selection else "OR"
+    # --------------------------------
+    
+    # 3. Render the panel
     if (length(author_list) > 1) {
       wellPanel(
         tags$h5(icon("users-cog"), " Relationship Filter", class = "text-primary"),
@@ -411,191 +810,17 @@ server <- function(input, output, session) {
             "Companion (AND)"              = "AND",
             "Rival (XOR)"                  = "XOR",
             "Ignore (NOR)"                 = "NOR",
-            "Divide & Exclude (NAND)"                = "NAND"
+            "Divide & Exclude (NAND)"      = "NAND"
           ),
-          selected = "OR",
+          selected = final_selected, # Use the preserved state here!
           width = "100%"
         )
       )
     } else {
-      # If 1 or 0 authors, hide the panel
       return(NULL)
     }
   })
   
-  output$column_mapping_ui <- renderUI({
-    
-    # Ensure we have data and an import type selected
-    req(rv$imported_data_list, input$col_import_type)
-    
-    # 1. Get all unique columns across all uploaded files
-    all_cols <- unique(unlist(lapply(rv$imported_data_list, names)))
-    
-    # Find columns common among the uploaded files themselves (in case they uploaded multiple CSVs at once)
-    uploaded_common <- Reduce(intersect, lapply(rv$imported_data_list, names))
-    
-    # Get the target App columns (Existing data, or the required template as a fallback)
-    app_cols <- if (!is.null(rv$glens_full_table) && ncol(rv$glens_full_table) > 0) {
-      names(rv$glens_full_table)
-    } else {
-      collabnet_required_cols
-    }
-    
-    # THE FIX: Intersect the uploaded columns with the actual App columns
-    common_cols <- intersect(uploaded_common, app_cols)
-    
-    # 2. Determine current import mode
-    import_type <- input$col_import_type
-    is_common_mode <- import_type == "Common Columns"
-    is_map_mode <- import_type == "Map"
-    has_no_common <- is_common_mode && length(common_cols) == 0
-    
-    # 3. Determine which columns to render
-    cols_to_render <- if (is_common_mode && !has_no_common) {
-      common_cols
-    } else {
-      all_cols
-    }
-    
-    # --- 4. Dynamic Info Boxes ---
-    info_box <- if (import_type == "All Columns") {
-      tags$div(
-        style = "background-color: #e3f2fd; border: 1px solid #90caf9; border-radius: 5px; padding: 10px; margin-bottom: 15px;",
-        tags$strong(icon("info-circle", style = "color: #1976d2;"), " Required CollabNET Columns:", style = "color: #1565c0;"),
-        tags$p(style = "margin-top: 5px; margin-bottom: 5px; font-family: monospace; font-size: 0.9em;", 
-               paste(collabnet_required_cols, collapse = ", ")),
-        tags$small(style = "color: #555;", "Rename your columns below to match these requirements where applicable.")
-      )
-    } else if (is_common_mode) {
-      if (has_no_common) {
-        tags$div(
-          style = "background-color: #ffebee; border: 1px solid #ef9a9a; border-radius: 5px; padding: 10px; margin-bottom: 15px;",
-          tags$strong(icon("exclamation-triangle", style = "color: #d32f2f;"), " No Common Columns Found", style = "color: #c62828;"),
-          tags$p(style = "margin-top: 5px; margin-bottom: 0; font-size: 0.9em; color: #555;", 
-                 "None of the uploaded columns match the existing app dataset. Import is disabled.")
-        )
-      } else {
-        tags$div(
-          style = "background-color: #e8f5e9; border: 1px solid #a5d6a7; border-radius: 5px; padding: 10px; margin-bottom: 15px;",
-          tags$strong(icon("check-circle", style = "color: #388e3c;"), " Common Columns Found", style = "color: #2e7d32;"),
-          tags$p(style = "margin-top: 5px; margin-bottom: 0; font-size: 0.9em; color: #555;", 
-                 paste("Found", length(common_cols), "columns that match the existing app dataset."))
-        )
-      }
-    } else if (is_map_mode) {
-      tags$div(
-        style = "background-color: #fff3e0; border: 1px solid #ffcc80; border-radius: 5px; padding: 10px; margin-bottom: 15px;",
-        tags$strong(icon("exchange-alt", style = "color: #ef6c00;"), " Map & Align Columns:", style = "color: #e65100;"),
-        tags$p(style = "margin-top: 5px; margin-bottom: 5px; font-family: monospace; font-size: 0.9em;", 
-               paste(collabnet_required_cols, collapse = ", ")),
-        tags$small(style = "color: #555;", "Review auto-mapped columns on the right. Rename, combine, or split your uploaded columns on the left to match the dataset structure.")
-      )
-    } else {
-      NULL
-    }
-    
-    # --- 5. CSS for inline checkboxes ---
-    checkbox_css <- tags$style(HTML("
-    .mapping-row-checkbox .form-group { margin-bottom: 0 !important; }
-    .mapping-row-checkbox .checkbox { margin-top: 0 !important; margin-bottom: 0 !important; }
-    .mapping-row-checkbox label { margin-bottom: 0 !important; padding-top: 2px; }
-  "))
-    
-    # --- 6. Generate the UI rows for each column ---
-    column_rows <- lapply(cols_to_render, function(col) {
-      
-      safe_id <- make.names(col)
-      
-      # Disable UI if "Common Columns" is selected but none exist
-      is_disabled <- has_no_common
-      chk_val <- !has_no_common 
-      
-      # Auto-Mapping Logic: Match uploaded col to required col (case-insensitive)
-      mapped_val <- col 
-      if (exists("collabnet_required_cols")) {
-        match_idx <- match(tolower(col), tolower(collabnet_required_cols))
-        if (!is.na(match_idx)) {
-          mapped_val <- collabnet_required_cols[match_idx] # Apply exact case formatting of required col
-        }
-      }
-      
-      # 1. Checkbox
-      col_chk <- checkboxInput(paste0("map_chk_", safe_id), label = NULL, value = chk_val)
-      if (is_disabled) col_chk <- shinyjs::disabled(col_chk)
-      
-      # 2. Original Uploaded Column (Read-only Display for Map Mode)
-      orig_col_display <- tags$div(
-        style = "font-size: 0.9em; color: #495057; background-color: #e9ecef; border: 1px solid #ced4da; border-radius: 4px; padding: 6px 12px; height: 34px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
-        title = paste("Uploaded Column:", col),
-        col
-      )
-      
-      # 3. Column Name Textbox (Pre-filled with auto-mapped value)
-      col_name_tb <- textInput(paste0("map_name_", safe_id), label = NULL, value = mapped_val, width = "100%")
-      if (is_disabled) col_name_tb <- shinyjs::disabled(col_name_tb)
-      
-      # 4. Delimiter Textbox 
-      col_delim_tb <- textInput(paste0("map_delim_", safe_id), label = NULL, placeholder = "Delim (e.g. ; |)", width = "100%")
-      if (is_disabled) col_delim_tb <- shinyjs::disabled(col_delim_tb)
-      
-      # 5. Action Buttons
-      btn_split <- actionButton(paste0("btn_split_", safe_id), "Split", icon = icon("cut"), class = "btn-sm btn-outline-primary", style = "padding: 4px 8px; font-size: 0.85em;")
-      btn_combine <- actionButton(paste0("btn_combine_", safe_id), "Combine", icon = icon("compress-arrows-alt"), class = "btn-sm btn-outline-success", style = "padding: 4px 8px; font-size: 0.85em;")
-      btn_drop <- actionButton(paste0("btn_drop_", safe_id), "Drop", icon = icon("trash"), class = "btn-sm btn-outline-danger", style = "padding: 4px 8px; font-size: 0.85em;")
-      
-      if (is_disabled) {
-        btn_split <- shinyjs::disabled(btn_split)
-        btn_combine <- shinyjs::disabled(btn_combine)
-        btn_drop <- shinyjs::disabled(btn_drop)
-      }
-      
-      # --- 7. Flexbox Layout Construction ---
-      # Apply a different structural layout if we are in Map Mode vs standard modes
-      
-      if (is_map_mode) {
-        # Map Mode: [Checkbox] [Original] -> [Mapped] [Delim] [Buttons]
-        tags$div(
-          style = "display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; padding: 5px; border-bottom: 1px solid #eee; width: 100%;",
-          
-          tags$div(class = "mapping-row-checkbox", style = "width: 5%; display: flex; justify-content: center; flex-shrink: 0;", col_chk),
-          tags$div(style = "width: 20%; padding-right: 5px; flex-shrink: 0;", orig_col_display),
-          tags$div(style = "width: 5%; display: flex; justify-content: center; color: #aaa; flex-shrink: 0;", icon("arrow-right")),
-          tags$div(style = "width: 20%; padding-right: 5px; flex-shrink: 0;", tags$div(style = "margin-bottom: 0;", col_name_tb)),
-          tags$div(style = "width: 15%; padding-right: 10px; flex-shrink: 0;", tags$div(style = "margin-bottom: 0;", col_delim_tb)),
-          tags$div(style = "width: 35%; display: flex; gap: 4px; justify-content: flex-end;", btn_split, btn_combine, btn_drop)
-        )
-      } else {
-        # Standard Mode: [Checkbox] [Column Name] [Delim] [Buttons]
-        tags$div(
-          style = "display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; padding: 5px; border-bottom: 1px solid #eee; width: 100%;",
-          
-          tags$div(class = "mapping-row-checkbox", style = "width: 5%; display: flex; justify-content: center; flex-shrink: 0;", col_chk),
-          tags$div(style = "width: 30%; padding-right: 5px; flex-shrink: 0;", tags$div(style = "margin-bottom: 0;", col_name_tb)),
-          tags$div(style = "width: 20%; padding-right: 10px; flex-shrink: 0;", tags$div(style = "margin-bottom: 0;", col_delim_tb)),
-          tags$div(style = "width: 45%; display: flex; gap: 4px; justify-content: flex-end;", btn_split, btn_combine, btn_drop)
-        )
-      }
-    })
-    
-    # --- 8. Return the complete UI ---
-    tagList(
-      checkbox_css,
-      info_box,
-      tags$div(
-        style = "max-height: 350px; overflow-y: auto; overflow-x: hidden; padding-right: 5px;",
-        column_rows
-      ),
-      # Wait 300ms for UI to paint, then strip the disabled attribute and restore pointer events
-      tags$script(HTML("
-        setTimeout(function(){ 
-          var btn = $('#next_row_merge');
-          btn.prop('disabled', false);
-          btn.css('pointer-events', 'auto');
-          btn.css('opacity', '1');
-        }, 300);
-      "))
-    )
-  })
   
   output$row_merge_ui <- renderUI({
     # if (is.null(rv$glens_etable_final) || ncol(rv$glens_etable_final) == 0) {
@@ -700,7 +925,7 @@ server <- function(input, output, session) {
   
   #observe for in-place split, combine, drop buttons
   observe({
-    req(rv$imported_data_list)
+    req(rv$imported_data_list, length(rv$imported_data_list) > 0)
     uploaded_cols <- names(rv$imported_data_list[[1]])
     
     lapply(uploaded_cols, function(col) {
@@ -739,532 +964,517 @@ server <- function(input, output, session) {
     }
   })
   
-  observeEvent(input$upload_btn, {
-    
-    tryCatch({
-      # --- SUCCESS STATE ---
-      # Instantly change to a green checkmark when the file hits the server
-      shinyjs::runjs("
-        document.getElementById('upload_text').innerText = ' Upload Success!';
-        document.getElementById('upload_icon').className = 'fa fa-check';
-        document.getElementById('upload_icon').style.color = '#28a745'; // Bootstrap success green
-      ")
-      
-      message("FILE UPLOADED!")
-      
-      # Note: input$upload_btn is a dataframe. 
-      # You can access the actual uploaded file path using: input$upload_btn$datapath
-      
-      # 2. Iterate through each uploaded file using lapply
-      imported_data_list <- lapply(seq_len(nrow(input$upload_btn)), function(i) {
-        
-        # Shiny stores the original name in 'name', and the temp file in 'datapath'
-        file_name <- input$upload_btn$name[i]
-        file_path <- input$upload_btn$datapath[i]
-        
-        # Extract the extension and convert to lowercase for safe matching
-        ext <- tolower(tools::file_ext(file_name))
-        
-        # 3. Invoke the appropriate reader based on the extension
-        df <- switch(ext,
-                     "csv"  = read.csv(file_path, stringsAsFactors = FALSE, check.names = FALSE),
-                     "tsv"  = read.delim(file_path, sep = "\t", stringsAsFactors = FALSE, check.names = FALSE),
-                     "xlsx" = readxl::read_excel(file_path),
-                     "xls"  = readxl::read_excel(file_path),
-                     {
-                       # Fallback error message if someone uploads a weird file format
-                       warning(paste("Unsupported file extension:", ext))
-                       NULL 
-                     }
-        )
-        
-        return(df)
-      })
-      
-      # Remove any NULLs (in case an unsupported file was skipped)
-      rv$imported_data_list <- Filter(Negate(is.null), imported_data_list)
-      
-      # showModal(modalDialog(
-      #   title = tags$span(icon("upload", lib = "font-awesome"), " File Upload Wizard"),
-      #   size = "m",
-      #   radioButtons("col_import_type", label = "Choose Column import type:", inline = TRUE, choices = c("Common Columns", "All Columns","Merge")),
-      #   uiOutput("column_mapping_ui"),
-      #   radioButtons("row_import_type", label = "Choose Row import type:", inline = TRUE, choices = c("New", "Append", "Merge")),
-      #   uiOutput("row_merge_ui"),
-      #   footer = tagList(
-      #     actionButton("confirm_import", "Confirm Import", class = "btn-success"),
-      #     modalButton("Cancel Import")
-      #   ),
-      #   easyClose = TRUE
-      # ))
-      # --- TRANSITION DELAY ---
-      # Wait 1.5 seconds (1500ms), then reset the button and open the modal
-      shinyjs::delay(1500, {
-        
-        # Reset the button visually and clear the HTML input value so the same file can be uploaded twice if needed
-        shinyjs::runjs("
-          document.getElementById('upload_text').innerText = '';
-          document.getElementById('upload_icon').className = 'fa fa-upload';
-          document.getElementById('upload_icon').style.color = ''; 
-          document.getElementById('upload_btn').value = ''; 
-        ")
-        showModal(modalDialog(
-          title = tags$span(icon("columns", lib = "font-awesome"), " Step 1: Column Mapping"),
-          size = "m",
-          radioButtons("col_import_type", label = "Choose Column import type:", inline = TRUE, choices = c("Common Columns", "All Columns", "Map")),
-          uiOutput("column_mapping_ui"),
-          footer = tagList(
-            modalButton("Cancel"),
-            # Native HTML disabled + CSS pointer-events blocker
-            actionButton("next_row_merge", "Next: Configure Rows", 
-                         class = "btn-primary", 
-                         disabled = "disabled", 
-                         style = "pointer-events: none; opacity: 0.5;")
-          ),
-          easyClose = FALSE # Force them to use the buttons
-        ))
-        
-        if (is.null(rv$glens_full_table) || ncol(rv$glens_full_table) == 0) {
-          # 1. Safely tell Shiny to change the selection
-          updateRadioButtons(session, "col_import_type", selected = "All Columns")
-          
-          # 2. Wait 100 milliseconds for the modal to render, THEN disable the buttons
-          shinyjs::delay(100, {
-            shinyjs::runjs("$('input[name=\"col_import_type\"][value=\"Common Columns\"]').prop('disabled', true);")
-            # shinyjs::runjs("$('input[name=\"col_import_type\"][value=\"Map\"]').prop('disabled', true);")
-          })
-        }
-      })
-    }, error = function(e) {
-      
-      # --- FAILURE DETECTED ---
-      # Change button to a red X
-      shinyjs::runjs("
-        document.getElementById('upload_text').innerText = ' Upload Failed';
-        document.getElementById('upload_icon').className = 'fa fa-times';
-        document.getElementById('upload_icon').style.color = '#dc3545'; // Bootstrap danger red
-      ")
-      
-      # Tell the user what went wrong
-      showNotification(paste("Failed to process file:", e$message), type = "error", duration = 5)
-      rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'>Failed to process file:", e$message, "</span>"), sep="<br>")
-      
-      # Reset the button after 3 seconds so they can try again
-      shinyjs::delay(3000, {
-        shinyjs::runjs("
-          document.getElementById('upload_text').innerText = '';
-          document.getElementById('upload_icon').className = 'fa fa-upload';
-          document.getElementById('upload_icon').style.color = '';
-          document.getElementById('upload_btn').value = '';
-        ")
-      })
-    })
-    
-  }) #upload_btn
+  # observeEvent(input$confirm_import, {
+  #   req(rv$intermediate_merged_df)
+  #   merged_df <- rv$intermediate_merged_df
+  #   rv$glens_full_table_tmp <- rv$glens_full_table
+  #   
+  #   # Force all columns in both datasets to be character text.
+  #   raw_df <- merged_df %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character))
+  #   
+  #   # --- 2. PARSE THE TARGET AUTHORS ---
+  #   # We must do this here so the extend function knows exactly who to search for
+  #   target_variants <- stringi::stri_omit_empty(stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n"))))
+  #   target_variants <- target_variants[target_variants != ""]
+  #   
+  #   if(length(target_variants) > 0) {
+  #     rv$target_variants_norm <- lapply(setNames(target_variants, target_variants), function(v) {
+  #       vn <- normalize_name(v)
+  #       list(norm = vn, parts = extract_parts(vn))
+  #     })
+  #     rv$author_match_regex <- build_name_regex_for_variants(target_variants)
+  #   } else {
+  #     rv$target_variants_norm <- NULL
+  #     rv$author_match_regex <- NULL
+  #   }
+  #   
+  #   
+  #   # --- 3. THE HEAVY LIFTING (Hybrid Paradigm) ---
+  #   # Pass raw_df directly into the extension and matching pipeline
+  #   extended_df <- extend_input_table(rv, raw_df, rv$author_match_regex, rv$target_variants_norm)
+  #   merged_df <- match_journals(rv, extended_df)
+  #   
+  #   # --- Apply NA Removal ---
+  #   # if (input$drop_na_rows) {
+  #   #   # Drops any row that has an NA in ANY column
+  #   #   rv$glens_etable_final <- tidyr::drop_na(rv$glens_etable_final)
+  #   # }
+  #   # 
+  #   # if (input$drop_na_cols) {
+  #   #   # Drops any column that has an NA in ANY row
+  #   #   rv$glens_etable_final <- rv$glens_etable_final %>%
+  #   #     dplyr::select(dplyr::where(~ !any(is.na(.))))
+  #   # }
+  #   # Keep rows if ANY column has a non-NA value (drops rows where ALL are NA)
+  #   merged_df <- merged_df %>%
+  #     dplyr::filter(dplyr::if_any(dplyr::everything(), ~ !is.na(.)))
+  #   
+  #   # Keep columns if they don't have ALL NA values (drops columns where ALL are NA)
+  #   merged_df <- merged_df %>%
+  #     dplyr::select(dplyr::where(~ !all(is.na(.))))
+  #   
+  #   # ------------------------------
+  #   # --- 1. Safely Consolidate & Rename Known Columns ---
+  #   # Define all the variations of names that might come from different files
+  #   target_mappings <- list(
+  #     "orcid" = c("orcid", "ORCiD", "Orcid", "ORCID"),
+  #     "SCOPUS_ID" = c("SCOPUS_ID", "SCOPUS ID", "Scopus ID", "Author(s) ID"),
+  #     "Citations" = c("Citations", "Cited by"),
+  #     "User_Journal" = c("User_Journal", "Source title"),
+  #     "doi" = c("doi", "DOI")
+  #   )
+  #   
+  #   for(targ in names(target_mappings)) {
+  #     aliases <- target_mappings[[targ]]
+  #     # Find which of the aliases actually exist in the current dataframe
+  #     found_cols <- intersect(aliases, colnames(merged_df))
+  #     
+  #     if (length(found_cols) > 0) {
+  #       master_vec <- rep(NA_character_, nrow(merged_df))
+  #       
+  #       # Coalesce all found columns into one master vector (forcing character to avoid type crashes)
+  #       for(fc in found_cols) {
+  #         master_vec <- dplyr::coalesce(master_vec, as.character(merged_df[[fc]]))
+  #       }
+  #       
+  #       # Assign the master merged column
+  #       merged_df[[targ]] <- master_vec
+  #       
+  #       # Drop the old alias columns so the dataset stays clean
+  #       drop_cols <- setdiff(found_cols, targ)
+  #       if (length(drop_cols) > 0) {
+  #         merged_df <- merged_df %>% dplyr::select(-dplyr::all_of(drop_cols))
+  #       }
+  #     }
+  #   }
+  #   
+  #   # 5. Handle Row Logic
+  #   if (input$row_import_type == "New" || is.null(rv$glens_full_table)) {
+  #     glens_full_table <- merged_df
+  #     
+  #   } else if (input$row_import_type == "Append") {
+  #     
+  #       if (rv$saved_col_import_type == "Common Columns") {
+  #       final_common_cols <- intersect(names(rv$glens_full_table), names(merged_df))
+  #       glens_full_table <- dplyr::bind_rows(
+  #         rv$glens_full_table[, final_common_cols, drop = FALSE],
+  #         merged_df[, final_common_cols, drop = FALSE]
+  #       )
+  #     } else {
+  #       print("MERGING:")
+  #       glens_full_table <- dplyr::bind_rows(rv$glens_full_table %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character)), merged_df)
+  #     }
+  #     
+  #   } else if (input$row_import_type == "Merge") {
+  #     
+  #     join_keys <- input$row_merge_keys
+  #     join_type <- input$join_type # Grab the selected join type
+  #     
+  #     print("join_keys:")
+  #     print(join_keys)
+  #     print("join_type:")
+  #     print(join_type)
+  #     
+  #     if (!is.null(join_keys) && length(join_keys) > 0) {
+  #       
+  #       overlap_cols <- setdiff(intersect(names(rv$glens_full_table), names(merged_df)), join_keys)
+  #       
+  #       # 1. Dynamically select the join function based on the dropdown
+  #       join_func <- switch(join_type,
+  #                           "inner" = dplyr::inner_join,
+  #                           "left"  = dplyr::left_join,
+  #                           "right" = dplyr::right_join,
+  #                           "full"  = dplyr::full_join)
+  #       
+  #       # 2. Execute the join
+  #       joined_df <- join_func(
+  #         rv$glens_full_table, 
+  #         merged_df, 
+  #         by = join_keys,  
+  #         suffix = c(".old", ".new"),
+  #         relationship = "many-to-many" 
+  #       )
+  #       
+  #       # 3. Coalesce overlapping columns (prioritizing old data, filling gaps with new data)
+  #       for(col in overlap_cols) {
+  #         old_col <- paste0(col, ".old")
+  #         new_col <- paste0(col, ".new")
+  #         
+  #         # Force both to character to prevent integer/character mismatch crashes
+  #         old_vals <- as.character(joined_df[[old_col]])
+  #         new_vals <- as.character(joined_df[[new_col]])
+  #         
+  #         joined_df[[col]] <- dplyr::coalesce(old_vals, new_vals)
+  #         
+  #         joined_df[[old_col]] <- NULL
+  #         joined_df[[new_col]] <- NULL
+  #       }
+  #       
+  #       # 4. Spread metadata up and down grouped by ALL selected keys
+  #       joined_df <- joined_df %>%
+  #         dplyr::group_by(dplyr::across(dplyr::all_of(join_keys))) %>%
+  #         tidyr::fill(dplyr::everything(), .direction = "downup") %>%
+  #         dplyr::ungroup()
+  #       
+  #       glens_full_table <- joined_df
+  #       
+  #     } else {
+  #       warning("No join keys selected. Falling back to Append.")
+  #       # rv$glens_full_table <- dplyr::bind_rows(rv$glens_full_table, merged_df)
+  #       glens_full_table <- dplyr::bind_rows(rv$glens_full_table %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character)), merged_df)
+  #     }
+  #   }
+  #   
+  #   if(nrow(glens_full_table) <= 0){
+  #     showNotification("Data import/merge returned empty rows. Try different options", type = "error", duration = 10)
+  #     rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'>Data import/merge returned empty rows. Try different options </span>"),sep="<br>")
+  #     rv$imported_data_list <- NULL
+  #     rv$intermediate_merged_df <- NULL
+  #     rv$saved_col_import_type <- NULL
+  #     rv$glens_full_table <- rv$glens_full_table_tmp
+  #     # rv$glens_input_table <- NULL
+  #     # rv$glens_year_filtered <- NULL
+  #     removeModal()
+  #     return()
+  #   }
+  #   
+  #   # #Checks to make sure CollabNET columns exist
+  #   # # Auto-fill any missing columns with NA. 
+  #   # # allows multi-file upload without it getting rejected for missing columns.
+  #   # for(col in collabnet_required_cols) {
+  #   #   if (!(col %in% colnames(rv$glens_etable_final))) {
+  #   #     rv$glens_etable_final[[col]] <- NA_character_
+  #   #   }
+  #   # }
+  #   
+  #   # print(colnames(rv$glens_etable_final))
+  #   # print(nrow(rv$glens_etable_final))
+  #   # print(str(rv$glens_etable_final))
+  #   # print("MERGED_DF:")
+  #   # print(colnames(merged_df))
+  #   # print(nrow(merged_df))
+  #   # print(str(merged_df))
+  #   missing_cols <- setdiff(collabnet_required_cols, colnames(glens_full_table))
+  #   if(length(missing_cols) > 0) {
+  #     
+  #     # Format the missing columns into a clean string
+  #     missing_str <- paste(missing_cols, collapse=", ")
+  #     # Update the log
+  #     rv$log_text <- paste(rv$log_text, 
+  #                          paste0("<span style='color: red;'>Missing required columns: ", missing_str, "</span>"), 
+  #                          sep="<br>")
+  #     # Show the smaller, targeted notification
+  #     showNotification(paste("Missing columns:", missing_str), type = "error", duration = 10)
+  #     # rv$imported_data_list <- NULL
+  #     # rv$intermediate_merged_df <- NULL
+  #     # rv$saved_col_import_type <- NULL
+  #     # rv$glens_etable_final <- rv$glens_etable_final_tmp
+  #     # # rv$glens_input_table <- NULL
+  #     # # rv$glens_year_filtered <- NULL
+  #     # removeModal()
+  #     # return()
+  #   }
+  #   
+  #   # Cleanup
+  #   rv$glens_full_table <- dplyr::distinct(glens_full_table)
+  #   rv$imported_data_list <- NULL
+  #   rv$intermediate_merged_df <- NULL
+  #   rv$saved_col_import_type <- NULL
+  #   rv$log_text <- paste(rv$log_text, paste("Post-Import Total:",nrow(rv$glens_full_table),"lines..."),sep="<br>")
+  #   # rv$glens_input_table <- rv$glens_etable_final
+  #   
+  #   
+  #   # target_variants <- stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n")))
+  #   # target_variants <- target_variants[target_variants != ""]
+  #   # 
+  #   # # Apply normalization based on Extended Matching checkbox
+  #   # if (isTRUE(input$ext_match)) {
+  #   #   rv$target_variants_norm <- lapply(setNames(target_variants, target_variants), function(v) {
+  #   #     vn <- normalize_name(v)
+  #   #     list(norm = vn, parts = extract_parts(vn))
+  #   #   })
+  #   # } else {
+  #   #   # If Extended Matching is off, skip strict normalization but respect case preference
+  #   #   rv$target_variants_norm <- lapply(setNames(target_variants, target_variants), function(v) {
+  #   #     vn <- if(isTRUE(input$ignore_case)) tolower(v) else v
+  #   #     list(norm = vn, parts = list(vn))
+  #   #   })
+  #   # }
+  #   # 
+  #   # # Pass the ignore_case UI value into the regex builder
+  #   # rv$author_match_regex <- build_name_regex_for_variants(target_variants, ignore_case = input$ignore_case)
+  #   # 
+  #   # extend_input_table(rv)
+  #   
+  #   # rv$glens_year_filtered <- rv$glens_full_table
+  #   
+  #   # target_variants <- stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n")))
+  #   # target_variants <- target_variants[target_variants != ""]
+  #   # rv$target_variants_norm <- lapply(setNames(target_variants, target_variants), function(v) {
+  #   #   vn <- normalize_name(v)
+  #   #   list(norm = vn, parts = extract_parts(vn))
+  #   # })
+  #   # rv$author_match_regex <- build_name_regex_for_variants(target_variants)
+  #   # 
+  #   # extend_input_table(rv)
+  #   # 
+  #   # rv$glens_year_filtered <- rv$glens_etable_final
+  #   
+  #   # if (nrow(rv$glens_year_filtered) <= 0) {
+  #   #   rv$log_text <- paste(rv$log_text, "Import: No keywords were matched.",sep="<br>")
+  #   #   # shinyjs::enable("submit_button")
+  #   #   # removeModal()
+  #   #   # return()
+  #   # }else{
+  #   #   
+  #   #   # compute_indices(rv)
+  #   #   # output$summary_table <- renderTable(rv$summary_table, striped = TRUE)
+  #   #   # output$sh_index <- renderUI(HTML(paste("<b>Sh-Index:</b>", "NA")))
+  #   #   # output$extended_table <- DT::renderDataTable({
+  #   #   #   DT::datatable(rv$glens_year_filtered, options = list(scrollY = "600px", scrollX = TRUE, paging = TRUE))
+  #   #   # })
+  #   #   # match_journals(rv)
+  #   #   rv$glens_year_filtered <- rv$glens_full_table
+  #   #   shinyjs::show("extended_table")
+  #   # }
+  #   # 
+  #   # if(length(na.omit(levels(factor(rv$glens_year_filtered$Year)))) > 1){
+  #   #   min_year <- min(as.numeric(rv$glens_year_filtered$Year), na.rm = TRUE)
+  #   #   max_year <- max(as.numeric(rv$glens_year_filtered$Year), na.rm = TRUE)
+  #   #   if (is.finite(min_year) && is.finite(max_year)) {
+  #   #     updateSliderInput(session, "year_slider", value = c(min_year, max_year), min = min_year, max = max_year)
+  #   #     shinyjs::show("year_slider")
+  #   #   }else{
+  #   #     shinyjs::hide("year_slider")
+  #   #   }
+  #   # }else{
+  #   #   shinyjs::hide("year_slider")
+  #   # }
+  #   # # rv$extended_controls <- TRUE
+  #   saveRDS(rv$glens_full_table, "glens_full_table.rds")
+  #   
+  #   removeModal()
+  # })
   
-  observeEvent(input$next_after_delim, {
-    req(rv$intermediate_merged_df, rv$detected_mv_cols)
-    merged_df <- rv$intermediate_merged_df
-    
-    # Apply splits sequentially based on user input
-    for (col in names(rv$detected_mv_cols)) {
-      action <- input[[paste0("delim_action_", make.names(col))]]
-      delim_val <- input[[paste0("delim_val_", make.names(col))]]
-      
-      if (!is.null(action) && action == "rows" && !is.null(delim_val) && trimws(delim_val) != "") {
-        # Construct a regex that handles extra spaces (e.g., splitting "123; 456" properly)
-        sep_regex <- paste0("\\s*", escape_regex_inline(delim_val), "\\s*")
-        
-        # Lengthen the dataframe
-        merged_df <- merged_df %>% 
-          tidyr::separate_rows(dplyr::all_of(col), sep = sep_regex) %>%
-          # Clean up any residual empty spaces
-          dplyr::mutate(!!col := trimws(.data[[col]]))
-      }
-    }
-    
-    # Filter out empty rows that might have been generated by trailing semicolons (e.g. "ID1; ID2;")
-    # (Optional, but good practice for Scopus data)
-    
-    rv$intermediate_merged_df <- merged_df
-    removeModal()
-    
-    # Advance to Step 2
-    show_row_merge_modal(rv, session)
-  })
-  
-  observeEvent(input$next_row_merge, {
+  # --- Column Mapping UI Generation ---
+  output$column_mapping_ui <- renderUI({
     req(rv$imported_data_list)
-    imported_data_list <- rv$imported_data_list
     
-    print("imported_data_list:")
-    print(length(imported_data_list))
-    
-    # Save the column choice so we don't lose it when Modal 1 closes
-    rv$saved_col_import_type <- input$col_import_type 
-    
-    # --- 1. Extract Inputs from New Dynamic UI ---
-    # Get all possible columns across the uploaded datasets
-    all_uploaded_cols <- unique(unlist(lapply(imported_data_list, names)))
-    
-    cols_to_keep <- c()
-    rename_map <- list()
-    detected_mv_cols <- list() # Store delimiters here now
-    
-    for (col in all_uploaded_cols) {
-      safe_id <- make.names(col)
-      
-      # Check if the user selected this column for import via checkbox
-      is_checked <- input[[paste0("map_chk_", safe_id)]]
-      
-      # Safety fallback in case UI hasn't finished rendering yet
-      if (is.null(is_checked)) is_checked <- TRUE 
-      
-      if (isTRUE(is_checked)) {
-        cols_to_keep <- c(cols_to_keep, col)
-        
-        # Read the mapped name from the textbox
-        mapped_name <- input[[paste0("map_name_", safe_id)]]
-        final_name <- col # Default to original name
-        
-        # If the user changed the text box, save it to the rename map
-        if (!is.null(mapped_name) && trimws(mapped_name) != "" && trimws(mapped_name) != col) {
-          rename_map[[col]] <- trimws(mapped_name)
-          final_name <- trimws(mapped_name) # Track the new name for the delimiter
-        }
-        
-        # Read the delimiter from the new UI textbox
-        delim_val <- input[[paste0("map_delim_", safe_id)]]
-        if (!is.null(delim_val) && trimws(delim_val) != "") {
-          detected_mv_cols[[final_name]] <- trimws(delim_val)
-        }
-      }
-    }
-    
-    print("(COL) RENAME MAP:")
-    print(length(rename_map))
-    print(str(rename_map))
-    
-    # --- 2. Apply Column Subsetting and Mapping ---
-    imported_data_list <- lapply(imported_data_list, function(df) {
-      
-      # 1. Drop columns the user explicitly unchecked
-      valid_cols <- intersect(names(df), cols_to_keep)
-      df <- df[, valid_cols, drop = FALSE]
-      
-      # 2. Perform the actual renaming based on the map
-      current_names <- names(df)
-      for (i in seq_along(current_names)) {
-        check_name <- current_names[i]
-        if (check_name %in% names(rename_map)) {
-          current_names[i] <- rename_map[[check_name]]
-        }
-      }
-      
-      # Handle potential duplicate column names if the user mapped two sources to the same target name
-      names(df) <- make.unique(current_names, sep = "_")
-      
-      return(df)
-    })
-    
-    # Combine the uploaded files into one intermediate dataframe
-    merged_df <- dplyr::bind_rows(imported_data_list) %>% dplyr::distinct()
-    
-    # Save outputs to reactive values
-    rv$intermediate_merged_df <- merged_df
-    rv$detected_mv_cols <- detected_mv_cols
-    
-    removeModal()
-    
-    # --- 3. Route to Step 1.5 or Step 2 ---
-    # Since delimiters are now entered directly in Step 1, we only trigger the Step 1.5 
-    # modal if they actually typed a delimiter, acting as a final confirmation.
-    
-    if (length(detected_mv_cols) > 0) {
-      showModal(modalDialog(
-        title = tags$span(icon("cut", lib = "font-awesome"), " Step 1.5: Confirm Splits"),
-        size = "l",
-        tags$p("You defined delimiters for the columns below. Review them before proceeding."),
-        uiOutput("delimiter_ui"), # Assuming delimiter_ui is built to read rv$detected_mv_cols
-        footer = tagList(
-          modalButton("Cancel"),
-          actionButton("next_after_delim", "Apply Splits & Continue to Step 2", class = "btn-warning")
-        ),
-        easyClose = FALSE
-      ))
-    } else {
-      # If no delimiters were entered, skip completely to Step 2
-      show_row_merge_modal(rv, session)
-    }
-  })
-  
-  observeEvent(input$confirm_import, {
-    req(rv$intermediate_merged_df)
-    merged_df <- rv$intermediate_merged_df
-    rv$glens_full_table_tmp <- rv$glens_full_table
-    
-    # Force all columns in both datasets to be character text.
-    merged_df <- merged_df %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character))
-    
-    # 5. Handle Row Logic
-    if (input$row_import_type == "New" || is.null(rv$glens_full_table)) {
-      rv$glens_full_table <- merged_df
-      
-    } else if (input$row_import_type == "Append") {
-      
-      if (rv$saved_col_import_type == "Common Columns") {
-        final_common_cols <- intersect(names(rv$glens_full_table), names(merged_df))
-        rv$glens_full_table <- dplyr::bind_rows(
-          rv$glens_full_table[, final_common_cols, drop = FALSE],
-          merged_df[, final_common_cols, drop = FALSE]
-        )
-      } else {
-        print("MERGING:")
-        rv$glens_full_table <- dplyr::bind_rows(rv$glens_full_table %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character)), merged_df)
-      }
-      
-    } else if (input$row_import_type == "Merge") {
-      
-      join_keys <- input$row_merge_keys
-      join_type <- input$join_type # Grab the selected join type
-      
-      print("join_keys:")
-      print(join_keys)
-      print("join_type:")
-      print(join_type)
-      
-      if (!is.null(join_keys) && length(join_keys) > 0) {
-        
-        overlap_cols <- setdiff(intersect(names(rv$glens_full_table), names(merged_df)), join_keys)
-        
-        # 1. Dynamically select the join function based on the dropdown
-        join_func <- switch(join_type,
-                            "inner" = dplyr::inner_join,
-                            "left"  = dplyr::left_join,
-                            "right" = dplyr::right_join,
-                            "full"  = dplyr::full_join)
-        
-        # 2. Execute the join
-        joined_df <- join_func(
-          rv$glens_full_table, 
-          merged_df, 
-          by = join_keys,  
-          suffix = c(".old", ".new"),
-          relationship = "many-to-many" 
-        )
-        
-        # 3. Coalesce overlapping columns (prioritizing old data, filling gaps with new data)
-        for (col in overlap_cols) {
-          old_col <- paste0(col, ".old")
-          new_col <- paste0(col, ".new")
-          
-          # Force both to character to prevent integer/character mismatch crashes
-          old_vals <- as.character(joined_df[[old_col]])
-          new_vals <- as.character(joined_df[[new_col]])
-          
-          joined_df[[col]] <- dplyr::coalesce(old_vals, new_vals)
-          
-          joined_df[[old_col]] <- NULL
-          joined_df[[new_col]] <- NULL
-        }
-        
-        # 4. Spread metadata up and down grouped by ALL selected keys
-        joined_df <- joined_df %>%
-          dplyr::group_by(dplyr::across(dplyr::all_of(join_keys))) %>%
-          tidyr::fill(dplyr::everything(), .direction = "downup") %>%
-          dplyr::ungroup()
-        
-        rv$glens_full_table <- joined_df
-        
-      } else {
-        warning("No join keys selected. Falling back to Append.")
-        # rv$glens_full_table <- dplyr::bind_rows(rv$glens_full_table, merged_df)
-        rv$glens_full_table <- dplyr::bind_rows(rv$glens_full_table %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character)), merged_df)
-      }
-    }
-    
-    # --- Apply NA Removal ---
-    # if (input$drop_na_rows) {
-    #   # Drops any row that has an NA in ANY column
-    #   rv$glens_etable_final <- tidyr::drop_na(rv$glens_etable_final)
-    # }
-    # 
-    # if (input$drop_na_cols) {
-    #   # Drops any column that has an NA in ANY row
-    #   rv$glens_etable_final <- rv$glens_etable_final %>%
-    #     dplyr::select(dplyr::where(~ !any(is.na(.))))
-    # }
-    # Keep rows if ANY column has a non-NA value (drops rows where ALL are NA)
-    rv$glens_full_table <- rv$glens_full_table %>%
-      dplyr::filter(dplyr::if_any(dplyr::everything(), ~ !is.na(.)))
-  
-    # Keep columns if they don't have ALL NA values (drops columns where ALL are NA)
-    rv$glens_full_table <- rv$glens_full_table %>%
-      dplyr::select(dplyr::where(~ !all(is.na(.))))
-    
-    # ------------------------------
-    # --- 1. Safely Consolidate & Rename Known Columns ---
-    # Define all the variations of names that might come from different files
+    # 1. Target Variants Dictionary
     target_mappings <- list(
       "orcid" = c("orcid", "ORCiD", "Orcid", "ORCID"),
       "SCOPUS_ID" = c("SCOPUS_ID", "SCOPUS ID", "Scopus ID", "Author(s) ID"),
-      "Citations" = c("Citations", "Cited by"),
-      "User_Journal" = c("User_Journal", "Source title"),
-      "doi" = c("doi", "DOI")
+      "Citations" = c("Citations", "Cited by", "citedby-count"),
+      "User_Journal" = c("User_Journal", "Source title", "prism:publicationName", "Journal"),
+      "doi" = c("doi", "DOI"),
+      "Authors" = c("Authors", "author", "Author(s)"),
+      "Year" = c("Year", "year", "Publication Year"),
+      "Title" = c("Title", "title", "Document Title", "Article Title"),
+      "Source" = c("Source", "source")
     )
     
-    for (targ in names(target_mappings)) {
-      aliases <- target_mappings[[targ]]
-      # Find which of the aliases actually exist in the current dataframe
-      found_cols <- intersect(aliases, colnames(rv$glens_full_table))
+    # 2. Define Required vs Optional Columns
+    required_cols <- c("Citations", "User_Journal", "Title", "Authors", "Year", "Source")
+    optional_cols <- c("Qscore", "JIF5Years", "SCOPUS_ID", "doi", "JCR_Journal", "orcid", "Name")
+    
+    all_uploaded_cols <- unique(unlist(lapply(rv$imported_data_list, names)))
+    
+    # 3. Header Panel Tags with Clickable CSS
+    base_badge_style <- "display: inline-block; padding: 4px 8px; margin: 2px; border-radius: 12px; font-size: 12px; font-weight: bold; color: white; transition: transform 0.2s ease, opacity 0.2s; cursor: pointer; user-select: none;"
+    
+    custom_css <- tags$style(HTML("
+      .clickable-badge:hover, .clickable-selected-badge:hover {
+        transform: scale(1.05);
+        opacity: 0.85;
+      }
+    "))
+    
+    header_tags <- tags$div(
+      custom_css,
+      style = "margin-bottom: 15px; padding: 10px; background: #f8f9fa; border-radius: 5px; border: 1px solid #ddd;",
       
-      if (length(found_cols) > 0) {
-        master_vec <- rep(NA_character_, nrow(rv$glens_full_table))
-        
-        # Coalesce all found columns into one master vector (forcing character to avoid type crashes)
-        for (fc in found_cols) {
-          master_vec <- dplyr::coalesce(master_vec, as.character(rv$glens_full_table[[fc]]))
+      tags$strong("Required Columns:"),
+      tags$div(
+        style = "margin-top: 5px; margin-bottom: 10px; display: flex; flex-wrap: wrap;",
+        lapply(required_cols, function(col) {
+          tags$span(id = paste0("req-badge-", col), class = "clickable-badge", style = paste(base_badge_style, "background-color: #dc3545;"), col)
+        })
+      ),
+      
+      tags$strong("Optional Columns:"),
+      tags$div(
+        style = "margin-top: 5px; margin-bottom: 15px; display: flex; flex-wrap: wrap;",
+        lapply(optional_cols, function(col) {
+          tags$span(id = paste0("opt-badge-", col), class = "clickable-badge", style = paste(base_badge_style, "background-color: #6c757d;"), col)
+        })
+      ),
+      
+      tags$strong("Selected Columns (Click to remove):"),
+      tags$div(
+        id = "selected-cols-container",
+        style = "margin-top: 5px; display: flex; flex-wrap: wrap;"
+      )
+    )
+    
+    # 4. Dynamic Rows Generation
+    rows_tags <- lapply(all_uploaded_cols, function(col) {
+      safe_id <- make.names(col)
+      safe_col_compare <- trimws(tolower(col))
+      prefill_name <- col
+      
+      for (targ in names(target_mappings)) {
+        safe_targs <- trimws(tolower(target_mappings[[targ]]))
+        if (safe_col_compare %in% safe_targs) {
+          prefill_name <- targ
+          break
         }
-        
-        # Assign the master merged column
-        rv$glens_full_table[[targ]] <- master_vec
-        
-        # Drop the old alias columns so the dataset stays clean
-        drop_cols <- setdiff(found_cols, targ)
-        if (length(drop_cols) > 0) {
-          rv$glens_full_table <- rv$glens_full_table %>% dplyr::select(-dplyr::all_of(drop_cols))
-        }
+      }
+      
+      tags$div(
+        class = "col-mapping-row",
+        style = "display: flex; align-items: center; padding: 8px; border-bottom: 1px solid #eee; border-radius: 4px; transition: background-color 0.3s ease;",
+        tags$div(style = "width: 5%;", checkboxInput(paste0("map_chk_", safe_id), "", value = TRUE)),
+        tags$div(style = "width: 30%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;", tags$strong(col)),
+        tags$div(style = "width: 10%; text-align: center;", icon("arrow-right")),
+        tags$div(style = "width: 35%;", textInput(paste0("map_name_", safe_id), "", value = prefill_name, width = "90%")),
+        tags$div(style = "width: 20%;", textInput(paste0("map_delim_", safe_id), "", placeholder = "Delim (e.g. ,)", width = "100%"))
+      )
+    })
+    
+    js_req_array <- paste0("['", paste(required_cols, collapse = "','"), "']")
+    js_opt_array <- paste0("['", paste(optional_cols, collapse = "','"), "']")
+    
+    # 5. Javascript with Click Toggles
+    js_script <- tags$script(HTML(paste0("
+    function updateRequiredColumns() {
+      var required = ", js_req_array, ";
+      var optional = ", js_opt_array, ";
+      
+      $('.col-mapping-row').css('background-color', '');
+      var foundReq = [];
+      var foundOpt = [];
+      var selectedCols = [];
+      
+      $('.col-mapping-row input[type=\"text\"][id^=\"map_name_\"]').each(function() {
+         var val = $(this).val().trim();
+         var row = $(this).closest('.col-mapping-row');
+         var isChecked = row.find('input[type=\"checkbox\"]').is(':checked');
+         
+         if (!isChecked) {
+            row.css('background-color', 'rgba(220, 53, 69, 0.15)');
+         } else {
+            var origName = row.find('strong').text().trim();
+            var displayCol = (val !== '') ? val : origName;
+            selectedCols.push(displayCol);
+            
+            if (required.includes(val)) {
+               row.css('background-color', 'rgba(40, 167, 69, 0.2)');
+               foundReq.push(val);
+            } else if (optional.includes(val)) {
+               row.css('background-color', 'rgba(255, 193, 7, 0.2)');
+               foundOpt.push(val);
+            }
+         }
+      });
+      
+      required.forEach(function(col) {
+         var badge = $('#req-badge-' + col);
+         if(foundReq.includes(col)) {
+            badge.css('background-color', '#28a745');
+         } else {
+            badge.css('background-color', '#dc3545');
+         }
+      });
+      
+      optional.forEach(function(col) {
+         var badge = $('#opt-badge-' + col);
+         if(foundOpt.includes(col)) {
+            badge.css({'background-color': '#ffc107', 'color': '#212529'});
+         } else {
+            badge.css({'background-color': '#6c757d', 'color': 'white'});
+         }
+      });
+      
+      var selContainer = $('#selected-cols-container');
+      selContainer.empty();
+      selectedCols.forEach(function(colName) {
+         // Added clickable class for the selected badges
+         selContainer.append('<span class=\"clickable-selected-badge\" style=\"display: inline-block; padding: 4px 8px; margin: 2px; border-radius: 12px; font-size: 12px; font-weight: bold; background-color: #17a2b8; color: white; cursor: pointer; user-select: none; transition: transform 0.2s;\">' + colName + '</span>');
+      });
+      
+      var allRequiredFound = required.every(function(reqCol) { return foundReq.includes(reqCol); });
+      var nextBtn = $('#next_row_merge');
+      
+      if (allRequiredFound) {
+         nextBtn.prop('disabled', false).removeClass('disabled').css({ 'pointer-events': 'auto', 'opacity': '1' });
+      } else {
+         nextBtn.prop('disabled', true).addClass('disabled').css({ 'pointer-events': 'none', 'opacity': '0.5' });
       }
     }
     
-    if(nrow(rv$glens_full_table) <= 0){
-      showNotification("Data import/merge returned empty rows. Try different options", type = "error", duration = 10)
-      rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'>Data import/merge returned empty rows. Try different options </span>"),sep="<br>")
-      rv$imported_data_list <- NULL
-      rv$intermediate_merged_df <- NULL
-      rv$saved_col_import_type <- NULL
-      rv$glens_full_table <- rv$glens_full_table_tmp
-      # rv$glens_input_table <- NULL
-      # rv$glens_year_filtered <- NULL
-      removeModal()
-      return()
-    }
+    var checkExist = setInterval(function() {
+       if ($('.col-mapping-row').length) {
+          clearInterval(checkExist); 
+          updateRequiredColumns();   
+          
+          $(document).off('input change', '.col-mapping-row input').on('input change', '.col-mapping-row input', updateRequiredColumns);
+          
+          // --- CLICK LOGIC: Required & Optional Badges ---
+          $(document).off('click', '.clickable-badge').on('click', '.clickable-badge', function() {
+             var badgeText = $(this).text().trim();
+             var targetRow = null;
+             
+             // Find the corresponding row
+             $('.col-mapping-row').each(function() {
+                var val = $(this).find('input[type=\"text\"][id^=\"map_name_\"]').val().trim();
+                var origName = $(this).find('strong').text().trim();
+                var displayCol = (val !== '') ? val : origName;
+                
+                if (displayCol === badgeText || val === badgeText) {
+                   targetRow = $(this);
+                   return false; // Break loop on first match
+                }
+             });
+             
+             // Toggle the checkbox
+             if (targetRow) {
+                var checkbox = targetRow.find('input[type=\"checkbox\"]');
+                checkbox.prop('checked', !checkbox.prop('checked')).trigger('change');
+             }
+          });
+          
+          // --- CLICK LOGIC: Selected Badges ---
+          $(document).off('click', '.clickable-selected-badge').on('click', '.clickable-selected-badge', function() {
+             var badgeText = $(this).text().trim();
+             var targetRow = null;
+             
+             $('.col-mapping-row').each(function() {
+                var val = $(this).find('input[type=\"text\"][id^=\"map_name_\"]').val().trim();
+                var origName = $(this).find('strong').text().trim();
+                var displayCol = (val !== '') ? val : origName;
+                var isChecked = $(this).find('input[type=\"checkbox\"]').is(':checked');
+                
+                if (displayCol === badgeText && isChecked) {
+                   targetRow = $(this);
+                   return false; 
+                }
+             });
+             
+             // Turn off the checkbox
+             if (targetRow) {
+                var checkbox = targetRow.find('input[type=\"checkbox\"]');
+                checkbox.prop('checked', false).trigger('change');
+             }
+          });
+       }
+    }, 100); 
+    ")))
     
-    # #Checks to make sure CollabNET columns exist
-    # # Auto-fill any missing columns with NA. 
-    # # allows multi-file upload without it getting rejected for missing columns.
-    # for (col in collabnet_required_cols) {
-    #   if (!(col %in% colnames(rv$glens_etable_final))) {
-    #     rv$glens_etable_final[[col]] <- NA_character_
-    #   }
-    # }
-    
-    # print(colnames(rv$glens_etable_final))
-    # print(nrow(rv$glens_etable_final))
-    # print(str(rv$glens_etable_final))
-    # print("MERGED_DF:")
-    # print(colnames(merged_df))
-    # print(nrow(merged_df))
-    # print(str(merged_df))
-    missing_cols <- setdiff(collabnet_required_cols, colnames(rv$glens_full_table))
-    if(length(missing_cols) > 0) {
-      
-      # Format the missing columns into a clean string
-      missing_str <- paste(missing_cols, collapse=", ")
-      # Update the log
-      rv$log_text <- paste(rv$log_text, 
-                           paste0("<span style='color: red;'>Missing required columns: ", missing_str, "</span>"), 
-                           sep="<br>")
-      # Show the smaller, targeted notification
-      showNotification(paste("Missing columns:", missing_str), type = "error", duration = 10)
-      # rv$imported_data_list <- NULL
-      # rv$intermediate_merged_df <- NULL
-      # rv$saved_col_import_type <- NULL
-      # rv$glens_etable_final <- rv$glens_etable_final_tmp
-      # # rv$glens_input_table <- NULL
-      # # rv$glens_year_filtered <- NULL
-      # removeModal()
-      # return()
-    }
-    
-    # Cleanup
-    rv$glens_full_table <- dplyr::distinct(rv$glens_full_table)
-    rv$imported_data_list <- NULL
-    rv$intermediate_merged_df <- NULL
-    rv$saved_col_import_type <- NULL
-    rv$log_text <- paste(rv$log_text, paste("Post-Import Total:",nrow(rv$glens_full_table),"lines..."),sep="<br>")
-    # rv$glens_input_table <- rv$glens_etable_final
-    
-    
-    # target_variants <- stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n")))
-    # target_variants <- target_variants[target_variants != ""]
-    # 
-    # # Apply normalization based on Extended Matching checkbox
-    # if (isTRUE(input$ext_match)) {
-    #   rv$target_variants_norm <- lapply(setNames(target_variants, target_variants), function(v) {
-    #     vn <- normalize_name(v)
-    #     list(norm = vn, parts = extract_parts(vn))
-    #   })
-    # } else {
-    #   # If Extended Matching is off, skip strict normalization but respect case preference
-    #   rv$target_variants_norm <- lapply(setNames(target_variants, target_variants), function(v) {
-    #     vn <- if(isTRUE(input$ignore_case)) tolower(v) else v
-    #     list(norm = vn, parts = list(vn))
-    #   })
-    # }
-    # 
-    # # Pass the ignore_case UI value into the regex builder
-    # rv$author_match_regex <- build_name_regex_for_variants(target_variants, ignore_case = input$ignore_case)
-    # 
-    # extend_input_table(rv)
-    rv$glens_year_filtered <- rv$glens_full_table
-    
-    # target_variants <- stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n")))
-    # target_variants <- target_variants[target_variants != ""]
-    # rv$target_variants_norm <- lapply(setNames(target_variants, target_variants), function(v) {
-    #   vn <- normalize_name(v)
-    #   list(norm = vn, parts = extract_parts(vn))
-    # })
-    # rv$author_match_regex <- build_name_regex_for_variants(target_variants)
-    # 
-    # extend_input_table(rv)
-    # 
-    # rv$glens_year_filtered <- rv$glens_etable_final
-    
-    if (nrow(rv$glens_year_filtered) <= 0) {
-      rv$log_text <- paste(rv$log_text, "Import: No keywords were matched.",sep="<br>")
-      # shinyjs::enable("submit_button")
-      # removeModal()
-      # return()
-    }else{
-      
-      # compute_indices(rv)
-      # output$summary_table <- renderTable(rv$summary_table, striped = TRUE)
-      # output$sh_index <- renderUI(HTML(paste("<b>Sh-Index:</b>", "NA")))
-      # output$extended_table <- DT::renderDataTable({
-      #   DT::datatable(rv$glens_year_filtered, options = list(scrollY = "600px", scrollX = TRUE, paging = TRUE))
-      # })
-      # match_journals(rv)
-      rv$glens_year_filtered <- rv$glens_full_table
-      shinyjs::show("extended_table")
-    }
-    
-    if(length(na.omit(levels(factor(rv$glens_year_filtered$Year)))) > 1){
-      min_year <- min(as.numeric(rv$glens_year_filtered$Year), na.rm = TRUE)
-      max_year <- max(as.numeric(rv$glens_year_filtered$Year), na.rm = TRUE)
-      if (is.finite(min_year) && is.finite(max_year)) {
-        updateSliderInput(session, "year_slider", value = c(min_year, max_year), min = min_year, max = max_year)
-        shinyjs::show("year_slider")
-      }else{
-        shinyjs::hide("year_slider")
-      }
-    }else{
-      shinyjs::hide("year_slider")
-    }
-    # rv$extended_controls <- TRUE
-    saveRDS(rv$glens_full_table, "glens_full_table.rds")
-    
-    removeModal()
+    tagList(
+      header_tags,
+      tags$div(style = "max-height: 400px; overflow-y: auto; overflow-x: hidden;", rows_tags),
+      js_script
+    )
   })
   
   observeEvent(input$toggle_extended, {
@@ -1304,7 +1514,7 @@ server <- function(input, output, session) {
   })
   
   observeEvent(input$ext_match, {
-    rv$ext_match <- input$ext_match
+    rv$ext_match <- input$ext_match 
     if (isTRUE(input$ext_match)) {
       shinyjs::disable("ignore_case")
       updateCheckboxInput(session, "ignore_case", value = TRUE)
@@ -1312,10 +1522,11 @@ server <- function(input, output, session) {
       updateCheckboxInput(session, "ignore_case", value = rv$ignore_case)
       shinyjs::enable("ignore_case")
     }
+    print(paste("input$ext_match toggle:", rv$ext_match))
   })
   
   observeEvent(input$ignore_case, {
-    rv$ignore_case <- input$ignore_case
+    rv$ignore_case <- input$ignore_case 
     updateCheckboxInput(session, "ignore_case", value = rv$ignore_case)
   })
   
@@ -1618,14 +1829,14 @@ server <- function(input, output, session) {
       rv$is_cancelled <- TRUE
       # Immediately hide the overlay and re-enable the UI
       # shinyjs::hide("sh_index")
-      shinyjs::hide("summary_table")
+      # shinyjs::hide("summary_table")
       shinyjs::hide("acounts_plot")
       shinyjs::hide("ccounts_plot")
       shinyjs::hide("cdist_plot")
       shinyjs::hide("aperc_plot")
       shinyjs::hide("cperc_plot")
       shinyjs::hide("network_filtered")
-      shinyjs::hide("network_full")
+      # shinyjs::hide("network_full")
       # shinyjs::hide("extended_table")
       shinyjs::hide(id="year_slider")
       shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
@@ -1947,25 +2158,38 @@ server <- function(input, output, session) {
     
     cols <- names(df)
     
-    dynamic_chks <- lapply(cols, function(c) input[[paste0("lookup_chk_", make.names(c))]])
-    dynamic_delims <- lapply(cols, function(c) input[[paste0("lookup_delim_", make.names(c))]])
-    dynamic_keywords <- lapply(cols, function(c) input[[paste0("lookup_text_", make.names(c))]])
+    # # Use hex strings here too!
+    # dynamic_chks <- lapply(cols, function(c) {
+    #   hex_str <- paste(as.character(charToRaw(c)), collapse = "")
+    #   input[[paste0("lookup_chk_", hex_str)]]
+    # })
+    # 
+    # dynamic_delims <- lapply(cols, function(c) {
+    #   hex_str <- paste(as.character(charToRaw(c)), collapse = "")
+    #   input[[paste0("lookup_delim_", hex_str)]]
+    # })
+    # 
+    # dynamic_keywords <- lapply(cols, function(c) {
+    #   hex_str <- paste(as.character(charToRaw(c)), collapse = "")
+    #   input[[paste0("lookup_text_", hex_str)]]
+    # })
     
     target_variants <- ""
     if(length(input$author_list) > 0){
       target_variants <- stringi::stri_omit_empty(stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n"))))
       target_variants <- target_variants[target_variants != ""]
+      # isolate({ rv$author_list <- target_variants })
       
-      if(length(target_variants) > 0){
-        # FIX 1: Isolate the updates to rv so they don't trigger upstream dependencies
-        isolate({
-          rv$target_variants_norm <- lapply(setNames(target_variants, target_variants), function(v) {
-            vn <- normalize_name(v)
-            list(norm = vn, parts = extract_parts(vn))
-          })
-          rv$author_match_regex <- build_name_regex_for_variants(target_variants)
-        })
-      }
+      # if(length(target_variants) > 0){
+      #   # FIX 1: Isolate the updates to rv so they don't trigger upstream dependencies
+      #   isolate({
+      #     rv$target_variants_norm <- lapply(setNames(target_variants, target_variants), function(v) {
+      #       vn <- normalize_name(v)
+      #       list(norm = vn, parts = extract_parts(vn))
+      #     })
+      #     rv$author_match_regex <- build_name_regex_for_variants(target_variants)
+      #   })
+      # }
     }
     
     list(
@@ -1973,10 +2197,12 @@ server <- function(input, output, session) {
       year = input$year_slider,
       authors = target_variants,
       logic_gate = input$author_logic_gate,
-      chks = dynamic_chks,
-      delims = dynamic_delims,
-      keywords = dynamic_keywords,
-      dataset_trigger = nrow(df) 
+      # chks = dynamic_chks,
+      # delims = dynamic_delims,
+      # keywords = dynamic_keywords,
+      dataset_trigger = nrow(df),
+      ext_match = input$ext_match,     
+      ignore_case = input$ignore_case  
     )
   })
   
@@ -2005,6 +2231,9 @@ server <- function(input, output, session) {
     
     if (nrow(df) == 0) return(df)
     
+    print("filters$authors:")
+    print(filters$authors)
+    
     # --- C. AUTHOR FILTER ---
     if (!is.null(filters$authors) && length(filters$authors) > 0) {
       author_list <- stringr::str_squish(filters$authors)
@@ -2014,6 +2243,14 @@ server <- function(input, output, session) {
       # FIX 2: Isolate rv writes inside the reactive
       isolate({ rv$author_list <- unique(author_list) })
       
+      isolate({
+        rv$target_variants_norm <- lapply(setNames(author_list, author_list), function(v) {
+          vn <- normalize_name(v)
+          list(norm = vn, parts = extract_parts(vn))
+        })
+        rv$author_match_regex <- build_name_regex_for_variants(author_list)
+      })
+      
       if (length(author_list) > 0) {
         gate        <- if(!is.null(filters$logic_gate)) filters$logic_gate else "OR"
         ext_match   <- if(!is.null(filters$ext_match)) filters$ext_match else TRUE
@@ -2021,6 +2258,11 @@ server <- function(input, output, session) {
         
         search_cols <- if(!is.null(rv$detected_mv_cols)) intersect(names(rv$detected_mv_cols), colnames(df)) else "Authors"
         if(length(search_cols) == 0) search_cols <- "Authors"
+        
+        print("rv$detected_mv_cols:")
+        print(rv$detected_mv_cols)
+        print("search_cols:")
+        print(search_cols)
         
         # FIX 3: Isolate the function call so it doesn't accidentally bind to rv reads
         df <- isolate({
@@ -2035,15 +2277,33 @@ server <- function(input, output, session) {
         })
       }
     } else {
-      isolate({ rv$author_list <- character(0) })
+      isolate({ 
+        rv$author_list <- character(0) 
+        rv$target_variants_norm <- NULL
+        rv$author_match_regex <- NULL
+      })
     }
     
     if (nrow(df) == 0) return(df)
     
+    print("author_list:")
+    print(rv$author_list)
+    print("glens_year_filtered_rx:extend_input_table():")
     # --- D. CALCULATE CITATION WEIGHTS ---
     # FIX 4: Wrap extend_input_table in isolate() to break the infinite loop!
-    df <- isolate(extend_input_table(rv, df))
-    
+    df <- isolate(extend_input_table(rv, df, rv$author_match_regex, rv$target_variants_norm))
+    # if(stringi::stri_isempty(input$author_list)){
+    #   df <- df %>% 
+    #     select(-any_of(c(
+    #       "First_Author", 
+    #       "Second_Author", 
+    #       "Co_Author", 
+    #       "Corresponding_Author", 
+    #       "matched_token", 
+    #       "label", 
+    #       "position_rank"
+    #     )))
+    # }
     return(df)
   })
   
@@ -2052,16 +2312,20 @@ server <- function(input, output, session) {
     df <- glens_year_filtered_rx()
     
     # 1. Handle Visibility
-    if (is.null(df) || nrow(df) == 0 || stringi::stri_isempty(input$author_list)) {
+    if (is.null(df) || nrow(df) == 0) {
       shinyjs::hide("summary_table")
       # Hide plot containers
       lapply(c("acounts_plot", "ccounts_plot", "cdist_plot", "aperc_plot", "cperc_plot"), shinyjs::hide)
       return()
     }
     
-    # 2. Show UI elements
+    if(stringi::stri_isempty(input$author_list)){
+      lapply(c("acounts_plot", "ccounts_plot", "cdist_plot", "aperc_plot", "cperc_plot"), shinyjs::hide)
+    }else{
+      lapply(c("acounts_plot", "ccounts_plot", "cdist_plot", "aperc_plot", "cperc_plot"), shinyjs::show)  
+    }
+    
     shinyjs::show("summary_table")
-    lapply(c("acounts_plot", "ccounts_plot", "cdist_plot", "aperc_plot", "cperc_plot"), shinyjs::show)
     
     # 3. UPDATE THE PLOTS
     # We use try() because if the skeleton isn't fully rendered in the UI yet, 
@@ -2082,14 +2346,29 @@ server <- function(input, output, session) {
   
   # 5. Extract Scopus IDs safely from the FILTERED data
   available_scopus_ids_rx <- reactive({
-    req(glens_year_filtered_rx())
-    scopus_col <- glens_year_filtered_rx()$SCOPUS_ID
+    df <- glens_year_filtered_rx()
+    req(df, nrow(df) > 0, "SCOPUS_ID" %in% colnames(df))
+    scopus_col <- df$SCOPUS_ID
     
     if (is.null(scopus_col) || length(scopus_col) == 0) return(character(0))
     
     raw_splits <- unlist(strsplit(as.character(scopus_col), split = "[,;\"]", perl = TRUE))
     trimmed_splits <- trimws(raw_splits)
-    unique(trimmed_splits[trimmed_splits != ""])
+    available_scoupusids <- unique(trimmed_splits[trimmed_splits != ""])
+    # print(paste("available_scoupusids:",length(available_scoupusids)))
+    return(available_scoupusids)
+  })
+  
+  observeEvent(available_scopus_ids_rx(),{
+    available_scoupusids <- available_scopus_ids_rx()
+    req(length(na.omit(available_scoupusids)) > 0)
+    # print(paste("available_scoupusids:",paste(available_scoupusids, collapse=",")))
+    # print(input$autofill_scopusid_input)
+    if (isTRUE(input$autofill_scopusid_input)) {
+      updateTextAreaInput(session, "scopusid_text", value=paste(available_scoupusids, collapse="\n"))
+    } else {
+      updateTextAreaInput(session, "scopusid_text", value=NULL)
+    }
   })
   
   # ==============================================================================
@@ -2193,36 +2472,165 @@ server <- function(input, output, session) {
   #     addFontAwesome() 
   # })
   
-  # Render Full Data Network
-  output$network_full <- renderVisNetwork({
-    req(rv$glens_full_table) # Ensure data exists
-    req(nrow(rv$glens_full_table) > 0)
+  # Sync network dropdowns with the selected lookup columns
+  ## Render the Filtered Network Dropdown
+  # output$ui_net_col_filtered <- renderUI({
+  #   req(rv$detected_mv_cols)
+  #   
+  #   cols <- names(rv$detected_mv_cols)
+  #   if (length(cols) == 0) cols <- c("Authors")
+  #   
+  #   # Isolate prevents circular rendering while maintaining the user's choice
+  #   curr_filt <- isolate(input$net_col_filtered)
+  #   sel_filt <- if (!is.null(curr_filt) && curr_filt %in% cols) curr_filt else cols[1]
+  #   
+  #   selectInput("net_col_filtered", NULL, choices = cols, selected = sel_filt, width = "250px")
+  # })
+  
+  # Instantly update network dropdowns when Lookup Controls change
+  observeEvent(rv$detected_mv_cols, {
+    active_cols <- names(rv$detected_mv_cols)
+    if (length(active_cols) == 0) active_cols <- "Authors"
     
-    net_data <- build_collaboration_network(rv$glens_full_table, rv$author_list)
+    # Update Filtered Network dropdown
+    curr_filt <- input$net_col_filtered
+    sel_filt <- if (isTruthy(curr_filt) && curr_filt %in% active_cols) curr_filt else active_cols[1]
+    updateSelectInput(session, "net_col_filtered", choices = active_cols, selected = sel_filt)
     
+    # # Update Full Network dropdown
+    # curr_full <- input$net_col_full
+    # sel_full <- if (isTruthy(curr_full) && curr_full %in% active_cols) curr_full else active_cols[1]
+    # updateSelectInput(session, "net_col_full", choices = active_cols, selected = sel_full)
+  }, ignoreNULL = FALSE)
+  
+  # # Calculate Full Network Data (Debounced)
+  # net_data_full_raw <- reactive({
+  #   req(input$net_col_full, rv$glens_full_table, nrow(rv$glens_full_table) > 0, input$net_col_full)
+  #   
+  #   target_col <- input$net_col_full
+  #   target_delim <- if (!is.null(rv$detected_mv_cols[[target_col]])) rv$detected_mv_cols[[target_col]] else ","
+  #   
+  #   build_collaboration_network(rv$glens_full_table, rv$author_list, target_col, target_delim)
+  # })
+  # net_data_full_debounced <- net_data_full_raw %>% debounce(800)
+  
+  # Calculate Filtered Network Data (Debounced)
+  net_data_filtered_raw <- reactive({
+    # Explicitly depend on the column choice AND the delimiter list
+    col <- input$net_col_filtered
+    delims <- rv$detected_mv_cols
+    df <- glens_year_filtered_rx()
+    
+    req(col, df, nrow(df) > 0)
+    
+    # Get the specific delimiter for this column
+    target_delim <- if (!is.null(delims[[col]])) delims[[col]] else ","
+    
+    # Debug print to verify it's firing
+    message(paste("Generating network for:", col, "with delim:", target_delim))
+    
+    build_collaboration_network(df, rv$author_list, col, target_delim)
+  })
+  net_data_filtered_debounced <- net_data_filtered_raw %>% debounce(800)
+  
+  # # Render Full Data Network
+  # output$network_full <- renderVisNetwork({
+  #   net_data <- net_data_full_debounced()
+  #   req(net_data, nrow(net_data$edges) > 0)
+  #   
+  #   visNetwork(net_data$nodes, net_data$edges, width = "100%", height = "500px") %>%
+  #     visNodes(font = list(size = 14)) %>%
+  #     # smooth = FALSE is critical for large graph rendering performance
+  #     visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = FALSE) %>%
+  #     
+  #     # REMOVED: visIgraphLayout() 
+  #     # ADDED: Browser-side physics calculation (frees up the R thread)
+  #     visPhysics(solver = "forceAtlas2Based", 
+  #                forceAtlas2Based = list(gravitationalConstant = -50),
+  #                stabilization = list(iterations = 150)) %>%
+  #     
+  #     visOptions(highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE), nodesIdSelection = TRUE, autoResize = TRUE) %>%
+  #     addFontAwesome()
+  # })
+  
+  # Render Filtered Subset Network (Apply the exact same changes here)
+  output$network_filtered <- renderVisNetwork({
+    net_data <- net_data_filtered_debounced()
+    # req(net_data, nrow(net_data$edges) > 0)
+    req(net_data, nrow(net_data$nodes) > 0)
+    
+    # visNetwork(net_data$nodes, net_data$edges, width = "100%", height = "500px") %>%
+    #   visNodes(font = list(size = 14)) %>%
+    #   visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = FALSE) %>%
+    #   visPhysics(solver = "forceAtlas2Based", 
+    #              forceAtlas2Based = list(gravitationalConstant = -50),
+    #              stabilization = list(iterations = 150)) %>%
+    #   visOptions(highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE), nodesIdSelection = TRUE, autoResize = TRUE) %>%
+    #   addFontAwesome()
     visNetwork(net_data$nodes, net_data$edges, width = "100%", height = "500px") %>%
-      visNodes(font = list(size = 14)) %>%
-      visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = TRUE) %>%
-      visIgraphLayout(layout = "layout_with_fr") %>%
-      visOptions(highlightNearest = list(enabled = TRUE, degree = 1), nodesIdSelection = TRUE) %>%
-      addFontAwesome()
+          visNodes(font = list(size = 14)) %>%
+          visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = TRUE) %>%
+          visIgraphLayout(layout = "layout_with_fr") %>%
+          visOptions(highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE), nodesIdSelection = TRUE, autoResize= TRUE) %>%
+          addFontAwesome()
   })
   
-  # Render Filtered Subset Network
-  output$network_filtered <- renderVisNetwork({
-    df <- glens_year_filtered_rx()
-    req(df, nrow(df) > 0) # Assuming this is your filtered reactive variable
-    net_data <- build_collaboration_network(df, rv$author_list)
-    
-    visNetwork(net_data$nodes, net_data$edges, width = "100%", height = "500px") %>%
-      visNodes(font = list(size = 14)) %>%
-      visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = TRUE) %>%
-      # visPhysics(solver = "forceAtlas2Based", forceAtlas2Based = list(gravitationalConstant = -50)) %>%
-      visIgraphLayout(layout = "layout_with_fr") %>%
-      visOptions(highlightNearest = list(enabled = TRUE, degree = 1), nodesIdSelection = TRUE) %>%
-      # visLegend() %>%
-      addFontAwesome()
-  })
+  # # Render Full Data Network
+  # output$network_full <- renderVisNetwork({
+  #   net_data <- net_data_full_debounced()
+  #   req(net_data, nrow(net_data$edges) > 0)
+  #   
+  #   visNetwork(net_data$nodes, net_data$edges, width = "100%", height = "500px") %>%
+  #     visNodes(font = list(size = 14)) %>%
+  #     visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = TRUE) %>%
+  #     visIgraphLayout(layout = "layout_with_fr") %>%
+  #     visOptions(highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE), nodesIdSelection = TRUE, autoResize= TRUE) %>%
+  #     addFontAwesome()
+  # })
+  # 
+  # # Render Filtered Subset Network
+  # output$network_filtered <- renderVisNetwork({
+  #   net_data <- net_data_filtered_debounced()
+  #   req(net_data, nrow(net_data$edges) > 0)
+  #   
+  #   visNetwork(net_data$nodes, net_data$edges, width = "100%", height = "500px") %>%
+  #     visNodes(font = list(size = 14)) %>%
+  #     visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = TRUE) %>%
+  #     visIgraphLayout(layout = "layout_with_fr") %>%
+  #     visOptions(highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE), nodesIdSelection = TRUE, autoResize= TRUE) %>%
+  #     addFontAwesome()
+  # })
+  # 
+  # # # Render Full Data Network
+  # # output$network_full <- renderVisNetwork({
+  # #   req(rv$glens_full_table) # Ensure data exists
+  # #   req(nrow(rv$glens_full_table) > 0)
+  # #   
+  # #   net_data <- build_collaboration_network(rv$glens_full_table, rv$author_list)
+  # #   
+  # #   visNetwork(net_data$nodes, net_data$edges, width = "100%", height = "500px") %>%
+  # #     visNodes(font = list(size = 14)) %>%
+  # #     visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = TRUE) %>%
+  # #     visIgraphLayout(layout = "layout_with_fr") %>%
+  # #     visOptions(highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE), nodesIdSelection = TRUE, autoResize= TRUE) %>%
+  # #     addFontAwesome()
+  # # })
+  # # 
+  # # # Render Filtered Subset Network
+  # # output$network_filtered <- renderVisNetwork({
+  # #   df <- glens_year_filtered_rx()
+  # #   req(df, nrow(df) > 0) # Assuming this is your filtered reactive variable
+  # #   net_data <- build_collaboration_network(df, rv$author_list)
+  # #   
+  # #   visNetwork(net_data$nodes, net_data$edges, width = "100%", height = "500px") %>%
+  # #     visNodes(font = list(size = 14)) %>%
+  # #     visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = TRUE) %>%
+  # #     # visPhysics(solver = "forceAtlas2Based", forceAtlas2Based = list(gravitationalConstant = -50)) %>%
+  # #     visIgraphLayout(layout = "layout_with_fr") %>%
+  # #     visOptions(highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE), nodesIdSelection = TRUE, autoResize= TRUE) %>%
+  # #     # visLegend() %>%
+  # #     addFontAwesome()
+  # # })
   
   output$dynamic_source_ui <- renderUI({
     req(rv$glens_full_table)
@@ -2268,7 +2676,7 @@ server <- function(input, output, session) {
     df <- rv$glens_full_table
     current_cols <- names(df)
     
-    for (col_name in current_cols) {
+    for(col_name in current_cols) {
       hex_str <- paste(as.character(charToRaw(col_name)), collapse = "")
       chk_id <- paste0("lookup_chk_", hex_str)
       delim_id <- paste0("lookup_delim_", hex_str)
@@ -2288,33 +2696,42 @@ server <- function(input, output, session) {
     req(rv$glens_full_table)
     df <- rv$glens_full_table
     
-    current_cols <- if (!is.null(df) && ncol(df) > 0) {
-      names(df)
-    } else {
-      collabnet_required_cols 
-    }
-    
+    current_cols <- names(df)
     req(length(current_cols) > 0)
-    req(!is.null(input[["lookup_chk_1"]]))
     
     new_mv_cols <- list()
-    for (i in seq_along(current_cols)) {
-      col_name <- current_cols[i]
-      is_checked <- input[[paste0("lookup_chk_", i)]]
+    
+    for(col_name in current_cols) {
+      # USE THE SAME HEX ENCODING AS renderUI
+      hex_str <- paste(as.character(charToRaw(col_name)), collapse = "")
       
-      if (!is.null(is_checked) && is_checked) {
-        delim <- input[[paste0("lookup_delim_", i)]]
-        if (is.null(delim) || trimws(delim) == "") delim <- "," 
+      is_checked <- input[[paste0("lookup_chk_", hex_str)]]
+      
+      if (isTRUE(is_checked)) {
+        delim <- input[[paste0("lookup_delim_", hex_str)]]
+        # if (is.null(delim) || trimws(delim) == "") delim <- "," 
+        if (is.null(delim) || trimws(delim) == "") delim <- "" 
         new_mv_cols[[col_name]] <- delim
       }
     }
+    
     rv$detected_mv_cols <- new_mv_cols
+    
+    print("new_mv_cols updated to:")
+    print(new_mv_cols)
   })
   
   output$lookup_controls_panel <- renderUI({
     # Abort rendering if table isn't ready
     req(rv$glens_full_table)
     df <- rv$glens_full_table
+    
+    # --- PRESERVE EXISTING UI STATES ---
+    current_auto_refresh <- if (!is.null(isolate(input$auto_refresh_lookup))) isolate(input$auto_refresh_lookup) else TRUE
+    current_map_orcid    <- if (!is.null(isolate(input$map_orcid2scopusid))) isolate(input$map_orcid2scopusid) else TRUE
+    current_autofill     <- if (!is.null(isolate(input$autofill_scopusid_input))) isolate(input$autofill_scopusid_input) else FALSE
+    current_ext_match    <- if (!is.null(isolate(input$ext_match))) isolate(input$ext_match) else TRUE
+    # -----------------------------------
     
     cols_to_show <- if (ncol(df) > 0) names(df) else collabnet_required_cols
     
@@ -2358,7 +2775,9 @@ server <- function(input, output, session) {
       ),
       
       tags$p(style = "font-size: 0.9em; color: #555;", "Select columns for look-up and their delimiters (if any)."),
-      checkboxInput("auto_refresh_lookup", "Auto-Refresh Lookup", value = TRUE),
+      
+      # Use the preserved variable here
+      checkboxInput("auto_refresh_lookup", "Auto-Refresh Lookup", value = current_auto_refresh),
       
       if (isTRUE(rv$has_scopus_key) || !is.null(glens_env$scopus_key)) {
         tagList(
@@ -2373,7 +2792,7 @@ server <- function(input, output, session) {
                 style = "color: #007bc2; cursor: help; margin-left: 5px; display: inline-block;"
               )
             ),
-            value = TRUE
+            value = current_map_orcid # Use preserved state
           ),
           checkboxInput(
             inputId = "autofill_scopusid_input", 
@@ -2386,7 +2805,7 @@ server <- function(input, output, session) {
                 style = "color: #007bc2; cursor: help; margin-left: 5px; display: inline-block;"
               )
             ),
-            value = TRUE
+            value = current_autofill # Use preserved state
           )
         )
       } else {
@@ -2402,7 +2821,7 @@ server <- function(input, output, session) {
                 style = "color: #007bc2; cursor: help; margin-left: 5px; display: inline-block;"
               )
             ),
-            value = FALSE
+            value = FALSE # Remains strictly false when disabled
           )),
           shinyjs::disabled(checkboxInput(
             inputId = "autofill_scopusid_input", 
@@ -2415,12 +2834,14 @@ server <- function(input, output, session) {
                 style = "color: #007bc2; cursor: help; margin-left: 5px; display: inline-block;"
               )
             ),
-            value = FALSE
+            value = FALSE # Remains strictly false when disabled
           ))
         )
       },
-      checkboxInput("ext_match", "Extended Keyword Matching", value = TRUE),
-      checkboxInput("ignore_case", "Ignore Case", value = TRUE),
+      
+      # Use the preserved variable here
+      checkboxInput("ext_match", "Extended Keyword Matching", value = current_ext_match),
+      shinyjs::disabled(checkboxInput("ignore_case", "Ignore Case", value = TRUE)),
       
       tags$hr(style = "border-top: 1px solid #ffb74d; margin-top: 10px; margin-bottom: 10px;"),
       tags$div(
@@ -2429,6 +2850,125 @@ server <- function(input, output, session) {
       )
     )
   })
+  
+  # output$lookup_controls_panel <- renderUI({
+  #   # Abort rendering if table isn't ready
+  #   req(rv$glens_full_table)
+  #   df <- rv$glens_full_table
+  #   
+  #   cols_to_show <- if (ncol(df) > 0) names(df) else collabnet_required_cols
+  #   
+  #   control_rows <- lapply(cols_to_show, function(col) {
+  #     hex_str <- paste(as.character(charToRaw(col)), collapse = "")
+  #     chk_id <- paste0("lookup_chk_", hex_str)
+  #     delim_id <- paste0("lookup_delim_", hex_str)
+  #     
+  #     existing_chk <- isolate(input[[chk_id]])
+  #     existing_delim <- isolate(input[[delim_id]])
+  #     
+  #     is_checked <- FALSE
+  #     delim_val <- ""
+  #     
+  #     if (!is.null(existing_chk)) {
+  #       is_checked <- existing_chk
+  #       delim_val <- if(!is.null(existing_delim)) existing_delim else ""
+  #     } else if (!is.null(isolate(rv$detected_mv_cols)) && (col %in% names(isolate(rv$detected_mv_cols)))) {
+  #       is_checked <- TRUE
+  #       delim_val <- isolate(rv$detected_mv_cols)[[col]]
+  #     } else {
+  #       if (grepl("^(Authors|DOI|ORCID|Author\\(s\\) ID)$", col, ignore.case = TRUE)) {
+  #         is_checked <- TRUE
+  #         delim_val <- ","
+  #       }
+  #     }
+  #     
+  #     fluidRow(
+  #       style = "margin-bottom: 5px; align-items: center; display: flex;",
+  #       column(6, checkboxInput(chk_id, col, value = is_checked)),
+  #       column(6, textInput(delim_id, label = NULL, value = delim_val, placeholder = "Delimiters (e.g., ; , |)", width = "100%"))
+  #     )
+  #   })
+  #   
+  #   tags$div(
+  #     style = "background-color: #fff3e0; border: 2px solid #ff9800; border-radius: 8px; padding: 15px; margin-top: 15px;",
+  #     
+  #     tags$div(style = "display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;",
+  #              tags$h4(icon("cogs"), " Lookup Controls", style = "color: #e65100; margin-top: 0; margin-bottom: 0;"),
+  #              actionButton("reset_ext_controls", "Reset Defaults", icon = icon("undo"), class = "btn-danger", style = "white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 2px 8px; font-size: 0.8em;")
+  #     ),
+  #     
+  #     tags$p(style = "font-size: 0.9em; color: #555;", "Select columns for look-up and their delimiters (if any)."),
+  #     checkboxInput("auto_refresh_lookup", "Auto-Refresh Lookup", value = TRUE),
+  #     
+  #     if (isTRUE(rv$has_scopus_key) || !is.null(glens_env$scopus_key)) {
+  #       tagList(
+  #         checkboxInput(
+  #           inputId = "map_orcid2scopusid", 
+  #           label = tagList(
+  #             "Map ORCiD -> SCOPUS ID ",
+  #             tags$span(
+  #               icon("circle-question"),
+  #               "data-toggle" = "tooltip",
+  #               title = "Map ORCiD(s) to SCOPUS ID(s) one-way for faster retrieval. Auto-refresh does NOT apply to ORCiD -> SCOPUS ID Mapping. Run CollabNET.",
+  #               style = "color: #007bc2; cursor: help; margin-left: 5px; display: inline-block;"
+  #             )
+  #           ),
+  #           value = TRUE
+  #         ),
+  #         checkboxInput(
+  #           inputId = "autofill_scopusid_input", 
+  #           label = tagList(
+  #             "Autofill SCOPUS ID Input ",
+  #             tags$span(
+  #               icon("circle-question"),
+  #               "data-toggle" = "tooltip",
+  #               title = "Automatically append the discovered SCOPUS IDs into the SCOPUS ID input text box above.",
+  #               style = "color: #007bc2; cursor: help; margin-left: 5px; display: inline-block;"
+  #             )
+  #           ),
+  #           value = FALSE
+  #         )
+  #       )
+  #     } else {
+  #       tagList(
+  #         shinyjs::disabled(checkboxInput(
+  #           inputId = "map_orcid2scopusid", 
+  #           label = tagList(
+  #             "Map ORCiD -> SCOPUS ID ",
+  #             tags$span(
+  #               icon("circle-question"),
+  #               "data-toggle" = "tooltip",
+  #               title = "Map ORCiD(s) to SCOPUS ID(s) one-way for faster retrieval. Auto-refresh does NOT apply to ORCiD -> SCOPUS ID Mapping. Run CollabNET.",
+  #               style = "color: #007bc2; cursor: help; margin-left: 5px; display: inline-block;"
+  #             )
+  #           ),
+  #           value = FALSE
+  #         )),
+  #         shinyjs::disabled(checkboxInput(
+  #           inputId = "autofill_scopusid_input", 
+  #           label = tagList(
+  #             "Autofill SCOPUS ID Input ",
+  #             tags$span(
+  #               icon("circle-question"),
+  #               "data-toggle" = "tooltip",
+  #               title = "Automatically append the discovered SCOPUS IDs into the text box above.",
+  #               style = "color: #007bc2; cursor: help; margin-left: 5px; display: inline-block;"
+  #             )
+  #           ),
+  #           value = FALSE
+  #         ))
+  #       )
+  #     },
+  #     checkboxInput("ext_match", "Extended Keyword Matching", value = TRUE),
+  #     shinyjs::disabled(checkboxInput("ignore_case", "Ignore Case", value = TRUE)),
+  #     
+  #     tags$hr(style = "border-top: 1px solid #ffb74d; margin-top: 10px; margin-bottom: 10px;"),
+  #     tags$div(
+  #       style = "max-height: 250px; overflow-y: auto; overflow-x: hidden; padding-right: 5px;",
+  #       control_rows
+  #     )
+  #   )
+  # })
   
   observeEvent(input$clear_log, {
     rv$log_text <- ""
@@ -2448,7 +2988,7 @@ server <- function(input, output, session) {
       columns_to_split <- list()
       
       # 3. Loop through the columns and fetch the inputs using the safe Hex IDs
-      for (col in cols_to_check) {
+      for(col in cols_to_check) {
         hex_str <- paste(as.character(charToRaw(col)), collapse = "")
         
         # Fetch the current value of the checkbox and textbox
@@ -2662,43 +3202,90 @@ server <- function(input, output, session) {
       orcid_count <- length(orcid_list)
       
       if(scopus_count > 0){
-        progress_state$scopus_done <- 0
+        # Create the communication queue
+        progress_queue <- ipc::shinyQueue()
+        
+        # Define the handler. Notice it directly accepts 'current' and 'total'
+        progress_queue$consumer$addHandler(function(signal, msg, env) {
+          
+          # Extract our values from the msg object
+          current <- msg$current
+          total <- msg$total
+          pct <- round((current / total) * 100)
+          
+          shinyWidgets::updateProgressBar(
+            session, id = "prog_scopus", 
+            value = current, total = total,
+            title = sprintf("Scopus ID: %d%% (%d/%d)", pct, current, total),
+            status = if(pct == 100) "success" else "info"
+          )
+        }, signal = "update_progress")
+        
+        # Start the queue
+        progress_queue$consumer$start(100)
+        
+        # progress_state$scopus_done <- 0
+        # scopusid_promise <- future({
+        #   tryCatch({ 
+        #     # if (rv$is_cancelled) return(NULL)
+        #     if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+        #     
+        #     # Handle missing key gracefully & update progress bar
+        #     if (!rv$has_key_scopus) {
+        #       shinyWidgets::updateProgressBar(
+        #         session, id = "prog_scopus", value = scopus_count , total = max(1, scopus_count),
+        #         title = sprintf("Scopus ID Skipped (No Key): %d%%", 100), status = "warning"
+        #       )
+        #       return(promise_resolve(NULL))
+        #     }
+        #     
+        #     # INCREMENT PROGRESS BAR
+        #     prog_scopus_reactive <- reactive({ progress_state$scopus_done + 1 })
+        #     # progress_state$scopus_done <- progress_state$scopus_done + 1
+        #     pct <- round(( isolate(prog_scopus_reactive()) / max(1, scopus_count) ) * 100)
+        #     shinyWidgets::updateProgressBar(
+        #       session, id = "prog_scopus", value = scopus_count, total = max(1, scopus_count),
+        #       title = sprintf("Scopus ID: %d%% (%d/%d)", pct, isolate(prog_scopus_reactive()) , scopus_count),
+        #       status = if(pct == 100) "success" else "info"
+        #     ) #value = isolate(prog_scopus_reactive())
+        #     progress_state$scopus_done <- isolate(prog_scopus_reactive())
+        #     return(get_scopus_data_id(scopus_list, rv, glens_env$scopus_key))
+        #     
+        #   }, error = function(e){
+        #     # message("ERROR (get_scopus_data_id()):",str(e),e)
+        #     rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'>SCOPUS: Error fetching ID(s):",e,"</span>"), sep="<br>")
+        #     })
+        # }, 
+        # globals = c("get_scopus_data_id", "scopus_list","scopus_count", "has_key_scopus", "glens_env", "glens_env$scopus_key", "rv", "session", "progress_state", "print_log"),
+        # packages = c("shinyWidgets","dplyr", "httr2", "jsonlite", "tidyr", "purrr", "shiny"), seed = TRUE 
+        # ) %...>% (function(res) {
+        #   # if (rv$is_cancelled) return(NULL)
+        #   if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+        #   return(res) 
+        # }) 
+        
+        # Start the background process
         scopusid_promise <- future({
           tryCatch({ 
-            # if (rv$is_cancelled) return(NULL)
             if(!fs::file_exists(file.path("run.lock"))) return(NULL)
             
-            # Handle missing key gracefully & update progress bar
-            if (!rv$has_key_scopus) {
-              shinyWidgets::updateProgressBar(
-                session, id = "prog_scopus", value = scopus_count , total = max(1, scopus_count),
-                title = sprintf("Scopus ID Skipped (No Key): %d%%", 100), status = "warning"
-              )
-              return(promise_resolve(NULL))
-            }
-            
-            # INCREMENT PROGRESS BAR
-            prog_scopus_reactive <- reactive({ progress_state$scopus_done + 1 })
-            # progress_state$scopus_done <- progress_state$scopus_done + 1
-            pct <- round(( isolate(prog_scopus_reactive()) / max(1, scopus_count) ) * 100)
-            shinyWidgets::updateProgressBar(
-              session, id = "prog_scopus", value = scopus_count, total = max(1, scopus_count),
-              title = sprintf("Scopus ID: %d%% (%d/%d)", pct, isolate(prog_scopus_reactive()) , scopus_count),
-              status = if(pct == 100) "success" else "info"
-            ) #value = isolate(prog_scopus_reactive())
-            progress_state$scopus_done <- isolate(prog_scopus_reactive())
-            return(get_scopus_data_id(scopus_list, rv, glens_env$scopus_key))
+            return(get_scopus_data_id(scopus_list, api_key = glens_env$scopus_key, queue = progress_queue))
             
           }, error = function(e){
-            # message("ERROR (get_scopus_data_id()):",str(e),e)
-            rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'>SCOPUS: Error fetching ID(s):",e,"</span>"), sep="<br>")
-            })
+            return(list(error = conditionMessage(e)))
+          })
         }, 
-        globals = c("get_scopus_data_id", "scopus_list","scopus_count", "has_key_scopus", "glens_env", "glens_env$scopus_key", "rv", "session", "progress_state", "print_log"),
-        packages = c("shinyWidgets","dplyr", "httr2", "jsonlite", "tidyr", "purrr", "shiny"), seed = TRUE 
+        globals = c("get_scopus_data_id", "scopus_list", "scopus_count", "glens_env", "progress_queue"),
+        packages = c("dplyr", "httr2", "jsonlite", "tidyr", "purrr", "ipc"), seed = TRUE 
         ) %...>% (function(res) {
-          # if (rv$is_cancelled) return(NULL)
           if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+          
+          # Handle the error passed back from the tryCatch
+          if (is.list(res) && !is.null(res$error)) {
+            rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'>SCOPUS Error:", res$error, "</span>"), sep="<br>")
+            return(NULL)
+          }
+          
           return(res) 
         }) %...!% (function(res) {
           # if (rv$is_cancelled) return(NULL)
@@ -3092,7 +3679,9 @@ server <- function(input, output, session) {
         if(!fs::file_exists(file.path("run.lock"))) return(NULL)
         
         failed_doi_count <- length(Filter(is.null, results$dois))
-        rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'>Failed RIS Extraction Count:", abs(rv$doi_count - failed_doi_count), "</span>"), sep="<br>")
+        if(abs(rv$doi_count - failed_doi_count) > 0){
+          rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'>Failed RIS Extraction Count:", abs(rv$doi_count - failed_doi_count), "</span>"), sep="<br>")
+        }
         
         # --- 1. MERGE THE SCRAPED DATA ---
         # Extract and bind the data from the promises safely
@@ -3130,7 +3719,7 @@ server <- function(input, output, session) {
           rv$author_match_regex <- NULL
         }
         
-        
+        print("submit_btn:extend_input_table():")
         # --- 3. THE HEAVY LIFTING (Hybrid Paradigm) ---
         # Pass raw_df directly into the extension and matching pipeline
         extended_df <- extend_input_table(rv, raw_df, rv$author_match_regex, rv$target_variants_norm)
@@ -3159,10 +3748,10 @@ server <- function(input, output, session) {
         shinyjs::show("sh_index")
         shinyjs::show("summary_table")
         shinyjs::show("lookup_controls_panel")
-        shinyjs::show("network_full")
+        # shinyjs::show("network_full")
         print("HERE3")
         # --- 5. CLEANUP ---
-        rv$log_text <- paste(rv$log_text, "<span style='color: green;'>✓ Journal matching complete. Ready.</span>", sep="<br>")
+        rv$log_text <- paste(rv$log_text, "<span style='color: green;'>✓ Run complete.</span>", sep="<br>")
         
         try({ if (fs::file_exists("run.lock")) fs::file_delete("run.lock") }, silent = TRUE)
         

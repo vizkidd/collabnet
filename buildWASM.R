@@ -28,6 +28,9 @@ cat(unlist(lapply(c(helper_scripts, app_files), function(x){
 fs::dir_copy("www/","staging_app/")
 # fs::file_copy(c(app_files, helper_scripts), "staging_app/")
 fs::file_copy("2024-JCR_IMPACT_FACTOR.xlsx", "staging_app/")
+
+# rwasm::add_pkg("/media/everest/disk01/vishvesh/QuickBLAST/", repo_dir = "./repo") 
+
 shinylive::export(appdir = "./staging_app/", destdir = "./wasm_build/", wasm_packages=T, quiet=F)
 httpuv::runStaticServer("./wasm_build/", headers = list(
   "Cross-Origin-Opener-Policy" = "same-origin",

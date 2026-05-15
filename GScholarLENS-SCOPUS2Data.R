@@ -125,22 +125,20 @@ get_scopus_data_orcid <- function(orcid, rv, api_key = NULL) {
   return(final_tibble)
 }
 
-get_scopus_data_id <- function(scopus_id, rv, api_key = NULL) {
+get_scopus_data_id <- function(scopus_id, api_key = NULL, queue = NULL){
   if(is.null(api_key) || trimws(api_key) == ""){ stop("SCOPUS API Key is missing.") }
   api_key <- gsub("[^[:alnum:]]", "", api_key)
   
   local_is_WASM <- grepl(pattern="wasm", x=Sys.info()["machine"])
   
-  # Process and Clean IDs
   clean_ids <- trimws(scopus_id)
   clean_ids <- gsub("2-s2\\.0-", "", clean_ids) 
-  clean_ids <- clean_ids[clean_ids != ""]       
+  clean_ids <- clean_ids[clean_ids != ""]        
   if(length(clean_ids) == 0) return(tibble::tibble())
   
-  # --- NEW: CHUNKING LOGIC ---
-  # Split IDs into blocks of 30 to prevent HTTP 414 URI Too Long errors
   chunk_size <- 30
   id_chunks <- split(clean_ids, ceiling(seq_along(clean_ids) / chunk_size))
+  total_ids <- length(clean_ids)
   
   if (!local_is_WASM) {
     base_req <- httr2::request("https://api.elsevier.com/content/search/scopus") %>%
@@ -148,14 +146,25 @@ get_scopus_data_id <- function(scopus_id, rv, api_key = NULL) {
       httr2::req_error(is_error = function(resp) httr2::resp_status(resp) >= 400)
   }
   
-  all_entries <- list() # Master list for all chunks
+  all_entries <- list() 
+  ids_processed <- 0 # Keep track of progress
   
-  # Loop through each chunk of 30 IDs
+  # Loop through each chunk
   for (chunk in id_chunks) {
     
-    # Build query for THIS chunk
-    search_query <- paste0("AU-ID(", chunk, ")", collapse = " OR ")
+    # --- FIRE PROGRESS MESSAGE TO SHINY UI ---
+    if (!is.null(queue)) {
+      ids_processed <- min(ids_processed + length(chunk), total_ids)
+      
+      # Pass the signal, then package the variables into a list for 'obj'
+      queue$producer$fire(
+        signal = "update_progress", 
+        obj = list(current = ids_processed, total = total_ids)
+      )
+    }
+    # -----------------------------------------
     
+    search_query <- paste0("AU-ID(", chunk, ")", collapse = " OR ")
     start_idx <- 0
     total_results <- NA
     

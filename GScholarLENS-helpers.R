@@ -69,33 +69,43 @@ detect_vpn <- function(rv, output) {
 #Flow functions
 extend_input_table <- function(rv, df, author_match_regex, target_variants_norm) {
   print("extend_input_table(rv):")
+  print("author_match_regex:")
+  print(author_match_regex)
+  print("target_variants_norm:")
+  print(target_variants_norm)
   if (nrow(df) <= 0) {
     rv$log_text <- paste(rv$log_text, paste("No data to extend."), sep="<br>")
     return(df)
   }
   
-  # --- NEW BYPASS: Check if there are actually keywords to search for ---
-  kw_list <- unique(c(rv$target_variants_norm, rv$author_match_regex))
+  # --- 1. DEFENSIVE CHECKS: Prevent missing column crashes ---
+  if (!"Citations" %in% colnames(df)) df$Citations <- 0
+  if (!"Authors" %in% colnames(df)) df$Authors <- NA_character_
+  if (!"Year" %in% colnames(df)) df$Year <- NA_integer_
+  # -----------------------------------------------------------
+  
+  # --- 2. EXTRACT RAW KEYWORDS SAFELY ---
+  raw_kws <- if (is.list(rv$target_variants_norm)) {
+    if (!is.null(names(rv$target_variants_norm))) {
+      names(rv$target_variants_norm)
+    } else {
+      sapply(rv$target_variants_norm, function(x) x$norm)
+    }
+  } else {
+    as.character(rv$target_variants_norm)
+  }
+  
+  # Inject your raw lookup text (e.g., "Electrical") into the array!
+  generic_kws <- if (!is.null(rv$author_list) && length(rv$author_list) > 0) rv$author_list else ""
+  
+  kw_list <- unique(c(raw_kws, rv$author_match_regex, generic_kws))
   kw_list <- kw_list[!is.na(kw_list) & trimws(kw_list) != ""]
   
+  print("kw_list:")
+  print(kw_list)
+  
+  # --- 3. BYPASS LOGIC: No Keywords Provided ---
   if (length(kw_list) == 0) {
-    # # # No keywords provided! Bypass filtering and show all data.
-    # # # We assign everything as a "Co_Author" with a weight of 1.0 so plots still render safely.
-    # df <- df %>%
-    #   mutate(
-    #     label = "No_Filter",
-    #     matched_token = NA_character_,
-    #     First_Author = 0L,
-    #     Second_Author = 0L,
-    #     Co_Author = 1L,
-    #     Corresponding_Author = 0L,
-    #     Author_Count = str_count(Authors, ",") + 1,
-    #     Adjustment_Weights = 1.0,
-    #     Adjusted_Citations = suppressWarnings(as.numeric(Citations)),
-    #     Year = as.integer(Year),
-    #     position_rank = 3L
-    #   ) %>%
-    #   arrange(desc(Adjusted_Citations))
     df <- df %>%
       dplyr::mutate(
         label = "No_Filter",
@@ -108,15 +118,19 @@ extend_input_table <- function(rv, df, author_match_regex, target_variants_norm)
         Adjustment_Weights = 0.0,
         Adjusted_Citations = suppressWarnings(as.numeric(Citations)),
         Year = as.integer(Year),
-        position_rank = 0L # 3 represents Co_Author
+        position_rank = 0L
       )
     return(df) # Exit the function early
   }
   
   # --- Retrieve toggles from rv (Fallback to TRUE if missing) ---
-  # Make sure you are syncing input$ext_match to rv$ext_match in your observeEvent!
   ext_match <- if (!is.null(rv$ext_match)) rv$ext_match else TRUE
   ignore_case <- if (!is.null(rv$ignore_case)) rv$ignore_case else TRUE
+  
+  print(paste("ext_match:", ext_match))
+  print(paste("rv$ext_match:", rv$ext_match))
+  print(paste("ignore_case:", ignore_case))
+  print(paste("rv$ignore_case:", rv$ignore_case))
   
   # Fetch selected columns and delimiters from the extended controls panel
   search_cols <- names(rv$detected_mv_cols)
@@ -133,6 +147,7 @@ extend_input_table <- function(rv, df, author_match_regex, target_variants_norm)
     valid_search_cols <- "Authors"
   }
   
+  # --- 4. EXTENDED MATCHING ---
   glens_extended_table <- df %>%
     rowwise() %>%
     mutate(
@@ -158,20 +173,16 @@ extend_input_table <- function(rv, df, author_match_regex, target_variants_norm)
                 break 
               }
             } else {
-              # Gather all keywords/regexes to test
-              kw_list <- unique(c(rv$target_variants_norm, rv$author_match_regex))
-              kw_list <- kw_list[!is.na(kw_list) & kw_list != ""]
-              
               match_found <- FALSE
+              
               for (kw in kw_list) {
-                # tryCatch prevents malformed regex from crashing the app
+                print(paste("kw:",kw))
                 is_match <- tryCatch(
                   grepl(kw, val, ignore.case = ignore_case),
                   error = function(e) FALSE
                 )
                 
                 if (is_match) {
-                  # Assign a generic label for a basic string match
                   best_match <- list(label = "Generic_Match", matched_token = kw)
                   match_found <- TRUE
                   break
@@ -179,7 +190,6 @@ extend_input_table <- function(rv, df, author_match_regex, target_variants_norm)
               }
               if (match_found) break
             }
-            
           }
         }
         best_match
@@ -200,6 +210,7 @@ extend_input_table <- function(rv, df, author_match_regex, target_variants_norm)
   
   if(nrow(glens_extended_table) <= 0) {
     rv$log_text <- paste(rv$log_text, "Warning: No matches found during table extension.", sep="<br>")
+    print("Warning: No matches found during table extension.")
     return(glens_extended_table) 
   }
   
@@ -208,14 +219,14 @@ extend_input_table <- function(rv, df, author_match_regex, target_variants_norm)
   
   if (!"Author_Count" %in% colnames(glens_extended_table)) {
     glens_extended_table <- glens_extended_table %>%
-      mutate(Author_Count = str_count(!!sym(count_target_col), escape_regex(count_target_delim)) + 1)
+      mutate(Author_Count = stringr::str_count(!!sym(count_target_col), escape_regex(count_target_delim)) + 1)
   }
   
   # Correct weight logic
   glens_extended_table <- glens_extended_table %>%
     mutate(
       Adjustment_Weights = case_when(
-        label == "Generic_Match" ~ 1.00,        # Give basic string matches full weight
+        label == "Generic_Match" ~ 1.00,
         label == "Corresponding_Author" ~ 1.00,
         label == "First_Author" ~ 0.90,
         label == "Second_Author" ~ 0.50,
@@ -228,8 +239,6 @@ extend_input_table <- function(rv, df, author_match_regex, target_variants_norm)
   
   glens_extended_table$Adjusted_Citations <- suppressWarnings(as.numeric(glens_extended_table$Adjusted_Citations))
   
-  # For downstream plotting safety, treat Generic Matches as Co-Authors 
-  # so at least one author flag column triggers as `1`
   glens_extended_table <- glens_extended_table %>%
     mutate(Co_Author = ifelse(Generic_Match == 1, 1L, Co_Author))
   
@@ -238,7 +247,6 @@ extend_input_table <- function(rv, df, author_match_regex, target_variants_norm)
     glens_extended_table[[col]] <- ifelse(glens_extended_table[[col]] >= 1, 1L, 0L)
   }
   
-  # Global ordering 
   ret_df <- glens_extended_table %>%
     mutate(
       position_rank = case_when(

@@ -65,91 +65,275 @@ library(visNetwork)
 
 library(stringr) # Make sure you have this loaded!
 
-build_collaboration_network <- function(df, main_authors_list) {
+build_collaboration_network <- function(df, main_authors_list, target_col = "Authors", target_delim = ",") {
+  print("target_delim:")
+  print(target_delim)
+  
   if (is.null(main_authors_list)) main_authors_list <- character(0)
   
-  # 1. Clean Authors and get Unique Nodes FIRST
-  clean_df <- df %>%
-    mutate(paper_id = row_number()) %>%
-    select(paper_id, Authors) %>%
-    separate_rows(Authors, sep = ",\\s*") %>%
-    mutate(
-      Authors = str_squish(Authors),
-      Authors = str_to_title(Authors)
-    ) %>%
-    filter(Authors != "", !is.na(Authors))
-  
-  all_authors <- unique(clean_df$Authors)
-  
-  # Safe abort if the dataframe truly has zero valid authors
-  if (length(all_authors) == 0) {
+  # Ensure the target column actually exists
+  if (!target_col %in% colnames(df)) {
     return(list(nodes = data.frame(), edges = data.frame()))
   }
+  
+  # 1. Handle Empty/Whitespace Delimiter Guard
+  # If the delimiter is empty, we DO NOT split. We treat the whole cell as one node.
+  should_split <- !is.null(target_delim) && nchar(trimws(target_delim)) > 0
+  
+  clean_df <- df %>%
+    mutate(paper_id = row_number()) %>%
+    select(paper_id, !!sym(target_col)) %>% 
+    rename(Entity = !!sym(target_col)) %>% 
+    mutate(Entity = as.character(Entity)) %>%
+    filter(!is.na(Entity), trimws(Entity) != "")
+  
+  if (should_split) {
+    clean_df <- clean_df %>%
+      mutate(Entity = stringr::str_split(Entity, stringr::fixed(target_delim))) %>%
+      tidyr::unnest(Entity)
+  }
+  
+  # Standardize naming
+  clean_df <- clean_df %>%
+    mutate(
+      Entity = stringr::str_squish(Entity),
+      Entity = stringr::str_to_title(Entity)
+    ) %>%
+    filter(Entity != "", !is.na(Entity))
+  
+  all_entities <- unique(clean_df$Entity)
+  
+  if (length(all_entities) == 0) return(list(nodes = data.frame(), edges = data.frame()))
   
   # 2. Create Edges
   edges <- clean_df %>%
     inner_join(clean_df, by = "paper_id", relationship = "many-to-many") %>%
-    filter(Authors.x < Authors.y) %>%
-    rename(from = Authors.x, to = Authors.y) %>%
+    filter(Entity.x < Entity.y) %>%
+    rename(from = Entity.x, to = Entity.y) %>%
     group_by(from, to) %>%
     summarise(connections = n(), .groups = "drop") %>%
     mutate(
       length = (300 / connections) + 30,
-      title = paste("Co-authored:", connections, "papers"),
+      title = paste("Co-occurrences:", connections, "documents"),
       value = connections 
     )
   
-  # 3. Calculate Node Size (Safely handle 0 edges)
-  if (nrow(edges) > 0) {
-    node_sizes <- bind_rows(
+  # 3. Calculate Node Size
+  node_sizes <- if (nrow(edges) > 0) {
+    bind_rows(
       edges %>% select(id = from, val = connections),
       edges %>% select(id = to, val = connections)
     ) %>%
       group_by(id) %>%
       summarise(total_connections = sum(val), .groups = "drop")
   } else {
-    node_sizes <- data.frame(id = character(), total_connections = numeric())
+    data.frame(id = all_entities, total_connections = 0)
   }
   
-  # 4. Create Nodes Dataframe
-  nodes <- data.frame(id = all_authors, stringsAsFactors = FALSE) %>%
+  # 4. Create Nodes
+  nodes <- data.frame(id = all_entities, stringsAsFactors = FALSE) %>%
     left_join(node_sizes, by = "id") %>%
     mutate(
-      total_connections = replace_na(total_connections, 0),
+      total_connections = tidyr::replace_na(total_connections, 0),
       label = id,
+      # size = 15 + (log1p(total_connections) * 3),
+      # shape = ifelse(target_col == "Authors", "icon", "dot"),
+      # icon.face = "FontAwesome",
+      # icon.code = "f007",
+      # icon.color = ifelse(id %in% main_authors_list, "#E74C3C", "#3498DB"),
+      # color.background = ifelse(id %in% main_authors_list, "#E74C3C", "#3498DB"),
+      # color.border = "#2c3e50"
       title = paste0(
         "<div style='padding: 8px; border-radius: 5px; background: white; color: black; box-shadow: 1px 1px 5px rgba(0,0,0,0.2);'>",
         "<b>", id, "</b><br>",
-        "<i>Number of Collaborations: ", total_connections, "</i>",
+        "<i>Number of Links: ", total_connections, "</i>",
         "</div>"
       ),
-      size = 15 + (total_connections * 3),
-      group = ifelse(id %in% main_authors_list, "Main Author", "Co-Author"),
-      shape = "icon",
+      size = 15 + (log1p(total_connections) * 3),
+      group = ifelse(id %in% main_authors_list, "Queried Target", "Associated Entity"),
+
+      # Use an icon for Authors, but standard dots for tags/affiliations to make visual sense
+      shape = ifelse(target_col == "Authors", "icon", "dot"),
       icon.face = "FontAwesome",
-      icon.code = "f007", 
-      icon.color = ifelse(id %in% main_authors_list, "#E74C3C", "#3498DB")
+      icon.code = "f007",
+      icon.color = ifelse(id %in% main_authors_list, "#E74C3C", "#3498DB"),
+
+      # Fallback coloring for when shape == "dot"
+      color.background = ifelse(id %in% main_authors_list, "#E74C3C", "#3498DB"),
+      color.border = "#2c3e50"
     )
+  
+  print(paste("nodes:", nrow(nodes)))
+  print(paste("edges:", nrow(edges)))
   
   return(list(nodes = nodes, edges = edges))
 }
 
+# build_collaboration_network <- function(df, main_authors_list, target_col = "Authors", target_delim = ",") {
+#   if (is.null(main_authors_list)) main_authors_list <- character(0)
+#   
+#   # Ensure the target column actually exists in the dataframe
+#   if (!target_col %in% colnames(df)) {
+#     return(list(nodes = data.frame(), edges = data.frame()))
+#   }
+#   
+#   print("target_delim:")
+#   print(target_delim)
+#   
+#   # # Safely escape the delimiter for regex (e.g., "|" becomes "\\|")
+#   # safe_delim <- gsub("([.|()\\^{}+$*?]|\\[|\\])", "\\\\\\1", target_delim)
+#   # regex_delim <- paste0("\\s*", safe_delim, "\\s*")
+#   # 
+#   # # 1. Clean Target Column and get Unique Nodes FIRST
+#   # clean_df <- df %>%
+#   #   mutate(paper_id = row_number()) %>%
+#   #   select(paper_id, !!sym(target_col)) %>% 
+#   #   rename(Entity = !!sym(target_col)) %>% # Standardize name for network processing
+#   #   separate_rows(Entity, sep = regex_delim) %>%
+#   #   mutate(
+#   #     Entity = str_squish(Entity),
+#   #     Entity = str_to_title(Entity)
+#   #   ) %>%
+#   #   filter(Entity != "", !is.na(Entity))
+#   # 
+#   # all_entities <- unique(clean_df$Entity)
+#   
+#   # 1. Clean the delimiter to prevent UI input errors (strips accidental spaces)
+#   clean_delim <- trimws(target_delim)
+#   
+#   # 2. Safely escape using \Q (Quote) and \E (End Quote) 
+#   # This makes the split 100% immune to special regex characters without needing gsub
+#   regex_delim <- paste0("\\s*\\Q", clean_delim, "\\E\\s*")
+#   
+#   # # 3. Clean Target Column and get Unique Nodes FIRST
+#   # clean_df <- df %>%
+#   #   mutate(paper_id = row_number()) %>%
+#   #   select(paper_id, !!sym(target_col)) %>% 
+#   #   rename(Entity = !!sym(target_col)) %>% 
+#   #   # Force to character just in case R imported the column as a factor/logical
+#   #   mutate(Entity = as.character(Entity)) %>%
+#   #   # Drop NAs *before* splitting to save processing power
+#   #   filter(!is.na(Entity), trimws(Entity) != "") %>%
+#   #   separate_rows(Entity, sep = regex_delim) %>%
+#   #   mutate(
+#   #     Entity = str_squish(Entity),
+#   #     Entity = str_to_title(Entity)
+#   #   ) %>%
+#   #   filter(Entity != "", !is.na(Entity))
+#   # 
+#   # all_entities <- unique(clean_df$Entity)
+#   
+#   # 1. Clean Target Column and get Unique Nodes FIRST
+#   clean_df <- df %>%
+#     mutate(paper_id = row_number()) %>%
+#     select(paper_id, !!sym(target_col)) %>% 
+#     rename(Entity = !!sym(target_col)) %>% 
+#     # Force character type to prevent factor/logical errors
+#     mutate(Entity = as.character(Entity)) %>%
+#     # Drop NAs/empty strings before processing to save memory
+#     filter(!is.na(Entity), trimws(Entity) != "") %>%
+#     
+#     # BULLETPROOF SPLIT: fixed() ignores regex completely and searches for the exact literal delimiter
+#     mutate(Entity = stringr::str_split(Entity, stringr::fixed(target_delim))) %>%
+#     tidyr::unnest(Entity) %>%
+#     
+#     # Clean up the resulting strings (e.g., " Author B " becomes "Author B")
+#     mutate(
+#       Entity = stringr::str_squish(Entity),
+#       Entity = stringr::str_to_title(Entity)
+#     ) %>%
+#     filter(Entity != "", !is.na(Entity))
+#   
+#   all_entities <- unique(clean_df$Entity)
+#   
+#   # Safe abort if the dataframe truly has zero valid entities
+#   if (length(all_entities) == 0) {
+#     print("all_entities == 0")
+#     return(list(nodes = data.frame(), edges = data.frame()))
+#   }
+#   
+#   # 2. Create Edges
+#   edges <- clean_df %>%
+#     inner_join(clean_df, by = "paper_id", relationship = "many-to-many") %>%
+#     filter(Entity.x < Entity.y) %>%
+#     rename(from = Entity.x, to = Entity.y) %>%
+#     group_by(from, to) %>%
+#     summarise(connections = n(), .groups = "drop") %>%
+#     mutate(
+#       length = (300 / connections) + 30,
+#       title = paste("Co-occurrences:", connections, "documents"),
+#       value = connections 
+#     )
+#   
+#   # 3. Calculate Node Size (Safely handle 0 edges)
+#   if (nrow(edges) > 0) {
+#     node_sizes <- bind_rows(
+#       edges %>% select(id = from, val = connections),
+#       edges %>% select(id = to, val = connections)
+#     ) %>%
+#       group_by(id) %>%
+#       summarise(total_connections = sum(val), .groups = "drop")
+#   } else {
+#     node_sizes <- data.frame(id = character(), total_connections = numeric())
+#   }
+#   
+#   # 4. Create Nodes Dataframe with normalized size scaling
+#   nodes <- data.frame(id = all_entities, stringsAsFactors = FALSE) %>%
+#     left_join(node_sizes, by = "id") %>%
+#     mutate(
+#       total_connections = replace_na(total_connections, 0),
+#       label = id,
+#       title = paste0(
+#         "<div style='padding: 8px; border-radius: 5px; background: white; color: black; box-shadow: 1px 1px 5px rgba(0,0,0,0.2);'>",
+#         "<b>", id, "</b><br>",
+#         "<i>Number of Links: ", total_connections, "</i>",
+#         "</div>"
+#       ),
+#       size = 15 + (log1p(total_connections) * 3),
+#       group = ifelse(id %in% main_authors_list, "Queried Target", "Associated Entity"),
+# 
+#       # Use an icon for Authors, but standard dots for tags/affiliations to make visual sense
+#       shape = ifelse(target_col == "Authors", "icon", "dot"),
+#       icon.face = "FontAwesome",
+#       icon.code = "f007",
+#       icon.color = ifelse(id %in% main_authors_list, "#E74C3C", "#3498DB"),
+# 
+#       # Fallback coloring for when shape == "dot"
+#       color.background = ifelse(id %in% main_authors_list, "#E74C3C", "#3498DB"),
+#       color.border = "#2c3e50"
+#     )
+#   
+#   print(paste("nodes:", nrow(nodes)))
+#   print(paste("edges:", nrow(edges)))
+#   
+#   return(list(nodes = nodes, edges = edges))
+# }
+
 # build_collaboration_network <- function(df, main_authors_list) {
-#   # 1. Create ALL-TO-ALL Edges via Self-Join (Extremely Fast)
-#   edges <- df %>%
+#   if (is.null(main_authors_list)) main_authors_list <- character(0)
+#   
+#   # 1. Clean Authors and get Unique Nodes FIRST
+#   clean_df <- df %>%
 #     mutate(paper_id = row_number()) %>%
 #     select(paper_id, Authors) %>%
 #     separate_rows(Authors, sep = ",\\s*") %>%
-#     mutate(Authors = trimws(Authors)) %>%
-#     filter(Authors != "") %>%
-#     
-#     # The Magic Step: Join the papers to themselves to create all combinations
-#     inner_join(., ., by = "paper_id", relationship = "many-to-many") %>%
-#     
-#     # Keep unique pairs only! 
-#     # 'Authors.x < Authors.y' removes A-A (self-loops) and prevents duplicate A-B / B-A edges
-#     filter(Authors.x < Authors.y) %>% 
-#     
+#     mutate(
+#       Authors = str_squish(Authors),
+#       Authors = str_to_title(Authors)
+#     ) %>%
+#     filter(Authors != "", !is.na(Authors))
+#   
+#   all_authors <- unique(clean_df$Authors)
+#   
+#   # Safe abort if the dataframe truly has zero valid authors
+#   if (length(all_authors) == 0) {
+#     return(list(nodes = data.frame(), edges = data.frame()))
+#   }
+#   
+#   # 2. Create Edges
+#   edges <- clean_df %>%
+#     inner_join(clean_df, by = "paper_id", relationship = "many-to-many") %>%
+#     filter(Authors.x < Authors.y) %>%
 #     rename(from = Authors.x, to = Authors.y) %>%
 #     group_by(from, to) %>%
 #     summarise(connections = n(), .groups = "drop") %>%
@@ -159,29 +343,31 @@ build_collaboration_network <- function(df, main_authors_list) {
 #       value = connections 
 #     )
 #   
-#   # 2. Identify all unique authors
-#   all_authors <- unique(c(edges$from, edges$to))
-#   
-#   # 3. Calculate Node Size (Total connections for each author)
-#   node_sizes <- bind_rows(
-#     edges %>% select(id = from, val = connections),
-#     edges %>% select(id = to, val = connections)
-#   ) %>%
-#     group_by(id) %>%
-#     summarise(total_connections = sum(val), .groups = "drop")
+#   # 3. Calculate Node Size (Safely handle 0 edges)
+#   if (nrow(edges) > 0) {
+#     node_sizes <- bind_rows(
+#       edges %>% select(id = from, val = connections),
+#       edges %>% select(id = to, val = connections)
+#     ) %>%
+#       group_by(id) %>%
+#       summarise(total_connections = sum(val), .groups = "drop")
+#   } else {
+#     node_sizes <- data.frame(id = character(), total_connections = numeric())
+#   }
 #   
 #   # 4. Create Nodes Dataframe
-#   nodes <- data.frame(id = all_authors) %>%
+#   nodes <- data.frame(id = all_authors, stringsAsFactors = FALSE) %>%
 #     left_join(node_sizes, by = "id") %>%
 #     mutate(
+#       total_connections = replace_na(total_connections, 0),
 #       label = id,
 #       title = paste0(
 #         "<div style='padding: 8px; border-radius: 5px; background: white; color: black; box-shadow: 1px 1px 5px rgba(0,0,0,0.2);'>",
 #         "<b>", id, "</b><br>",
-#         "<i>Total Collaborations: ", total_connections, "</i>",
+#         "<i>Number of Collaborations: ", total_connections, "</i>",
 #         "</div>"
 #       ),
-#       size = 15 + (replace_na(total_connections, 0) * 3),
+#       size = 15 + (total_connections * 3),
 #       group = ifelse(id %in% main_authors_list, "Main Author", "Co-Author"),
 #       shape = "icon",
 #       icon.face = "FontAwesome",
@@ -191,7 +377,6 @@ build_collaboration_network <- function(df, main_authors_list) {
 #   
 #   return(list(nodes = nodes, edges = edges))
 # }
-
 
 # plot_glens_table <- function(rv,df,session){
 #   # req(rv$glens_year_filtered, nrow(rv$glens_year_filtered) > 0)
@@ -610,8 +795,8 @@ plot_glens_table <- function(rv,df,session){
   if(is.null(df) || nrow(df) <= 0 || !all(c("First_Author", "Second_Author", "Co_Author", "Corresponding_Author", "Adjusted_Citations") %in% colnames(df)) ){
     rv$log_text <- paste(rv$log_text, "plot_glens_table(): Warning: No data available for these filters!", sep="<br>")
     warning("plot_glens_table(): Warning: No data available for these filters!")
-    shinyjs::hide("sh_index")
-    shinyjs::hide("summary_table")
+    # shinyjs::hide("sh_index")
+    # shinyjs::hide("summary_table")
     shinyjs::hide("acounts_plot")
     shinyjs::hide("ccounts_plot")
     shinyjs::hide("cdist_plot")
@@ -1095,8 +1280,8 @@ render_skeleton_plots <- function(rv, df, output){
   
   # Finally, hide the parent containers visually, but now the JS instances are safely waiting for the Proxy!
   if(is.null(df) || nrow(df) <= 0) {
-    shinyjs::hide("sh_index")
-    shinyjs::hide("summary_table")
+    # shinyjs::hide("sh_index")
+    # shinyjs::hide("summary_table")
     shinyjs::hide("acounts_plot")
     shinyjs::hide("ccounts_plot")
     shinyjs::hide("cdist_plot")

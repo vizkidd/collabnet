@@ -871,18 +871,31 @@ ui <- fluidPage(
       tags$div(
         class = "custom-card",
         style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #C96480; margin-bottom: 25px;",
+        
         h3("Network Graph - Filtered", style = "color: #C96480; margin-top: 0; font-weight: bold;"),
-        hr(),
-        visNetwork::visNetworkOutput("network_filtered"),
+        
+        # Standard selectInput instead of uiOutput
+        div(style = "background: #fdfdfd; padding: 10px 15px; border-radius: 6px; border: 1px solid #eaeaea; margin-bottom: 15px;",
+            selectInput("net_col_filtered", "Choose column to visualize:", choices = NULL, width = "100%")
+        ),
+        
+        visNetwork::visNetworkOutput("network_filtered", height = "500px")
       ),
-      # 7) Network graph - full
-      tags$div(
-        class = "custom-card",
-        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #554348; margin-bottom: 25px;",
-        h3("Network Graph - Full", style = "color: #554348; margin-top: 0; font-weight: bold;"),
-        hr(),
-        visNetwork::visNetworkOutput("network_full"),
-      ),
+      
+      # # 7) Network graph - full
+      # tags$div(
+      #   class = "custom-card",
+      #   style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #554348; margin-bottom: 25px;",
+      #   
+      #   h3("Network Graph - Full", style = "color: #554348; margin-top: 0; font-weight: bold;"),
+      #   
+      #   # Standard selectInput instead of uiOutput
+      #   div(style = "background: #fdfdfd; padding: 10px 15px; border-radius: 6px; border: 1px solid #eaeaea; margin-bottom: 15px;",
+      #       selectInput("net_col_full", "Choose column to visualize:", choices = NULL, width = "100%")
+      #   ),
+      #   
+      #   visNetwork::visNetworkOutput("network_full", height = "500px")
+      # ),
       tags$div(
         id = "progress_overlay",
         style = "display: none;", # Hidden until processing starts
