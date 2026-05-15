@@ -725,8 +725,27 @@ server <- function(input, output, session) {
       showNotification(paste("Missing columns:", missing_str), type = "error", duration = 10)
     }
     
+    glens_full_table <- dplyr::distinct(glens_full_table)
     # Cleanup & Finalize
-    rv$glens_full_table <- dplyr::distinct(glens_full_table)
+    rv$glens_full_table <- glens_full_table
+    
+    # Initialize empty Skeletons so they are ready for the Proxy
+    render_skeleton_plots(rv, glens_full_table, output)
+    
+    # Configure Slider safely
+    years <- as.numeric(na.omit(glens_full_table$Year))
+    if (length(years) > 0) {
+      min_yr <- min(years)
+      max_yr <- max(years)
+      updateSliderInput(session, "year_slider", min = min_yr, max = max_yr, value = c(min_yr, max_yr))
+    }
+    
+    # Trigger a manual update if auto-refresh is OFF
+    if (!isTRUE(input$auto_refresh_lookup)) {
+      # Increment a counter to signal the reactive graph
+      rv$manual_submit <- if(is.null(rv$manual_submit)) 1 else rv$manual_submit + 1
+    }
+    
     rv$imported_data_list <- NULL
     rv$intermediate_merged_df <- NULL
     rv$saved_col_import_type <- NULL
@@ -2209,25 +2228,49 @@ server <- function(input, output, session) {
   # 2. Add a delay (debounce). 
   debounced_inputs <- raw_lookup_inputs %>% debounce(800)
   
+  active_filters <- reactive({
+    if (isTRUE(input$auto_refresh_lookup)) {
+      # AUTO MODE: React to every change in the debounced inputs
+      debounced_inputs()
+    } else {
+      # MANUAL MODE: Wait for the Submit button to be clicked...
+      req(rv$manual_submit)
+      # ...then silently grab the current state of the inputs without creating a live dependency
+      isolate(debounced_inputs()) 
+    }
+  })
+  
   # 3. Year Filtered Table
   glens_year_filtered_rx <- reactive({
+    # req(isTRUE(isTRUE(input$auto_refresh_lookup) || rv$is_glens_exec))
     req(rv$glens_full_table, nrow(rv$glens_full_table) > 0)
     df <- rv$glens_full_table
-    filters <- debounced_inputs()
+    # filters <- debounced_inputs()
     
-    if(isTRUE(rv$is_glens_exec)) return(data.frame())
+    # INJECT ROUTER: Use the smart active_filters instead of raw debounced_inputs
+    filters <- active_filters()
     
-    # --- A. SOURCE FILTER ---
-    if (!is.null(filters$source) && "Source" %in% colnames(df)) {
-      df <- df %>% filter(Source == filters$source)
-    }
+    print("HERE1:")
+    print(nrow(df))
+    print(str(filters))
+    # if(isTRUE(rv$is_glens_exec)) return(df) #return(data.frame())
     
-    # --- B. YEAR FILTER ---
-    if (!is.null(filters$year) && length(filters$year) == 2 && !any(is.na(filters$year))) {
-      df <- df %>%
-        mutate(Year = as.numeric(Year)) %>%
-        filter(Year >= filters$year[1] & Year <= filters$year[2])
-    }
+    # if(isFALSE(rv$is_glens_exec)){
+      # --- A. SOURCE FILTER ---
+      if (!is.null(filters$source) && "Source" %in% colnames(df)) {
+        df <- df %>% filter(Source == filters$source)
+      }
+      
+      # --- B. YEAR FILTER ---
+      if (!is.null(filters$year) && length(filters$year) == 2 && !any(is.na(filters$year))) {
+        # Ignore the filter if the slider is in its uninitialized state c(0, 0)
+        if (filters$year[1] != 0 || filters$year[2] != 0) {
+          df <- df %>%
+            mutate(Year = as.numeric(Year)) %>%
+            filter(Year >= filters$year[1] & Year <= filters$year[2])
+        }
+      }
+    # }
     
     if (nrow(df) == 0) return(df)
     
@@ -2310,7 +2353,8 @@ server <- function(input, output, session) {
   # This observer handles all visual side-effects
   observeEvent(glens_year_filtered_rx(), {
     df <- glens_year_filtered_rx()
-    
+    print("glens_year_filtered_rx():")
+    print(str(df))
     # 1. Handle Visibility
     if (is.null(df) || nrow(df) == 0) {
       shinyjs::hide("summary_table")
@@ -2435,7 +2479,8 @@ server <- function(input, output, session) {
   
   output$extended_table <- DT::renderDT({
     df <- glens_year_filtered_rx() # Or however you pull your dataframe
-    # print("HERE3")
+    print("HERE3:")
+    print(str(df))
     # # This safely aborts the render without breaking the JavaScript
     req(df, nrow(df) > 0)
     # print("HERE3.1")
@@ -2567,6 +2612,9 @@ server <- function(input, output, session) {
     #              stabilization = list(iterations = 150)) %>%
     #   visOptions(highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE), nodesIdSelection = TRUE, autoResize = TRUE) %>%
     #   addFontAwesome()
+    
+    # rv$is_submitted <- F #FINISH THE SUBMISSION FLOW before the last graph/plot
+    
     visNetwork(net_data$nodes, net_data$edges, width = "100%", height = "500px") %>%
           visNodes(font = list(size = 14)) %>%
           visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = TRUE) %>%
@@ -2976,7 +3024,6 @@ server <- function(input, output, session) {
   
   #Submit Button Event
   observeEvent(input$submit_button, {   # same as bindEvent(input$submit_button)
-    
     # 1. Re-determine the exact list of columns the UI generated
       cols_to_check <- if (!is.null(rv$glens_full_table) && ncol(rv$glens_full_table) > 0) {
         names(rv$glens_full_table)
@@ -3028,6 +3075,7 @@ server <- function(input, output, session) {
       # basic input guard
       rv$is_cancelled <- FALSE
       rv$is_glens_exec <- T
+      # rv$is_submitted <- T
       rv$log_text <- ""
       # rv$glens_etable_final <- NULL
       rv$glens_year_filtered <- NULL
@@ -3701,7 +3749,7 @@ server <- function(input, output, session) {
         
         # The unified raw table!
         raw_df <- dplyr::bind_rows(accumulated_df, rv$scopus_df)
-        
+        print(paste("raw_df:",nrow(raw_df)))
         
         # --- 2. PARSE THE TARGET AUTHORS ---
         # We must do this here so the extend function knows exactly who to search for
@@ -3725,14 +3773,15 @@ server <- function(input, output, session) {
         extended_df <- extend_input_table(rv, raw_df, rv$author_match_regex, rv$target_variants_norm)
         matched_df <- match_journals(rv, extended_df)
         
-        # Store the final static table. This triggers the rest of the UI!
-        rv$glens_full_table <- matched_df
-        
+        if(nrow(matched_df) > 0){
+          # Store the final static table. This triggers the rest of the UI!
+          rv$glens_full_table <- matched_df
+        }
         # print(str(matched_df))
         # --- 4. UI SETUP ---
         # Initialize empty Skeletons so they are ready for the Proxy
         render_skeleton_plots(rv, matched_df, output)
-        print("HERE1")
+  
         # Configure Slider safely
         years <- as.numeric(na.omit(matched_df$Year))
         print(levels(factor(years)))
@@ -3742,6 +3791,20 @@ server <- function(input, output, session) {
           max_yr <- max(years)
           updateSliderInput(session, "year_slider", min = min_yr, max = max_yr, value = c(min_yr, max_yr))
         }
+        
+        print("HERE0")
+        # Trigger a manual update if auto-refresh is OFF
+        if (!isTRUE(input$auto_refresh_lookup)) {
+          # Increment a counter to signal the reactive graph
+          # Delay the manual trigger so the browser has time to render the skeletons
+          later::later(function() {
+            isolate({
+              rv$manual_submit <- if(is.null(rv$manual_submit)) 1 else rv$manual_submit + 1
+            })
+          }, delay = 0.8) # 800ms delay to safely match your debounce timing
+        }
+        
+        print("HERE1")
         print("HERE2")
         # Reveal UI Elements
         shinyjs::show("year_slider")
