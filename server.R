@@ -2480,13 +2480,13 @@ server <- function(input, output, session) {
   output$extended_table <- DT::renderDT({
     df <- glens_year_filtered_rx() # Or however you pull your dataframe
     
-    # req(df, nrow(df) > 0)
-    if(is.null(df) || nrow(df) == 0) {
-      return(DT::datatable(
-        data.frame(Status = "No data available for current filters"),
-        options = list(dom = 't') # Just show the table (no buttons/search)
-      ))
-    }
+    req(df, nrow(df) > 0)
+    # if(is.null(df) || nrow(df) == 0) {
+    #   return(DT::datatable(
+    #     data.frame(Status = "No data available for current filters"),
+    #     options = list(dom = 't') # Just show the table (no buttons/search)
+    #   ))
+    # }
     
     return(DT::datatable(
         df,
@@ -2501,7 +2501,7 @@ server <- function(input, output, session) {
           buttons = c('copy', 'csv', 'excel', 'pdf', 'print') # 3. Define buttons
         )
       ))
-  })
+  }, server = FALSE)
   
   # output$network_full <- renderVisNetwork({
   #   df <- glens_full_table_rx() #glens_extended_rx() #glens_etable_final_rx()
@@ -2597,45 +2597,121 @@ server <- function(input, output, session) {
   #     visOptions(highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE), nodesIdSelection = TRUE, autoResize = TRUE) %>%
   #     addFontAwesome()
   # })
+
+  # # Render Filtered Subset Network (Apply the exact same changes here)
+  # output$network_filtered <- renderVisNetwork({
+  #   net_data <- net_data_filtered_debounced()
+  #   # req(net_data, nrow(net_data$edges) > 0)
+  # 
+  #   # req(net_data, nrow(net_data$nodes) > 0)
+  #   # If the network is empty, draw a single placeholder node
+  #   if (is.null(net_data) || nrow(net_data$nodes) == 0) {
+  #     empty_nodes <- data.frame(
+  #       id = 1,
+  #       label = "No collaborative links\nfound for this selection",
+  #       shape = "text",
+  #       font.size = 20,
+  #       font.color = "red"
+  #     )
+  #     empty_edges <- data.frame(from = integer(0), to = integer(0))
+  # 
+  #     return(visNetwork(empty_nodes, empty_edges, width = "100%", height = "500px"))
+  #   }
+  # 
+  #   # visNetwork(net_data$nodes, net_data$edges, width = "100%", height = "500px") %>%
+  #   #   visNodes(font = list(size = 14)) %>%
+  #   #   visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = FALSE) %>%
+  #   #   visPhysics(solver = "forceAtlas2Based",
+  #   #              forceAtlas2Based = list(gravitationalConstant = -50),
+  #   #              stabilization = list(iterations = 150)) %>%
+  #   #   visOptions(highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE), nodesIdSelection = TRUE, autoResize = TRUE) %>%
+  #   #   addFontAwesome()
+  # 
+  #   # rv$is_submitted <- F #FINISH THE SUBMISSION FLOW before the last graph/plot
+  # 
+  #   visNetwork(net_data$nodes, net_data$edges, width = "100%", height = "500px") %>%
+  #         visNodes(font = list(size = 14)) %>%
+  #         visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = TRUE) %>%
+  #         visIgraphLayout(layout = "layout_with_fr") %>%
+  #         visOptions(highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE), nodesIdSelection = TRUE, autoResize= TRUE) %>%
+  #         addFontAwesome()
+  # })
   
-  # Render Filtered Subset Network (Apply the exact same changes here)
   output$network_filtered <- renderVisNetwork({
-    net_data <- net_data_filtered_debounced()
-    # req(net_data, nrow(net_data$edges) > 0)
+    init_nodes <- data.frame(id = "init_node", hidden = TRUE)
+    init_edges <- data.frame(from = character(0), to = character(0))
     
-    # req(net_data, nrow(net_data$nodes) > 0)
-    # If the network is empty, draw a single placeholder node
+    visNetwork(init_nodes, init_edges, width = "100%", height = "500px") %>%
+      visNodes(
+        font = list(size = 14),
+        color = list(highlight = list(background = "red", border = "darkred"))
+      ) %>%
+      visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = TRUE) %>%
+      visPhysics(
+        solver = "forceAtlas2Based",
+        forceAtlas2Based = list(gravitationalConstant = -50),
+        stabilization = list(iterations = 150)
+      ) %>%
+      # ADDED: multiselect = TRUE allows Ctrl+Click on the canvas
+      visInteraction(hover = TRUE, multiselect = TRUE) %>% 
+      visOptions(
+        highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE),
+        autoResize = TRUE
+      ) %>%
+      # ADDED: Manually send Javascript click events back to Shiny!
+      visEvents(
+        selectNode = "function(properties) {
+          Shiny.setInputValue('network_filtered_clicked', properties.nodes);
+        }",
+        deselectNode = "function(properties) {
+          Shiny.setInputValue('network_filtered_clicked', properties.nodes);
+        }"
+      ) %>%
+      addFontAwesome()
+  })
+  
+  observeEvent(net_data_filtered_debounced(), {
+    net_data <- net_data_filtered_debounced()
+    proxy <- visNetworkProxy("network_filtered")
+    
     if (is.null(net_data) || nrow(net_data$nodes) == 0) {
-      empty_nodes <- data.frame(
-        id = 1, 
-        label = "No collaborative links\nfound for this selection",
-        shape = "text",
-        font.size = 20,
-        font.color = "red"
-      )
-      empty_edges <- data.frame(from = integer(0), to = integer(0))
-      
-      return(visNetwork(empty_nodes, empty_edges, width = "100%", height = "500px"))
+      empty_nodes <- data.frame(id = "placeholder_empty", label = "No links", shape = "text", font.size = 20, font.color = "red")
+      empty_edges <- data.frame(from = character(0), to = character(0))
+      proxy %>% visSetData(nodes = empty_nodes, edges = empty_edges)
+      updateSelectizeInput(session, "custom_node_selector", choices = character(0))
+      return()
     }
     
-    # visNetwork(net_data$nodes, net_data$edges, width = "100%", height = "500px") %>%
-    #   visNodes(font = list(size = 14)) %>%
-    #   visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = FALSE) %>%
-    #   visPhysics(solver = "forceAtlas2Based", 
-    #              forceAtlas2Based = list(gravitationalConstant = -50),
-    #              stabilization = list(iterations = 150)) %>%
-    #   visOptions(highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE), nodesIdSelection = TRUE, autoResize = TRUE) %>%
-    #   addFontAwesome()
+    # --- ADDED: Force all IDs to be strings to match the Shiny dropdown! ---
+    net_data$nodes$id <- as.character(net_data$nodes$id)
+    net_data$edges$from <- as.character(net_data$edges$from)
+    net_data$edges$to <- as.character(net_data$edges$to)
     
-    # rv$is_submitted <- F #FINISH THE SUBMISSION FLOW before the last graph/plot
+    proxy %>% visSetData(nodes = net_data$nodes, edges = net_data$edges)
     
-    visNetwork(net_data$nodes, net_data$edges, width = "100%", height = "500px") %>%
-          visNodes(font = list(size = 14)) %>%
-          visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = TRUE) %>%
-          visIgraphLayout(layout = "layout_with_fr") %>%
-          visOptions(highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE), nodesIdSelection = TRUE, autoResize= TRUE) %>%
-          addFontAwesome()
-  })
+    dropdown_choices <- setNames(net_data$nodes$id, net_data$nodes$label)
+    updateSelectizeInput(session, "custom_node_selector", 
+                         choices = c("Select keyword(s)..." = "", dropdown_choices))
+    
+  }, ignoreNULL = FALSE)
+  
+  # 1. Dropdown -> Canvas (Highlights nodes when you type in the dropdown)
+  observeEvent(input$custom_node_selector, {
+    proxy <- visNetworkProxy("network_filtered")
+    
+    if (is.null(input$custom_node_selector) || length(input$custom_node_selector) == 0 || all(input$custom_node_selector == "")) {
+      proxy %>% visUnselectAll() 
+    } else {
+      proxy %>% visSelectNodes(id = input$custom_node_selector)
+    }
+  }, ignoreInit = TRUE, ignoreNULL = FALSE)
+  
+  # 2. Canvas -> Dropdown (Updates the dropdown when you click the graph)
+  observeEvent(input$network_filtered_clicked, {
+    # This captures the array of IDs sent from Javascript
+    updateSelectizeInput(session, "custom_node_selector", selected = input$network_filtered_clicked)
+  }, ignoreNULL = FALSE, ignoreInit = TRUE)
+  
   
   # # Render Full Data Network
   # output$network_full <- renderVisNetwork({

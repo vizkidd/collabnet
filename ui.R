@@ -934,10 +934,15 @@ ui <- fluidPage(
         h3("Network Graph - Filtered", style = "color: #C96480; margin-top: 0; font-weight: bold;"),
         
         # Standard selectInput instead of uiOutput
-        div(style = "background: #fdfdfd; padding: 10px 15px; border-radius: 6px; border: 1px solid #eaeaea; margin-bottom: 15px;",
-            selectInput("net_col_filtered", "Choose column to visualize:", choices = NULL, width = "100%")
-        ),
-        
+        # div(style = "background: #fdfdfd; padding: 10px 15px; border-radius: 6px; border: 1px solid #eaeaea; margin-bottom: 15px;",
+        #     selectInput("net_col_filtered", "Choose column to visualize:", choices = NULL, width = "100%")
+        # ),
+        selectInput("net_col_filtered", "Choose column to visualize:", choices = NULL, width = "100%"),
+        selectizeInput("custom_node_selector", "Search/Select Keyword:", 
+                       multiple = TRUE,
+                       choices = NULL, # We will populate this from the server
+                       width = "300px", 
+                       options = list(placeholder = 'Type an keyword...')),
         visNetwork::visNetworkOutput("network_filtered", height = "500px")
       ),
       
