@@ -898,6 +898,7 @@ plot_glens_table <- function(rv,df,session){
     print(q)
     print(sub_data)
     list(
+      x = sub_data$Position,
       y = sub_data$Count,
       # customdata = sub_data$Total_Q_Pubs,
       hovertemplate = paste0(
@@ -911,7 +912,18 @@ plot_glens_table <- function(rv,df,session){
       )
     )
   })
-  plotlyProxyInvoke(acounts_proxy, "animate", list(data = acounts_animate_payload, traces = as.list(0:length(all_quartiles))), list(transition = list(duration = 200, easing = "cubic-in-out"), frame = list(duration = 200, redraw = FALSE)))
+  plotlyProxyInvoke(acounts_proxy, 
+                    "animate",
+                    list(
+                      data = acounts_animate_payload, 
+                      traces = as.list(0:(length(all_quartiles) - 1)),
+                      layout = list(yaxis = list(autorange = TRUE))
+                      ),
+                    list(
+                      transition = list(duration = 200, easing = "cubic-in-out"), 
+                      frame = list(duration = 200, redraw = TRUE)
+                      )
+                    )
   
   ccounts_proxy <- plotlyProxy("ccounts_plot", session)
   agg_complete <- agg_all %>%
@@ -925,6 +937,7 @@ plot_glens_table <- function(rv,df,session){
     sub_data <- agg_all %>% filter(Qscore == q) %>% arrange(Position)
 
     list(
+      x = sub_data$Position,
       y = sub_data$SumCitations,
       # customdata = sub_data$Total_Q_Cites,
       hovertemplate = paste0(
@@ -938,7 +951,18 @@ plot_glens_table <- function(rv,df,session){
       )
     )
   })
-  plotlyProxyInvoke(ccounts_proxy, "animate", list(data = ccounts_animate_payload, traces = as.list(0:length(all_quartiles)), layout = list(yaxis = list(autorange = TRUE))), list(transition = list(duration = 200, easing = "cubic-in-out"), frame = list(duration = 200, redraw = TRUE)))
+  plotlyProxyInvoke(ccounts_proxy, 
+                    "animate", 
+                    list(
+                      data = ccounts_animate_payload, 
+                      traces = as.list(0:(length(all_quartiles) - 1)),
+                      layout = list(yaxis = list(autorange = TRUE))
+                      ),
+                    list(
+                      transition = list(duration = 200, easing = "cubic-in-out"),
+                      frame = list(duration = 200, redraw = TRUE)
+                      )
+                    )
   
   stats_by_position <- df_ordered_debug %>%
     group_by(position_rank) %>%
@@ -982,9 +1006,20 @@ plot_glens_table <- function(rv,df,session){
       violin_trace_idx <- (i - 1) * 2
       scatter_trace_idx <- (i - 1) * 2 + 1
       
-      plotlyProxyInvoke(cdist_proxy, "restyle", list(x=list(x_violin),y = list(y_violin)), list(violin_trace_idx))
+      plotlyProxyInvoke(cdist_proxy, 
+                        "restyle",
+                        list(
+                          x=list(x_violin),y = list(y_violin),
+                          layout = list(yaxis = list(autorange = TRUE))
+                          ),
+                        list(violin_trace_idx)
+                        )
       cdist_proxy_data <- list(x = list(x_scatter), y = list(y_scatter), text = list(text_scatter), `marker.size` = list(size_scatter))
-      plotlyProxyInvoke(cdist_proxy, "restyle", cdist_proxy_data, list(scatter_trace_idx))
+      plotlyProxyInvoke(cdist_proxy, 
+                        "restyle", 
+                        cdist_proxy_data, 
+                        list(scatter_trace_idx)
+                        )
     }
   }
   
@@ -1012,11 +1047,29 @@ plot_glens_table <- function(rv,df,session){
     
     aperc_x_list <- lapply(aperc_vals, function(v) list(v)) 
     aperc_y_list <- lapply(seq_len(n_pos), function(i) list("Publications"))
-    aperc_text_list <- lapply(seq_len(n_pos), function(i) {
-      list(paste0("<b>Position:</b> ", all_positions[i], "<br><b>Contribution %:</b> ", round(aperc_vals[i], 1), "%"))
+    # aperc_text_list <- lapply(seq_len(n_pos), function(i) {
+    #   list(paste0("<b>Position:</b> ", all_positions[i], "<br><b>Contribution %:</b> ", round(aperc_vals[i], 1), "%"))
+    # })
+    
+    aperc_hover_list <- lapply(seq_len(n_pos), function(i) {
+      list(paste0(
+        "<b>Position:</b> ", all_positions[i], "<br>",
+        "<b>Contribution %:</b> ", round(aperc_vals[i], 1), "%",
+        "<extra></extra>" 
+      ))
     })
     
-    plotlyProxyInvoke(aperc_proxy, "restyle", list(x = unname(aperc_x_list), y = unname(aperc_y_list), text = unname(aperc_text_list), textposition = rep(list("inside"), n_pos)), as.list(0:(n_pos - 1)))
+    plotlyProxyInvoke(aperc_proxy, 
+                      "restyle", 
+                      list(
+                        x = unname(aperc_x_list), y = unname(aperc_y_list), 
+                        # text = unname(aperc_text_list), 
+                        # textposition = rep(list("inside"), n_pos),
+                        hovertemplate = unname(aperc_hover_list),
+                        text = rep(list(""), n_pos)
+                        ), 
+                      as.list(0:(n_pos - 1))
+                      )
   }
   
   # =====================================================================
@@ -1043,11 +1096,29 @@ plot_glens_table <- function(rv,df,session){
     
     cperc_x_list <- lapply(cperc_vals, function(v) list(v))
     cperc_y_list <- lapply(seq_len(n_pos), function(i) list("Citations"))
-    cperc_text_list <- lapply(seq_len(n_pos), function(i) {
-      list(paste0("<b>Position:</b> ", all_positions[i], "<br><b>Contribution %:</b> ", round(cperc_vals[i], 1), "%"))
+    # cperc_text_list <- lapply(seq_len(n_pos), function(i) {
+    #   list(paste0("<b>Position:</b> ", all_positions[i], "<br><b>Contribution %:</b> ", round(cperc_vals[i], 1), "%"))
+    # })
+    
+    cperc_hover_list <- lapply(seq_len(n_pos), function(i) {
+      list(paste0(
+        "<b>Position:</b> ", all_positions[i], "<br>",
+        "<b>Contribution %:</b> ", round(cperc_vals[i], 1), "%",
+        "<extra></extra>" 
+      ))
     })
     
-    plotlyProxyInvoke(cperc_proxy, "restyle", list(x = unname(cperc_x_list), y = unname(cperc_y_list), text = unname(cperc_text_list), textposition = rep(list("inside"), n_pos)), as.list(0:(n_pos - 1)))
+    plotlyProxyInvoke(cperc_proxy, 
+                      "restyle", 
+                      list(
+                        x = unname(cperc_x_list), y = unname(cperc_y_list), 
+                        # text = unname(cperc_text_list), 
+                        # textposition = rep(list("inside"), n_pos)
+                        hovertemplate = unname(cperc_hover_list),
+                        text = rep(list(""), n_pos)
+                        ), 
+                      as.list(0:(n_pos - 1))
+                      )
   }
 }
 
@@ -1143,6 +1214,7 @@ render_skeleton_plots <- function(rv, df, output){
   #       showlegend = FALSE, transition = list(duration = 1000, easing = "ease-in-out")
   #     )
   # })
+  print(paste("full_grid:", nrow(full_grid)))
   print(agg_all$Total_Position)
   output$acounts_plot <- renderPlotly({
     plot_ly(
@@ -1172,8 +1244,8 @@ render_skeleton_plots <- function(rv, df, output){
         barmode = "stack", 
         xaxis = list(title = "", tickangle = 15, categoryorder = "array", categoryarray = all_positions), 
         yaxis = list(title = ""),
-        showlegend = FALSE
-        # autosize = TRUE  # This helps with the non-maximized window bug
+        showlegend = FALSE,
+        autosize = TRUE  # This helps with the non-maximized window bug
       )
   })
   outputOptions(output, "acounts_plot", suspendWhenHidden = FALSE)
@@ -1218,8 +1290,8 @@ render_skeleton_plots <- function(rv, df, output){
         barmode = "stack", 
         xaxis = list(title = "", tickangle = 15, categoryorder = "array", categoryarray = all_positions), 
         yaxis = list(title = ""),
-        showlegend = FALSE
-        # autosize = TRUE
+        showlegend = FALSE,
+        autosize = TRUE
       )
   })
   outputOptions(output, "ccounts_plot", suspendWhenHidden = FALSE)

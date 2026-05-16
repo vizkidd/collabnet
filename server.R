@@ -2479,22 +2479,22 @@ server <- function(input, output, session) {
   
   output$extended_table <- DT::renderDT({
     df <- glens_year_filtered_rx() # Or however you pull your dataframe
-    print("HERE3:")
-    print(str(df))
-    # # This safely aborts the render without breaking the JavaScript
-    req(df, nrow(df) > 0)
-    # print("HERE3.1")
-    # print(str(df))
-    # if(is.null(df) || nrow(df) == 0) {
-    #   return(DT::datatable(data.frame(Status = "No data available for current filters")))
-    # }
-    # DT::datatable(df, options = list(scrollY = "600px", scrollX = TRUE, paging = TRUE))
+    
+    # req(df, nrow(df) > 0)
+    if(is.null(df) || nrow(df) == 0) {
+      return(DT::datatable(
+        data.frame(Status = "No data available for current filters"),
+        options = list(dom = 't') # Just show the table (no buttons/search)
+      ))
+    }
+    
     return(DT::datatable(
         df,
         extensions = 'Buttons', # 1. Load the extension
         options = list(
           scrollY = "600px",
           scrollX = TRUE,
+          scrollCollapse = TRUE,
           paging = TRUE,
           dom = 'Blfrtip',       # 2. Add 'B' to the layout (B = Buttons)
           lengthMenu = list(c(10, 25, 50, 100, -1), c('10', '25', '50', '100', 'All')),
@@ -2602,7 +2602,21 @@ server <- function(input, output, session) {
   output$network_filtered <- renderVisNetwork({
     net_data <- net_data_filtered_debounced()
     # req(net_data, nrow(net_data$edges) > 0)
-    req(net_data, nrow(net_data$nodes) > 0)
+    
+    # req(net_data, nrow(net_data$nodes) > 0)
+    # If the network is empty, draw a single placeholder node
+    if (is.null(net_data) || nrow(net_data$nodes) == 0) {
+      empty_nodes <- data.frame(
+        id = 1, 
+        label = "No collaborative links\nfound for this selection",
+        shape = "text",
+        font.size = 20,
+        font.color = "red"
+      )
+      empty_edges <- data.frame(from = integer(0), to = integer(0))
+      
+      return(visNetwork(empty_nodes, empty_edges, width = "100%", height = "500px"))
+    }
     
     # visNetwork(net_data$nodes, net_data$edges, width = "100%", height = "500px") %>%
     #   visNodes(font = list(size = 14)) %>%
@@ -3022,6 +3036,137 @@ server <- function(input, output, session) {
     rv$log_text <- ""
   })
   
+  progress_state <- reactiveValues(orcid_done = 0, doi_done = 0, scopus_done = 0, doi_found = 0)
+  
+  # =========================================================================
+  # --- ASYNC LISTENER: Catch Citation Data from JavaScript ---
+  # =========================================================================
+  observeEvent(input$api_counts_ready, {
+    res <- input$api_counts_ready
+    req_id <- res$requestId
+    
+    # STRICT GATEKEEPER: Only accept if it matches current Run ID
+    if (!is.null(rv$current_run_id) && grepl(rv$current_run_id, req_id)) {
+      meta_df <- rv$temp_meta[[req_id]]
+      
+      if (!is.null(meta_df)) {
+        valid_citations <- na.omit(unlist(res$counts))
+        meta_df$Citations <- if (length(valid_citations) == 0) 0 else as.numeric(max(valid_citations))
+        rv$final_results[[req_id]] <- meta_df
+        
+        rv$doi_processed <- rv$doi_processed + 1
+        rv$temp_meta[[req_id]] <- NULL # Nullify to prevent double counting
+        
+        pct <- round((rv$doi_processed / max(1, rv$doi_total)) * 100)
+        
+        shinyWidgets::updateProgressBar(
+          session, id = "prog_doi", 
+          value = rv$doi_processed, 
+          total = max(1, rv$doi_total),
+          title = sprintf("DOI: %d%% (%d/%d)", pct, rv$doi_processed, rv$doi_total),
+          status = if(pct >= 100) "success" else "warning"
+        )
+        
+        # TRIGGER THE PIPELINE!
+        if (rv$doi_processed >= rv$doi_total) {
+          rv$dois_finished <- TRUE
+          rv$trigger_pipeline <- if(is.null(rv$trigger_pipeline)) 1 else rv$trigger_pipeline + 1
+        }
+      }
+    }
+  })
+  
+  # =========================================================================
+  # --- THE FINAL PIPELINE TRIGGER ---
+  # =========================================================================
+  observeEvent(rv$trigger_pipeline, {
+    # Ensure BOTH streams are 100% finished before continuing
+    if (!isTRUE(rv$scopus_finished) || !isTRUE(rv$dois_finished)) return(NULL)
+    
+    # Ensure a valid run lock exists
+    if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+    
+    tryCatch({
+      message("Both Streams Finished! Merging Data...")
+      
+      # --- 1. MERGE THE SCRAPED DATA ---
+      valid_dois <- Filter(is.data.frame, rv$final_results)
+      accumulated_df <- dplyr::bind_rows(valid_dois)
+      if (nrow(accumulated_df) > 0) {
+        accumulated_df <- accumulated_df %>% dplyr::distinct() %>% dplyr::mutate(Source = "DOI/ORCID")
+      }
+      
+      # Prevent Year mismatch crash before binding
+      if(nrow(accumulated_df) > 0 && "Year" %in% names(accumulated_df)) accumulated_df$Year <- as.character(accumulated_df$Year)
+      if(nrow(rv$scopus_df) > 0 && "Year" %in% names(rv$scopus_df)) rv$scopus_df$Year <- as.character(rv$scopus_df$Year)
+      
+      # The unified raw table!
+      raw_df <- dplyr::bind_rows(accumulated_df, rv$scopus_df)
+      print(paste("raw_df:", nrow(raw_df)))
+      
+      # --- 2. PARSE THE TARGET AUTHORS ---
+      target_variants <- stringi::stri_omit_empty(stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n"))))
+      target_variants <- target_variants[target_variants != ""]
+
+      if(length(target_variants) > 0) {
+        rv$target_variants_norm <- lapply(setNames(target_variants, target_variants), function(v) {
+          vn <- normalize_name(v)
+          list(norm = vn, parts = extract_parts(vn))
+        })
+        rv$author_match_regex <- build_name_regex_for_variants(target_variants)
+      } else {
+        rv$target_variants_norm <- NULL
+        rv$author_match_regex <- NULL
+      }
+
+      print("submit_btn:extend_input_table():")
+      # --- 3. THE HEAVY LIFTING ---
+      extended_df <- extend_input_table(rv, raw_df, rv$author_match_regex, rv$target_variants_norm)
+      matched_df <- match_journals(rv, extended_df)
+
+      if(nrow(matched_df) > 0){
+        rv$glens_full_table <- matched_df
+      }
+
+      # --- 4. UI SETUP ---
+      render_skeleton_plots(rv, matched_df, output)
+
+      years <- as.numeric(na.omit(matched_df$Year))
+      if (length(years) > 0) {
+        min_yr <- min(years)
+        max_yr <- max(years)
+        updateSliderInput(session, "year_slider", min = min_yr, max = max_yr, value = c(min_yr, max_yr))
+      }
+
+      if (!isTRUE(input$auto_refresh_lookup)) {
+        later::later(function() {
+          isolate({ rv$manual_submit <- if(is.null(rv$manual_submit)) 1 else rv$manual_submit + 1 })
+        }, delay = 0.8)
+      }
+
+      shinyjs::show("year_slider")
+      shinyjs::show("sh_index")
+      shinyjs::show("summary_table")
+      shinyjs::show("lookup_controls_panel")
+
+      # --- 5. CLEANUP ---
+      rv$log_text <- paste(rv$log_text, "<span style='color: green;'>✓ Run complete.</span>", sep="<br>")
+      try({ if (fs::file_exists("run.lock")) fs::file_delete("run.lock") }, silent = TRUE)
+
+      rv$is_cancelled <- FALSE
+      rv$is_glens_exec <- FALSE
+      shinyjs::hide("progress_overlay")
+      shinyjs::enable("submit_button")
+      
+    }, error = function(e) {
+      print(e)
+      shinyWidgets::updateProgressBar(session, id = "prog_doi", value = 100, status = "danger", title = "Process Failed!")
+      rv$log_text <- paste(rv$log_text, sprintf("\n(Master) Failed in Final Processing: %s", conditionMessage(e)), sep="<br>")
+      shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
+      shinyjs::enable("submit_button")
+    })
+  })
+  
   #Submit Button Event
   observeEvent(input$submit_button, {   # same as bindEvent(input$submit_button)
     # 1. Re-determine the exact list of columns the UI generated
@@ -3149,7 +3294,10 @@ server <- function(input, output, session) {
       doi_lines <- doi_lines[trimws(doi_lines) != ""]
       
       # We use a reactiveValues object to safely track progress across all async streams on the main thread
-      progress_state <- reactiveValues(orcid_done = 0, doi_done = 0, scopus_done = 0, doi_found = 0)
+      progress_state$orcid_done = 0
+      progress_statedoi_done = 0
+      progress_state$scopus_done = 0
+      progress_state$doi_found = 0
       
       # --- 1. SCOPUS ---
       if (!is.null(glens_env$scopus_key) && glens_env$scopus_key != "") {
@@ -3327,9 +3475,10 @@ server <- function(input, output, session) {
         packages = c("dplyr", "httr2", "jsonlite", "tidyr", "purrr", "ipc"), seed = TRUE 
         ) %...>% (function(res) {
           if(!fs::file_exists(file.path("run.lock"))) return(NULL)
-          
+          print("SCOPUS:1:")
+          print(str(res))
           # Handle the error passed back from the tryCatch
-          if (is.list(res) && !is.null(res$error)) {
+          if (is.list(res) && "error" %in% names(res)) {
             rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'>SCOPUS Error:", res$error, "</span>"), sep="<br>")
             return(NULL)
           }
@@ -3344,8 +3493,9 @@ server <- function(input, output, session) {
           warning("Failed SCOPUS ID Processing:", err)
           shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
           shinyjs::enable("submit_button")
-          if (is.list(res) && !is.null(res$error)) {
+          if (is.list(res) && "error" %in% names(res)) {
             rv$log_text <- paste(rv$log_text, paste("Scopus ID Error:", res$error), sep="<br>")
+            print(res)
             # output$log <- renderText({rv$log_text})
             return(NULL)
           }
@@ -3364,62 +3514,106 @@ server <- function(input, output, session) {
         rv$log_text <- paste(rv$log_text, sprintf("\nProcessing %d ORC-ID(s)...\n", length(orcid_list)), sep="<br>")
         
         # output$log <- renderText({rv$log_text})
-        
+        print("ORCID:1:")
         # Stream 1: Fetch all ORCIDs in parallel
         orcid_promises <- lapply(orcid_list, function(orcid_str) {
           clean_orcid <- trimws(orcid_str)
           
-          # 1. MAIN THREAD: Safe to update Shiny reactives here, BEFORE the future starts
           if (length(strsplit(clean_orcid, "-")[[1]]) == 4) {
             rv$log_text <- paste(rv$log_text, "Working on ORCID:", clean_orcid, sep="<br>")
+            print("ORCID:2:")
           }
           
           future({
-            # --- INSIDE FUTURE: Pure R only. NO `rv`, NO `session`, NO `input`! ---
+            # --- INSIDE FUTURE: Pure R only ---
             if (length(strsplit(clean_orcid, "-")[[1]]) != 4) return(list(error = "Malformed ORCID"))
             
             target_url <- paste0("https://pub.orcid.org/v3.0/", clean_orcid, "/works")
+            local_is_WASM <- grepl(pattern="wasm", x=Sys.info()["machine"])
             
-            # Use base R connection
-            res <- tryCatch({
-              con <- url(target_url, headers = c(Accept = "application/xml"))
-              lines <- readLines(con, warn = FALSE)
-              close(con)
-              paste(lines, collapse = "\n")
+            res_text <- ""
+            
+            # 1. SMART FETCHING
+            tryCatch({
+              if (local_is_WASM) {
+                con <- url(target_url, headers = c(Accept = "application/xml"))
+                res_text <- paste(readLines(con, warn = FALSE), collapse = "\n")
+                close(con)
+              } else {
+                # Require httr locally because ORCID blocks base R user-agents!
+                resp <- httr::GET(target_url, httr::add_headers(Accept = "application/xml"))
+                if (httr::status_code(resp) == 200) {
+                  res_text <- httr::content(resp, as = "text", encoding = "UTF-8")
+                } else {
+                  return(list(df = data.frame(), error = paste("ORCID API returned HTTP", httr::status_code(resp))))
+                }
+              }
             }, error = function(e) {
               if (exists("con")) try(close(con), silent = TRUE)
-              return(e)
+              return(list(df = data.frame(), error = e$message))
             })
             
-            if (inherits(res, "error")) return(list(error = conditionMessage(res)))
+            if (trimws(res_text) == "") return(list(df = data.frame(), error = "Empty ORCID response"))
             
-            # Parse XML 
-            xml_vec <- xml2::read_xml(res)
-            xml_vec_ns <- xml2::xml_ns(xml_vec)
-            xml_groups <- xml2::xml_find_all(xml_vec, ".//activities:group", xml_vec_ns)
+            # 2. BULLETPROOF XML PARSING (Ignore Namespaces via local-name())
+            xml_vec <- xml2::read_xml(res_text)
             
-            # Extract DOI details
-            orcid_df <- purrr::map_dfr(xml_groups, function(g) {
+            # Find all works directly, bypassing <group> or namespace prefixes completely
+            xml_summaries <- xml2::xml_find_all(xml_vec, "//*[local-name()='work-summary']")
+            
+            if (length(xml_summaries) == 0) return(list(df = data.frame(), error = NULL))
+            
+            xtext_safe <- function(node, xpath) {
+              val <- xml2::xml_text(xml2::xml_find_first(node, xpath))
+              if (is.na(val) || trimws(val) == "") return(NA_character_) else return(trimws(val))
+            }
+            
+            # 3. EXTRACT DOI DETAILS
+            orcid_df <- purrr::map_dfr(xml_summaries, function(w) {
+              
+              # Get all external IDs attached to this specific paper
+              # We use .//* to ensure we only search INSIDE the current work summary
+              ext_id_nodes <- xml2::xml_find_all(w, ".//*[local-name()='external-id']")
+              
+              ext_id_val <- NA_character_
+              ext_id_url <- NA_character_
+              
+              if (length(ext_id_nodes) > 0) {
+                # Extract type, value, and URL for all IDs
+                id_types <- sapply(ext_id_nodes, function(x) xtext_safe(x, ".//*[local-name()='external-id-type']"))
+                id_vals <- sapply(ext_id_nodes, function(x) xtext_safe(x, ".//*[local-name()='external-id-value']"))
+                id_urls <- sapply(ext_id_nodes, function(x) xtext_safe(x, ".//*[local-name()='external-id-url']"))
+                
+                # Hunt for the DOI natively in R
+                doi_idx <- which(tolower(id_types) == "doi")
+                if (length(doi_idx) > 0) {
+                  ext_id_val <- id_vals[doi_idx[1]]
+                  ext_id_url <- id_urls[doi_idx[1]]
+                } else {
+                  # Fallback to the first ID if no DOI exists
+                  ext_id_val <- id_vals[1]
+                  ext_id_url <- id_urls[1]
+                }
+              }
+              
               tibble::tibble(
-                source_name = xtext(g, ".//common:source-name", xml_vec_ns),
-                title = xtext(g, ".//common:title", xml_vec_ns),
-                external_id_value = xtext(g, ".//common:external-id-value", xml_vec_ns),
-                external_id_url = xtext(g, ".//common:external-id-url", xml_vec_ns),
-                last_modified_date = xtext(g, ".//common:last-modified-date", xml_vec_ns),
-                journal_title = xtext(g, ".//work:journal-title", xml_vec_ns),
-                work_type = xtext(g, ".//work:type", xml_vec_ns),
-                orcid = paste0("https://orcid.org/",clean_orcid)
+                source_name = xtext_safe(w, ".//*[local-name()='source-name']"),
+                title = xtext_safe(w, ".//*[local-name()='title']"),
+                external_id_value = ext_id_val,
+                external_id_url = ext_id_url,
+                journal_title = xtext_safe(w, ".//*[local-name()='journal-title']"),
+                work_type = xtext_safe(w, ".//*[local-name()='type']"),
+                orcid = paste0("https://orcid.org/", clean_orcid)
               )
             })
             
             return(list(df = orcid_df, error = NULL))
             
-            # Note: I removed 'rv', 'progress_state', and 'print_log' from globals because they shouldn't be here
-          }, globals = c("xtext", "clean_orcid"), seed = TRUE) %...>% (function(res) {
+          }, globals = c("clean_orcid"), seed = TRUE) %...>% (function(res) {
             
             # --- BACK ON MAIN THREAD: Safe to touch Shiny UI and reactives again ---
             if(!fs::file_exists(file.path("run.lock"))) return(NULL)
-            
+            print("ORCID:9:")
             orcid_count <- length(orcid_list)
             progress_state$orcid_done <- progress_state$orcid_done + 1 
             pct <- round(( progress_state$orcid_done / max(1, orcid_count) ) * 100)
@@ -3438,7 +3632,8 @@ server <- function(input, output, session) {
               rv$log_text <- paste(rv$log_text, paste("ORCID Error:", res$error), sep="<br>")
               return(NULL)
             } 
-            
+            print("ORCID:10:")
+            print(paste("nrow(res$df):",nrow(res$df)))
             return(res$df)
             
           }) %...!% (function(err) {
@@ -3453,16 +3648,15 @@ server <- function(input, output, session) {
         # Fallback: if no ORCIDs were provided, resolve immediately to an empty list
         master_orcid_promise <- promise_resolve(list())
       }
-      
-      
+      print("ORCID:11:")
+      print("PHASE-2:")
       # ==============================================================================
       # PHASE 2: LAUNCH SCOPUS IMMEDIATELY (Doesn't wait for ORCID extraction)
       # ==============================================================================
       
       # rv$log_text <- paste(rv$log_text, "Launching Scopus fetching in parallel...\n")
       # output$log <- renderText({rv$log_text})
-      if(orcid_count > 0){
-        
+      # if(orcid_count > 0){
         
         # scopus_promises <- lapply(seq_along(orcid_list), function(i) {
         #   
@@ -3523,51 +3717,51 @@ server <- function(input, output, session) {
         #   
         # })
         
-        #wait till SCOPUS ID fetch is complete before querying SCOPUS with ORCiD
-        master_scopusdf_promise <- master_scopusid_promise %...>% (function(scopus_results){
-          # if (rv$is_cancelled) return(NULL)
-          if(!fs::file_exists(file.path("run.lock"))) return(NULL)
-          # print(paste("orcid_results: ", colnames(orcid_results),collapse=","))
-          scopus_df_tmp <- data.frame()
-          # 1. Combine DOIs extracted from ORCIDs with manually typed DOIs
-          extracted_scopus_dfs <- purrr::compact(scopus_results) 
-          scopus_combo <- data.frame()
-          if (length(extracted_scopus_dfs) > 0) {
-            orcid_combo <- dplyr::bind_rows(extracted_scopus_dfs)
-            missing_url <- is.na(scopus_combo$external_id_url)
-            scopus_combo[missing_url, "external_id_url"] <- scopus_combo[missing_url, "external_id_value"]
-            # doi_lines <- unique(c(doi_lines, orcid_combo$external_id_url))
-            scopus_df_tmp <- scopus_combo %>% dplyr::select(external_id_url, external_id_value, orcid) %>% dplyr::rename(doi_url=external_id_url) %>% dplyr::rename(doi=external_id_value)
-          }
-          print(paste("scopus_combo: ",paste(colnames(scopus_combo),collapse=",")))
-          print(str(scopus_combo))
-          print(str(scopus_df_tmp))
-          if(nrow(scopus_df_tmp) > 0){
-            scopus_df_tmp$doi <- scopus_df_tmp$doi[!is.na(scopus_df_tmp$doi) & trimws(scopus_df_tmp$doi) != ""]
-            
-            # Safely parse text box line-by-line
-            scopus_lines <- unlist(strsplit(input$scopusid_text, "\n"))
-            scopus_lines <- scopus_lines[trimws(scopus_lines) != ""]
-            
-            if (length(scopus_lines) > 0) {
-              # bind_rows is safer than full_join here because the columns (DOI vs SCOPUS_ID) don't match
-              scopus_df_tmp <- dplyr::bind_rows(scopus_df_tmp, data.frame(SCOPUS_ID = scopus_lines))
-            }
-          }else{
-            # Safely parse text box line-by-line
-            scopus_lines <- unlist(strsplit(input$scopusid_text, "\n"))
-            scopus_lines <- scopus_lines[trimws(scopus_lines) != ""]  
-            
-            # Using rep() prevents the "0, 1" row error!
-            scopus_df_tmp <- data.frame(
-              doi = scopus_lines, 
-              orcid = rep(NA_character_, length(scopus_lines)), 
-              doi_url = scopus_lines
-            )
-          }
-          scopus_df_tmp <- scopus_df_tmp %>% dplyr::distinct()
-          return(scopus_df_tmp)
-        })
+        # #wait till SCOPUS ID fetch is complete before querying SCOPUS with ORCiD
+        # master_scopusdf_promise <- master_scopusid_promise %...>% (function(scopus_results){
+        #   # if (rv$is_cancelled) return(NULL)
+        #   if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+        #   # print(paste("orcid_results: ", colnames(orcid_results),collapse=","))
+        #   scopus_df_tmp <- data.frame()
+        #   # 1. Combine DOIs extracted from ORCIDs with manually typed DOIs
+        #   extracted_scopus_dfs <- purrr::compact(scopus_results) 
+        #   scopus_combo <- data.frame()
+        #   if (length(extracted_scopus_dfs) > 0) {
+        #     orcid_combo <- dplyr::bind_rows(extracted_scopus_dfs)
+        #     missing_url <- is.na(scopus_combo$external_id_url)
+        #     scopus_combo[missing_url, "external_id_url"] <- scopus_combo[missing_url, "external_id_value"]
+        #     # doi_lines <- unique(c(doi_lines, orcid_combo$external_id_url))
+        #     scopus_df_tmp <- scopus_combo %>% dplyr::select(external_id_url, external_id_value, orcid) %>% dplyr::rename(doi_url=external_id_url) %>% dplyr::rename(doi=external_id_value)
+        #   }
+        #   print(paste("scopus_combo: ",paste(colnames(scopus_combo),collapse=",")))
+        #   print(str(scopus_combo))
+        #   print(str(scopus_df_tmp))
+        #   if(nrow(scopus_df_tmp) > 0){
+        #     scopus_df_tmp$doi <- scopus_df_tmp$doi[!is.na(scopus_df_tmp$doi) & trimws(scopus_df_tmp$doi) != ""]
+        #     
+        #     # Safely parse text box line-by-line
+        #     scopus_lines <- unlist(strsplit(input$scopusid_text, "\n"))
+        #     scopus_lines <- scopus_lines[trimws(scopus_lines) != ""]
+        #     
+        #     if (length(scopus_lines) > 0) {
+        #       # bind_rows is safer than full_join here because the columns (DOI vs SCOPUS_ID) don't match
+        #       scopus_df_tmp <- dplyr::bind_rows(scopus_df_tmp, data.frame(SCOPUS_ID = scopus_lines))
+        #     }
+        #   }else{
+        #     # Safely parse text box line-by-line
+        #     scopus_lines <- unlist(strsplit(input$scopusid_text, "\n"))
+        #     scopus_lines <- scopus_lines[trimws(scopus_lines) != ""]  
+        #     
+        #     # Using rep() prevents the "0, 1" row error!
+        #     scopus_df_tmp <- data.frame(
+        #       doi = scopus_lines, 
+        #       orcid = rep(NA_character_, length(scopus_lines)), 
+        #       doi_url = scopus_lines
+        #     )
+        #   }
+        #   scopus_df_tmp <- scopus_df_tmp %>% dplyr::distinct()
+        #   return(scopus_df_tmp)
+        # })
         
         progress_state$scopus_done <- 0
         # --- STREAM B: PARALLEL SCOPUS PROCESSING ---
@@ -3584,7 +3778,7 @@ server <- function(input, output, session) {
                 )
                 return(promise_resolve(NULL))
               }
-          
+              print("SCOPUS:2:")    
               # INCREMENT PROGRESS BAR
               prog_scopus_reactive <- reactive({ progress_state$scopus_done + 1 })
               # progress_state$scopus_done <- progress_state$scopus_done + 1
@@ -3608,7 +3802,7 @@ server <- function(input, output, session) {
             # if (rv$is_cancelled) return(NULL)
             if(!fs::file_exists(file.path("run.lock"))) return(NULL)
             return(res) 
-          }) %...!% (function(res) {
+          }) %...!% (function(err) {
             # if (rv$is_cancelled) return(NULL)
             if(!fs::file_exists(file.path("run.lock"))) return(NULL)
             progress_state$scopus_done <- progress_state$scopus_done + 1 
@@ -3617,221 +3811,561 @@ server <- function(input, output, session) {
             warning("Failed SCOPUS Processing:", err)
             shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
             shinyjs::enable("submit_button")
-            if (is.list(res) && !is.null(res$error)) {
-              rv$log_text <- paste(rv$log_text, paste("Scopus Error:", res$error), sep="<br>")
-              # output$log <- renderText({rv$log_text})
-              return(NULL)
-            }
+            rv$log_text <- paste(rv$log_text, paste("Scopus Error:", err), sep="<br>")
+            # output$log <- renderText({rv$log_text})
+            print(err)
+            return(NULL)
           })
         
+        print("SCOPUS:3:")   
         # Wrap all Scopus promises into one master promise
         master_scopus_promise <- promise_all(scopus_promise)
-        
+        print("SCOPUS:4:")   
         # ==============================================================================
         # PHASE 3: WAIT FOR ORCIDS -> THEN LAUNCH DOI
         # ==============================================================================
-        # Notice we assign this to `master_doi_promise`
-        master_doi_promise <- master_orcid_promise %...>% (function(orcid_results) {
-          # if (rv$is_cancelled) return(NULL)
+      #   # Notice we assign this to `master_doi_promise`
+      #   master_doi_promise <- master_orcid_promise %...>% (function(orcid_results) {
+      #     # if (rv$is_cancelled) return(NULL)
+      #     if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+      #     # print(paste("orcid_results: ", colnames(orcid_results),collapse=","))
+      #     doi_df <- data.frame()
+      #     # 1. Combine DOIs extracted from ORCIDs with manually typed DOIs
+      #     extracted_orcid_dfs <- purrr::compact(orcid_results) 
+      #     orcid_combo <- data.frame()
+      #     if (length(extracted_orcid_dfs) > 0) {
+      #       orcid_combo <- dplyr::bind_rows(extracted_orcid_dfs)
+      #       missing_url <- is.na(orcid_combo$external_id_url)
+      #       orcid_combo[missing_url, "external_id_url"] <- orcid_combo[missing_url, "external_id_value"]
+      #       # doi_lines <- unique(c(doi_lines, orcid_combo$external_id_url))
+      #       doi_df <- orcid_combo %>% dplyr::select(external_id_url, external_id_value, orcid) %>% dplyr::rename(doi_url=external_id_url) %>% dplyr::rename(doi=external_id_value)
+      #     }
+      #     print(paste("orcid_combo: ",paste(colnames(orcid_combo),collapse=",")))
+      #     print(str(orcid_combo))
+      #     print(str(doi_df))
+      #     if(nrow(doi_df) > 0){
+      #       doi_df$doi <- doi_df$doi[!is.na(doi_df$doi) & trimws(doi_df$doi) != ""]  
+      #       doi_df <- dplyr::full_join(doi_df, data.frame(doi=input$doi_text))
+      #     }else{
+      #       doi_lines <- input$doi_text[!is.na(input$doi_text) & trimws(input$doi_text) != ""]  
+      #       doi_df <- data.frame(doi=doi_lines, orcid=NA, doi_url=doi_lines)
+      #     }
+      #     doi_df <- doi_df %>% dplyr::distinct()
+      #     # doi_count <- length(doi_lines)
+      #     rv$doi_count <- nrow(doi_df)
+      #     message(paste("DOI COUNT:", rv$doi_count))
+      #     rv$log_text <- paste(rv$log_text, sprintf("\nExtracted %d total DOIs. Launching DOIs...\n", rv$doi_count), sep="<br>")
+      #     
+      #     rv$temp_meta <- list()
+      #     rv$final_results <- list()
+      #     rv$doi_count <- nrow(doi_df)
+      #     progress_state$doi_done <- 0
+      #     
+      #     # If doi/orcid was given as input and we were able to extract DOIs
+      #     if(nrow(doi_df) > 0){
+      #       # --- STREAM A: PARALLEL DOI PROCESSING ---
+      #       # doi_promises <- lapply(seq(nrow(doi_df)), function(i) {
+      #       #   # doi_target <- doi_lines[i]
+      #       #   doi_target <- doi_df[i,]
+      #       #   future({
+      #       #     tryCatch({ 
+      #       #       # if (rv$is_cancelled) return(NULL)
+      #       #       if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+      #       #       ret_df <- doi2gscholarlens(doi_target[["doi"]], doi_target[["orcid"]], rv) 
+      #       #       prog_doi_reactive <- reactive({ progress_state$doi_done + 1 })
+      #       #       # progress_state$scopus_done <- progress_state$scopus_done + 1
+      #       #       pct <- round(( isolate(prog_doi_reactive()) / max(1, rv$doi_count) ) * 100 )
+      #       #       shinyWidgets::updateProgressBar(
+      #       #         session, id = "prog_doi", value = isolate(prog_doi_reactive()), total = max(1, rv$doi_count),
+      #       #         title = sprintf("DOI: %d%% (%d/%d)", pct, isolate(prog_doi_reactive()), rv$doi_count),
+      #       #         status = if(pct == 100) "success" else "warning"
+      #       #       )
+      #       #       progress_state$doi_done <- isolate(prog_doi_reactive())
+      #       #       return(ret_df)
+      #       #     }, error = function(e){ 
+      #       #       message(paste("ERROR (doi2gscholarlens()):", e))
+      #       #       warning(traceback()) })
+      #       #   }, globals = c("glens_env", "doi_target", "doi2gscholarlens", "rv", "session", "progress_state"), packages = c("shinyWidgets", "stringi", "dplyr", "shiny"), seed = TRUE) %...>% (function(res_df) {
+      #       #     # if (rv$is_cancelled) return(NULL)
+      #       #     if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+      #       #     return(res_df)
+      #       #   }) %...!% (function(err) {
+      #       #     # if (rv$is_cancelled) return(NULL)
+      #       #     if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+      #       #     progress_state$doi_done <- progress_state$doi_done + 1 
+      #       #     shinyWidgets::updateProgressBar(session, id = "prog_doi", value = progress_state$doi_done , status = "danger", title = "Process Failed!")
+      #       #     # output$log <- renderText(sprintf("Failed in DOI Processing: %s", conditionMessage(err)))
+      #       #     rv$log_text <- paste(rv$log_text, sprintf("\nFailed in DOI Processing: %s", conditionMessage(err)),sep="<br>")
+      #       #     warning(paste("Failed in DOI Processing:", err))
+      #       #     message(traceback())
+      #       #     shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
+      #       #     shinyjs::enable("submit_button")
+      #       #   })
+      #       #   
+      #       # })
+      #       # 
+      #       # # RETURN the resolved DOI promises to `master_doi_promise`
+      #       # return(promise_all(.list = doi_promises))
+      #       
+      #       # The Dispatcher Loop
+      #       for (i in seq_len(nrow(doi_df))) {
+      #         doi_target <- doi_df[i, ]
+      #         
+      #         # Create a unique ID for this row so R knows which citations belong to which row when JS returns them
+      #         req_id <- paste0("doi_req_", i) 
+      #         
+      #         tryCatch({
+      #           if(!fs::file_exists(file.path("run.lock"))) stop("Run locked")
+      #           
+      #           # 1. Prepare RIS metadata synchronously
+      #           meta_df <- prepare_doi_metadata(doi_target[["doi"]], doi_target[["orcid"]], rv)
+      #           
+      #           if (is.null(meta_df)) {
+      #             # If RIS fails, immediately increment progress and skip to next
+      #             progress_state$doi_done <- progress_state$doi_done + 1
+      #             shinyWidgets::updateProgressBar(session, id = "prog_doi", value = progress_state$doi_done, total = rv$doi_count)
+      #             next 
+      #           }
+      #           
+      #           # 2. Store the metadata temporarily in R
+      #           rv$temp_meta[[req_id]] <- meta_df
+      #           
+      #           # 3. Fire the JS async fetcher (from previous step)
+      #           get_citation_counts_async(
+      #             doi_or_url = doi_target[["doi"]],
+      #             semanticscholar_key = glens_env$semantic_key, # Or pass your key logic here
+      #             input_id = "api_counts_ready",
+      #             request_id = req_id
+      #           )
+      #           
+      #         }, error = function(e) {
+      #           message(paste("ERROR (Dispatcher):", e))
+      #           rv$log_text <- paste(rv$log_text, sprintf("\nFailed in DOI Dispatch: %s", conditionMessage(e)), sep="<br>")
+      #           progress_state$doi_done <- progress_state$doi_done + 1
+      #         })
+      #       }
+      #     }else{
+      #       return(doi_df)
+      #     }
+      #   })
+      # }else{
+      #     # Fallback: if no ORCIDs were provided, resolve immediately to an empty list
+      #     master_scopus_promise <- promise_resolve(list())
+      #     master_scopusdf_promise <- master_scopusid_promise
+      #     # master_doi_promise <- promise_resolve(list())
+      # }
+      # 
+      # promise_all(
+      #   dois = master_doi_promise,
+      #   scopus_orcid = master_scopus_promise,
+      #   scopus_id = master_scopusdf_promise
+      # ) %...>% (function(results) {
+      #   # if (rv$is_cancelled) return(NULL)
+      #   if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+      #   
+      #   failed_doi_count <- length(Filter(is.null, results$dois))
+      #   if(abs(rv$doi_count - failed_doi_count) > 0){
+      #     rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'>Failed RIS Extraction Count:", abs(rv$doi_count - failed_doi_count), "</span>"), sep="<br>")
+      #   }
+      #   
+      #   # --- 1. MERGE THE SCRAPED DATA ---
+      #   # Extract and bind the data from the promises safely
+      #   clean_dois <- Filter(Negate(is.null), results$dois)
+      #   valid_dois <- Filter(is.data.frame, clean_dois)
+      #   accumulated_df <- dplyr::bind_rows(valid_dois)
+      #   if (nrow(accumulated_df) > 0) accumulated_df <- accumulated_df %>% dplyr::distinct() %>% dplyr::mutate(Source = "DOI/ORCID")
+      #   
+      #   clean_scopus_orcid <- Filter(Negate(is.null), results$scopus_orcid)
+      #   clean_scopus_id <- Filter(Negate(is.null), results$scopus_id)
+      #   rv$scopus_df <- dplyr::bind_rows(purrr::compact(Filter(is.data.frame, clean_scopus_orcid)), purrr::compact(Filter(is.data.frame, clean_scopus_id))) %>% dplyr::distinct()
+      #   if (nrow(rv$scopus_df) > 0) rv$scopus_df <- rv$scopus_df %>% dplyr::mutate(Source = "SCOPUS")
+      #   
+      #   # Prevent Year mismatch crash before binding
+      #   if(nrow(accumulated_df) > 0 && "Year" %in% names(accumulated_df)) accumulated_df$Year <- as.character(accumulated_df$Year)
+      #   if(nrow(rv$scopus_df) > 0 && "Year" %in% names(rv$scopus_df)) rv$scopus_df$Year <- as.character(rv$scopus_df$Year)
+      #   
+      #   # The unified raw table!
+      #   raw_df <- dplyr::bind_rows(accumulated_df, rv$scopus_df)
+      #   print(paste("raw_df:",nrow(raw_df)))
+      #   
+      #   # --- 2. PARSE THE TARGET AUTHORS ---
+      #   # We must do this here so the extend function knows exactly who to search for
+      #   target_variants <- stringi::stri_omit_empty(stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n"))))
+      #   target_variants <- target_variants[target_variants != ""]
+      #   
+      #   if(length(target_variants) > 0) {
+      #     rv$target_variants_norm <- lapply(setNames(target_variants, target_variants), function(v) {
+      #       vn <- normalize_name(v)
+      #       list(norm = vn, parts = extract_parts(vn))
+      #     })
+      #     rv$author_match_regex <- build_name_regex_for_variants(target_variants)
+      #   } else {
+      #     rv$target_variants_norm <- NULL
+      #     rv$author_match_regex <- NULL
+      #   }
+      #   
+      #   print("submit_btn:extend_input_table():")
+      #   # --- 3. THE HEAVY LIFTING (Hybrid Paradigm) ---
+      #   # Pass raw_df directly into the extension and matching pipeline
+      #   extended_df <- extend_input_table(rv, raw_df, rv$author_match_regex, rv$target_variants_norm)
+      #   matched_df <- match_journals(rv, extended_df)
+      #   
+      #   if(nrow(matched_df) > 0){
+      #     # Store the final static table. This triggers the rest of the UI!
+      #     rv$glens_full_table <- matched_df
+      #   }
+      #   # print(str(matched_df))
+      #   # --- 4. UI SETUP ---
+      #   # Initialize empty Skeletons so they are ready for the Proxy
+      #   render_skeleton_plots(rv, matched_df, output)
+      # 
+      #   # Configure Slider safely
+      #   years <- as.numeric(na.omit(matched_df$Year))
+      #   print(levels(factor(years)))
+      #   print(str(years))
+      #   if (length(years) > 0) {
+      #     min_yr <- min(years)
+      #     max_yr <- max(years)
+      #     updateSliderInput(session, "year_slider", min = min_yr, max = max_yr, value = c(min_yr, max_yr))
+      #   }
+      #   
+      #   print("HERE0")
+      #   # Trigger a manual update if auto-refresh is OFF
+      #   if (!isTRUE(input$auto_refresh_lookup)) {
+      #     # Increment a counter to signal the reactive graph
+      #     # Delay the manual trigger so the browser has time to render the skeletons
+      #     later::later(function() {
+      #       isolate({
+      #         rv$manual_submit <- if(is.null(rv$manual_submit)) 1 else rv$manual_submit + 1
+      #       })
+      #     }, delay = 0.8) # 800ms delay to safely match your debounce timing
+      #   }
+      #   
+      #   print("HERE1")
+      #   print("HERE2")
+      #   # Reveal UI Elements
+      #   shinyjs::show("year_slider")
+      #   shinyjs::show("sh_index")
+      #   shinyjs::show("summary_table")
+      #   shinyjs::show("lookup_controls_panel")
+      #   # shinyjs::show("network_full")
+      #   print("HERE3")
+      #   # --- 5. CLEANUP ---
+      #   rv$log_text <- paste(rv$log_text, "<span style='color: green;'>✓ Run complete.</span>", sep="<br>")
+      #   
+      #   try({ if (fs::file_exists("run.lock")) fs::file_delete("run.lock") }, silent = TRUE)
+      #   
+      #   rv$is_cancelled <- FALSE
+      #   rv$is_glens_exec <- FALSE   
+      #   # shinyjs::delay(1500, shinyjs::hide("progress_overlay"))
+      #   shinyjs::hide("progress_overlay")
+      #   shinyjs::enable("submit_button")
+      #   
+      # }) %...!% (function(err) {
+      #   print(err)
+      #   shinyWidgets::updateProgressBar(session, id = "prog_doi", value = 100, status = "danger", title = "Process Failed!")
+      #   rv$log_text <- paste(rv$log_text, sprintf("\n(Master) Failed in DOI/Scopus Processing: %s", conditionMessage(err)),sep="<br>")
+      #   shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
+      #   shinyjs::enable("submit_button")
+      #   if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+      # })
+        
+        # # =========================================================================
+        # # --- FINAL PIPELINE GATEKEEPER ---
+        # # This function fires ONLY when both DOIs (JS) and Scopus (R Promises) are done
+        # # =========================================================================
+        # run_final_pipeline <- function() {
+        #   if (!isTRUE(rv$scopus_finished) || !isTRUE(rv$dois_finished)) {
+        #     return(NULL) # One of them is still working, so wait!
+        #   }
+        #   
+        #   tryCatch({
+        #     if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+        #     
+        #     # --- 1. MERGE THE SCRAPED DATA ---
+        #     # Fetch DOIs from the background JS process
+        #     valid_dois <- Filter(is.data.frame, rv$final_results)
+        #     accumulated_df <- dplyr::bind_rows(valid_dois)
+        #     if (nrow(accumulated_df) > 0) {
+        #       accumulated_df <- accumulated_df %>% dplyr::distinct() %>% dplyr::mutate(Source = "DOI/ORCID")
+        #     }
+        #     
+        #     # Prevent Year mismatch crash before binding
+        #     if(nrow(accumulated_df) > 0 && "Year" %in% names(accumulated_df)) accumulated_df$Year <- as.character(accumulated_df$Year)
+        #     if(nrow(rv$scopus_df) > 0 && "Year" %in% names(rv$scopus_df)) rv$scopus_df$Year <- as.character(rv$scopus_df$Year)
+        #     
+        #     # The unified raw table!
+        #     raw_df <- dplyr::bind_rows(accumulated_df, rv$scopus_df)
+        #     print(paste("raw_df:", nrow(raw_df)))
+        #     
+        #     # --- 2. PARSE THE TARGET AUTHORS ---
+        #     target_variants <- stringi::stri_omit_empty(stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n"))))
+        #     target_variants <- target_variants[target_variants != ""]
+        #     
+        #     if(length(target_variants) > 0) {
+        #       rv$target_variants_norm <- lapply(setNames(target_variants, target_variants), function(v) {
+        #         vn <- normalize_name(v)
+        #         list(norm = vn, parts = extract_parts(vn))
+        #       })
+        #       rv$author_match_regex <- build_name_regex_for_variants(target_variants)
+        #     } else {
+        #       rv$target_variants_norm <- NULL
+        #       rv$author_match_regex <- NULL
+        #     }
+        #     
+        #     print("submit_btn:extend_input_table():")
+        #     # --- 3. THE HEAVY LIFTING ---
+        #     extended_df <- extend_input_table(rv, raw_df, rv$author_match_regex, rv$target_variants_norm)
+        #     matched_df <- match_journals(rv, extended_df)
+        #     
+        #     if(nrow(matched_df) > 0){
+        #       rv$glens_full_table <- matched_df
+        #     }
+        #     
+        #     # --- 4. UI SETUP ---
+        #     render_skeleton_plots(rv, matched_df, output)
+        #     
+        #     years <- as.numeric(na.omit(matched_df$Year))
+        #     if (length(years) > 0) {
+        #       min_yr <- min(years)
+        #       max_yr <- max(years)
+        #       updateSliderInput(session, "year_slider", min = min_yr, max = max_yr, value = c(min_yr, max_yr))
+        #     }
+        #     
+        #     if (!isTRUE(input$auto_refresh_lookup)) {
+        #       later::later(function() {
+        #         isolate({ rv$manual_submit <- if(is.null(rv$manual_submit)) 1 else rv$manual_submit + 1 })
+        #       }, delay = 0.8) 
+        #     }
+        #     
+        #     shinyjs::show("year_slider")
+        #     shinyjs::show("sh_index")
+        #     shinyjs::show("summary_table")
+        #     shinyjs::show("lookup_controls_panel")
+        #     
+        #     # --- 5. CLEANUP ---
+        #     rv$log_text <- paste(rv$log_text, "<span style='color: green;'>✓ Run complete.</span>", sep="<br>")
+        #     try({ if (fs::file_exists("run.lock")) fs::file_delete("run.lock") }, silent = TRUE)
+        #     
+        #     rv$is_cancelled <- FALSE
+        #     rv$is_glens_exec <- FALSE   
+        #     shinyjs::hide("progress_overlay")
+        #     shinyjs::enable("submit_button")
+        #     
+        #   }, error = function(e) {
+        #     print(e)
+        #     shinyWidgets::updateProgressBar(session, id = "prog_doi", value = 100, status = "danger", title = "Process Failed!")
+        #     rv$log_text <- paste(rv$log_text, sprintf("\n(Master) Failed in Final Processing: %s", conditionMessage(e)), sep="<br>")
+        #     shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
+        #     shinyjs::enable("submit_button")
+        #   })
+        # }
+        
+        # =========================================================================
+        # --- EXECUTE STREAMS ---
+        # =========================================================================
+        rv$scopus_finished <- FALSE
+        rv$dois_finished <- FALSE
+        
+        print("SCOPUS:5:")   
+        
+        # --- STREAM A: DOI DISPATCHER ---
+        master_orcid_promise %...>% (function(orcid_results) {
+          print("SCOPUS:6:")   
           if(!fs::file_exists(file.path("run.lock"))) return(NULL)
-          # print(paste("orcid_results: ", colnames(orcid_results),collapse=","))
-          doi_df <- data.frame()
-          # 1. Combine DOIs extracted from ORCIDs with manually typed DOIs
+          
+          doi_df <- data.frame(doi=character(), orcid=character(), doi_url=character(), stringsAsFactors=FALSE)
           extracted_orcid_dfs <- purrr::compact(orcid_results) 
-          orcid_combo <- data.frame()
+          
           if (length(extracted_orcid_dfs) > 0) {
             orcid_combo <- dplyr::bind_rows(extracted_orcid_dfs)
+            
+            # Ensure columns exist before trying to modify them!
+            if (!"external_id_url" %in% names(orcid_combo)) orcid_combo$external_id_url <- NA_character_
+            if (!"external_id_value" %in% names(orcid_combo)) orcid_combo$external_id_value <- NA_character_
+            if (!"orcid" %in% names(orcid_combo)) orcid_combo$orcid <- NA_character_
+            
             missing_url <- is.na(orcid_combo$external_id_url)
             orcid_combo[missing_url, "external_id_url"] <- orcid_combo[missing_url, "external_id_value"]
-            # doi_lines <- unique(c(doi_lines, orcid_combo$external_id_url))
-            doi_df <- orcid_combo %>% dplyr::select(external_id_url, external_id_value, orcid) %>% dplyr::rename(doi_url=external_id_url) %>% dplyr::rename(doi=external_id_value)
-          }
-          print(paste("orcid_combo: ",paste(colnames(orcid_combo),collapse=",")))
-          print(str(orcid_combo))
-          print(str(doi_df))
-          if(nrow(doi_df) > 0){
-            doi_df$doi <- doi_df$doi[!is.na(doi_df$doi) & trimws(doi_df$doi) != ""]  
-            doi_df <- dplyr::full_join(doi_df, data.frame(doi=input$doi_text))
-          }else{
-            doi_lines <- input$doi_text[!is.na(input$doi_text) & trimws(input$doi_text) != ""]  
-            doi_df <- data.frame(doi=doi_lines, orcid=NA, doi_url=doi_lines)
-          }
-          doi_df <- doi_df %>% dplyr::distinct()
-          # doi_count <- length(doi_lines)
-          rv$doi_count <- nrow(doi_df)
-          message(paste("DOI COUNT:", rv$doi_count))
-          rv$log_text <- paste(rv$log_text, sprintf("\nExtracted %d total DOIs. Launching DOIs...\n", rv$doi_count), sep="<br>")
-          
-          # If doi/orcid was given as input and we were able to extract DOIs
-          if(nrow(doi_df) > 0){
-            # --- STREAM A: PARALLEL DOI PROCESSING ---
-            doi_promises <- lapply(seq(nrow(doi_df)), function(i) {
-              # doi_target <- doi_lines[i]
-              doi_target <- doi_df[i,]
-              future({
-                tryCatch({ 
-                  # if (rv$is_cancelled) return(NULL)
-                  if(!fs::file_exists(file.path("run.lock"))) return(NULL)
-                  ret_df <- doi2gscholarlens(doi_target[["doi"]], doi_target[["orcid"]], rv) 
-                  prog_doi_reactive <- reactive({ progress_state$doi_done + 1 })
-                  # progress_state$scopus_done <- progress_state$scopus_done + 1
-                  pct <- round(( isolate(prog_doi_reactive()) / max(1, rv$doi_count) ) * 100 )
-                  shinyWidgets::updateProgressBar(
-                    session, id = "prog_doi", value = isolate(prog_doi_reactive()), total = max(1, rv$doi_count),
-                    title = sprintf("DOI: %d%% (%d/%d)", pct, isolate(prog_doi_reactive()), rv$doi_count),
-                    status = if(pct == 100) "success" else "warning"
-                  )
-                  progress_state$doi_done <- isolate(prog_doi_reactive())
-                  return(ret_df)
-                }, error = function(e){ 
-                  message(paste("ERROR (doi2gscholarlens()):", e))
-                  warning(traceback()) })
-              }, globals = c("glens_env", "doi_target", "doi2gscholarlens", "rv", "session", "progress_state"), packages = c("shinyWidgets", "stringi", "dplyr", "shiny"), seed = TRUE) %...>% (function(res_df) {
-                # if (rv$is_cancelled) return(NULL)
-                if(!fs::file_exists(file.path("run.lock"))) return(NULL)
-                return(res_df)
-              }) %...!% (function(err) {
-                # if (rv$is_cancelled) return(NULL)
-                if(!fs::file_exists(file.path("run.lock"))) return(NULL)
-                progress_state$doi_done <- progress_state$doi_done + 1 
-                shinyWidgets::updateProgressBar(session, id = "prog_doi", value = progress_state$doi_done , status = "danger", title = "Process Failed!")
-                # output$log <- renderText(sprintf("Failed in DOI Processing: %s", conditionMessage(err)))
-                rv$log_text <- paste(rv$log_text, sprintf("\nFailed in DOI Processing: %s", conditionMessage(err)),sep="<br>")
-                warning(paste("Failed in DOI Processing:", err))
-                message(traceback())
-                shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
-                shinyjs::enable("submit_button")
-              })
-              
-            })
             
-            # RETURN the resolved DOI promises to `master_doi_promise`
-            return(promise_all(.list = doi_promises))
-          }else{
-            return(doi_df)
+            doi_df <- orcid_combo %>% 
+              dplyr::select(external_id_url, external_id_value, orcid) %>% 
+              dplyr::rename(doi_url=external_id_url, doi=external_id_value)
           }
+          
+          # Safely clean manual DOIs from the UI
+          doi_ui_lines <- if (!is.null(input$doi_text)) input$doi_text else character(0)
+          doi_ui_lines <- doi_ui_lines[!is.na(doi_ui_lines) & trimws(doi_ui_lines) != ""]
+          
+          if(nrow(doi_df) > 0) {
+            # Using dplyr::filter instead of base subsetting to avoid row-length crashes
+            doi_df <- doi_df %>% dplyr::filter(!is.na(doi) & trimws(doi) != "")
+            
+            # Only join manual DOIs if the user actually typed some
+            if (length(doi_ui_lines) > 0) {
+              manual_df <- data.frame(doi = doi_ui_lines, stringsAsFactors = FALSE)
+              doi_df <- dplyr::full_join(doi_df, manual_df, by = "doi")
+            }
+          } else {
+            if (length(doi_ui_lines) > 0) {
+              doi_df <- data.frame(doi=doi_ui_lines, orcid=NA_character_, doi_url=doi_ui_lines, stringsAsFactors=FALSE)
+            } else {
+              # Truly empty dataframe safe fallback
+              doi_df <- data.frame(doi=character(0), orcid=character(0), doi_url=character(0), stringsAsFactors=FALSE)
+            }
+          }
+          
+          # doi_df <- doi_df %>% dplyr::distinct()
+        #   rv$doi_count <- nrow(doi_df)
+        #   rv$log_text <- paste(rv$log_text, sprintf("\nExtracted %d total DOIs. Launching DOIs...\n", rv$doi_count), sep="<br>")
+        #   
+        #   rv$temp_meta <- list()
+        #   rv$final_results <- list()
+        #   progress_state$doi_done <- 0
+        #   
+        #   if(rv$doi_count > 0) {
+        #     # Dispatch DOIs to JS concurrently
+        #     for (i in seq_len(nrow(doi_df))) {
+        #       doi_target <- doi_df[i, ]
+        #       req_id <- paste0("doi_req_", i) 
+        #       
+        #       tryCatch({
+        #         meta_df <- prepare_doi_metadata(doi_target[["doi"]], doi_target[["orcid"]], rv)
+        #         if (is.null(meta_df)) {
+        #           progress_state$doi_done <- progress_state$doi_done + 1
+        #           shinyWidgets::updateProgressBar(session, id = "prog_doi", display_pct=T, value = progress_state$doi_done, total = rv$doi_count)
+        #           next 
+        #         }
+        #         rv$temp_meta[[req_id]] <- meta_df
+        #         
+        #         get_citation_counts_async(doi_target[["doi"]], glens_env$semantic_key, input_id = "api_counts_ready", request_id = req_id)
+        #       }, error = function(e) {
+        #         progress_state$doi_done <- progress_state$doi_done + 1
+        #       })
+        #     }
+        #   } else {
+        #     # No DOIs to process, immediately tell Gatekeeper we are done
+        #     rv$dois_finished <- TRUE
+        #     run_final_pipeline()
+        #   }
+        # }) %...!% (function(err) {
+        #   # CRITICAL FIX 4: Catch ORCID errors so they don't break the environment silently
+        #   print(err)
+        #   shinyWidgets::updateProgressBar(session, id = "prog_doi", value = 100, status = "danger", title = "Process Failed!")
+        #   rv$log_text <- paste(rv$log_text, sprintf("\n(Master) Failed in ORCID/DOI Extraction: %s", conditionMessage(err)), sep="<br>")
+        #   shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
+        #   shinyjs::enable("submit_button")
+        # })
+          
+          doi_df <- doi_df %>% dplyr::distinct()
+          
+          # 1. UPFRONT FILTERING
+          # Apply our detector to every raw identifier in the dataframe
+          detection_results <- lapply(doi_df$doi, detect_identifier_type)
+          
+          # Unpack the list of lists into dataframe columns
+          doi_df$clean_id <- sapply(detection_results, function(x) x$clean_id)
+          doi_df$id_type  <- sapply(detection_results, function(x) x$type)
+          doi_df$is_valid <- sapply(detection_results, function(x) x$is_doi)
+          
+          # Split the traffic!
+          valid_dois <- doi_df %>% dplyr::filter(is_valid == TRUE)
+          invalid_dois <- doi_df %>% dplyr::filter(is_valid == FALSE)
+          
+          # 2. BULLETPROOF TRACKING
+          rv$current_run_id <- as.character(as.numeric(Sys.time())) # Unique ID prevents ghosts
+          rv$temp_meta <- list()
+          rv$final_results <- list()
+          rv$doi_total <- nrow(doi_df)
+          rv$doi_processed <- 0
+          rv$js_expected <- nrow(valid_dois)
+          
+          rv$log_text <- paste(rv$log_text, sprintf("\nExtracted %d total DOIs. Launching...\n", rv$doi_total), sep="<br>")
+          print("SCOPUS:7:")   
+          # 3. INSTANTLY PROCESS INVALID DOIs (No JS needed)
+          if (nrow(invalid_dois) > 0) {
+            print("SCOPUS:7.1:")   
+            for (i in seq_len(nrow(invalid_dois))) {
+              meta_df <- prepare_doi_metadata(invalid_dois$clean_id[i], invalid_dois$orcid[i], rv, id_type = invalid_dois$id_type[i])
+              if (!is.null(meta_df)) {
+                meta_df$Citations <- 0
+                rv$final_results[[paste0("inv_", i)]] <- meta_df
+              }
+              rv$doi_processed <- rv$doi_processed + 1
+            }
+          }
+          
+          print("SCOPUS:8:")   
+          # 4. DISPATCH VALID DOIs TO BROWSER
+          if (rv$js_expected > 0) {
+            print("SCOPUS:8.1:")   
+            nrow_valid_dois <- nrow(valid_dois)
+            for (i in seq_len(nrow_valid_dois)) {
+              doi_target <- valid_dois[i, ]
+              req_id <- paste0(rv$current_run_id, "_req_", i) 
+              
+              meta_df <- prepare_doi_metadata(doi_target[["doi"]], doi_target[["orcid"]], rv)
+              pct <- round((i / max(1, nrow_valid_dois)) * 100)
+              shinyWidgets::updateProgressBar(session, id = "prog_doi", title= sprintf("Submitting DOI: %d%% (%d/%d)", pct, i, nrow_valid_dois), value = i, total = max(1, nrow_valid_dois))
+              if (!is.null(meta_df)) {
+                rv$temp_meta[[req_id]] <- meta_df
+                get_citation_counts_async(doi_target[["doi"]], glens_env$semantic_key, input_id = "api_counts_ready", request_id = req_id)
+              } else {
+                rv$js_expected <- rv$js_expected - 1
+                rv$doi_processed <- rv$doi_processed + 1
+              }
+            }
+          }
+          
+          pct <- round((rv$doi_processed / max(1, rv$doi_total)) * 100)
+          # Update progress bar for the instantly processed invalid ones
+          shinyWidgets::updateProgressBar(session, id = "prog_doi", title = sprintf("DOI: %d%% (%d/%d)", pct, rv$doi_processed, rv$doi_total),, value = rv$doi_processed, total = max(1, rv$doi_total))
+          
+          # Check if we are miraculously done instantly
+          if (rv$js_expected == 0) {
+            print("SCOPUS:9:")   
+            rv$dois_finished <- TRUE
+            rv$trigger_pipeline <- if(is.null(rv$trigger_pipeline)) 1 else rv$trigger_pipeline + 1
+          }
+        }) %...!% (function(err) {
+          print(err)
+          shinyWidgets::updateProgressBar(session, id = "prog_doi", value = 100, status = "danger", title = "Process Failed!")
+          rv$log_text <- paste(rv$log_text, sprintf("\n(Master) Failed in ORCID/DOI Extraction: %s", conditionMessage(err)), sep="<br>")
+          shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
+          shinyjs::enable("submit_button")
         })
-      }else{
-          # Fallback: if no ORCIDs were provided, resolve immediately to an empty list
-          master_scopus_promise <- promise_resolve(list())
-          master_scopusdf_promise <- master_scopusid_promise
-          master_doi_promise <- promise_resolve(list())
-      }
-      
-      promise_all(
-        dois = master_doi_promise,
-        scopus_orcid = master_scopus_promise,
-        scopus_id = master_scopusdf_promise
-      ) %...>% (function(results) {
-        # if (rv$is_cancelled) return(NULL)
-        if(!fs::file_exists(file.path("run.lock"))) return(NULL)
         
-        failed_doi_count <- length(Filter(is.null, results$dois))
-        if(abs(rv$doi_count - failed_doi_count) > 0){
-          rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'>Failed RIS Extraction Count:", abs(rv$doi_count - failed_doi_count), "</span>"), sep="<br>")
-        }
-        
-        # --- 1. MERGE THE SCRAPED DATA ---
-        # Extract and bind the data from the promises safely
-        clean_dois <- Filter(Negate(is.null), results$dois)
-        valid_dois <- Filter(is.data.frame, clean_dois)
-        accumulated_df <- dplyr::bind_rows(valid_dois)
-        if (nrow(accumulated_df) > 0) accumulated_df <- accumulated_df %>% dplyr::distinct() %>% dplyr::mutate(Source = "DOI/ORCID")
-        
-        clean_scopus_orcid <- Filter(Negate(is.null), results$scopus_orcid)
-        clean_scopus_id <- Filter(Negate(is.null), results$scopus_id)
-        rv$scopus_df <- dplyr::bind_rows(purrr::compact(Filter(is.data.frame, clean_scopus_orcid)), purrr::compact(Filter(is.data.frame, clean_scopus_id))) %>% dplyr::distinct()
-        if (nrow(rv$scopus_df) > 0) rv$scopus_df <- rv$scopus_df %>% dplyr::mutate(Source = "SCOPUS")
-        
-        # Prevent Year mismatch crash before binding
-        if(nrow(accumulated_df) > 0 && "Year" %in% names(accumulated_df)) accumulated_df$Year <- as.character(accumulated_df$Year)
-        if(nrow(rv$scopus_df) > 0 && "Year" %in% names(rv$scopus_df)) rv$scopus_df$Year <- as.character(rv$scopus_df$Year)
-        
-        # The unified raw table!
-        raw_df <- dplyr::bind_rows(accumulated_df, rv$scopus_df)
-        print(paste("raw_df:",nrow(raw_df)))
-        
-        # --- 2. PARSE THE TARGET AUTHORS ---
-        # We must do this here so the extend function knows exactly who to search for
-        target_variants <- stringi::stri_omit_empty(stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n"))))
-        target_variants <- target_variants[target_variants != ""]
-        
-        if(length(target_variants) > 0) {
-          rv$target_variants_norm <- lapply(setNames(target_variants, target_variants), function(v) {
-            vn <- normalize_name(v)
-            list(norm = vn, parts = extract_parts(vn))
-          })
-          rv$author_match_regex <- build_name_regex_for_variants(target_variants)
-        } else {
-          rv$target_variants_norm <- NULL
-          rv$author_match_regex <- NULL
-        }
-        
-        print("submit_btn:extend_input_table():")
-        # --- 3. THE HEAVY LIFTING (Hybrid Paradigm) ---
-        # Pass raw_df directly into the extension and matching pipeline
-        extended_df <- extend_input_table(rv, raw_df, rv$author_match_regex, rv$target_variants_norm)
-        matched_df <- match_journals(rv, extended_df)
-        
-        if(nrow(matched_df) > 0){
-          # Store the final static table. This triggers the rest of the UI!
-          rv$glens_full_table <- matched_df
-        }
-        # print(str(matched_df))
-        # --- 4. UI SETUP ---
-        # Initialize empty Skeletons so they are ready for the Proxy
-        render_skeleton_plots(rv, matched_df, output)
-  
-        # Configure Slider safely
-        years <- as.numeric(na.omit(matched_df$Year))
-        print(levels(factor(years)))
-        print(str(years))
-        if (length(years) > 0) {
-          min_yr <- min(years)
-          max_yr <- max(years)
-          updateSliderInput(session, "year_slider", min = min_yr, max = max_yr, value = c(min_yr, max_yr))
-        }
-        
-        print("HERE0")
-        # Trigger a manual update if auto-refresh is OFF
-        if (!isTRUE(input$auto_refresh_lookup)) {
-          # Increment a counter to signal the reactive graph
-          # Delay the manual trigger so the browser has time to render the skeletons
-          later::later(function() {
-            isolate({
-              rv$manual_submit <- if(is.null(rv$manual_submit)) 1 else rv$manual_submit + 1
-            })
-          }, delay = 0.8) # 800ms delay to safely match your debounce timing
-        }
-        
-        print("HERE1")
-        print("HERE2")
-        # Reveal UI Elements
-        shinyjs::show("year_slider")
-        shinyjs::show("sh_index")
-        shinyjs::show("summary_table")
-        shinyjs::show("lookup_controls_panel")
-        # shinyjs::show("network_full")
-        print("HERE3")
-        # --- 5. CLEANUP ---
-        rv$log_text <- paste(rv$log_text, "<span style='color: green;'>✓ Run complete.</span>", sep="<br>")
-        
-        try({ if (fs::file_exists("run.lock")) fs::file_delete("run.lock") }, silent = TRUE)
-        
-        rv$is_cancelled <- FALSE
-        rv$is_glens_exec <- FALSE   
-        # shinyjs::delay(1500, shinyjs::hide("progress_overlay"))
-        shinyjs::hide("progress_overlay")
-        shinyjs::enable("submit_button")
-        
-      }) %...!% (function(err) {
-        print(err)
-        shinyWidgets::updateProgressBar(session, id = "prog_doi", value = 100, status = "danger", title = "Process Failed!")
-        rv$log_text <- paste(rv$log_text, sprintf("\n(Master) Failed in DOI/Scopus Processing: %s", conditionMessage(err)),sep="<br>")
-        shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
-        shinyjs::enable("submit_button")
-        if(!fs::file_exists(file.path("run.lock"))) return(NULL)
-      })
+        print("SCOPUS:10:")   
+        # --- STREAM B: SCOPUS PROMISE ---
+        promise_all(
+          scopus_orcid = master_scopus_promise,
+          scopus_id = master_scopusid_promise
+        ) %...>% (function(results) {
+          if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+          
+          clean_scopus_orcid <- Filter(Negate(is.null), results$scopus_orcid)
+          clean_scopus_id <- Filter(Negate(is.null), results$scopus_id)
+          
+          rv$scopus_df <- dplyr::bind_rows(
+            purrr::compact(Filter(is.data.frame, clean_scopus_orcid)), 
+            purrr::compact(Filter(is.data.frame, clean_scopus_id))
+          ) %>% dplyr::distinct()
+          
+          if (nrow(rv$scopus_df) > 0) rv$scopus_df <- rv$scopus_df %>% dplyr::mutate(Source = "SCOPUS")
+          
+          # Tell the Gatekeeper Scopus is done
+          rv$scopus_finished <- TRUE
+          # run_final_pipeline()
+          rv$trigger_pipeline <- if(is.null(rv$trigger_pipeline)) 1 else rv$trigger_pipeline + 1
+          
+        }) %...!% (function(err) {
+          print(err)
+          shinyWidgets::updateProgressBar(session, id = "prog_doi", value = 100, status = "danger", title = "Process Failed!")
+          rv$log_text <- paste(rv$log_text, sprintf("\n(Master) Failed in Scopus Processing: %s", conditionMessage(err)), sep="<br>")
+          shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
+          shinyjs::enable("submit_button")
+        })
+
   }) #observeEVENT(submit_button)
   
   # Tell Shiny to render this UI in the background even while the parent div is hidden.

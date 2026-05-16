@@ -15,6 +15,77 @@ future::plan(future::multicore)
 #   future::plan(future::sequential)
 # }
 
+# Universal Extractor: Pulls pure DOIs out of full URLs, dirty text, and ignores non-DOIs (like Scopus EIDs)
+extract_pure_doi <- function(raw_id) {
+  if (is.na(raw_id) || trimws(raw_id) == "") return(NA_character_)
+  # Regex to find exactly: "10." + 4-9 digits + "/" + valid DOI characters
+  m <- regexpr("10\\.\\d{4,9}/[-._;()/:A-Za-z0-9]+", raw_id, ignore.case = TRUE)
+  if (m != -1) return(regmatches(raw_id, m))
+  return(NA_character_) # Return NA if it's a Scopus ID, PMID, etc.
+}
+
+detect_identifier_type <- function(raw_id) {
+  # Base case for empty or NA inputs
+  if (is.na(raw_id) || trimws(raw_id) == "") {
+    return(list(original = raw_id, clean_id = NA_character_, type = "Unknown", is_doi = FALSE))
+  }
+  
+  raw_id <- trimws(raw_id)
+  
+  # 1. DOI (Digital Object Identifier)
+  # Looks for '10.' followed by 4-9 digits, a slash, and the suffix
+  doi_match <- regexpr("10\\.\\d{4,9}/[-._;()/:A-Za-z0-9]+", raw_id, ignore.case = TRUE)
+  if (doi_match != -1) {
+    clean_doi <- regmatches(raw_id, doi_match)
+    return(list(original = raw_id, clean_id = clean_doi, type = "DOI", is_doi = TRUE))
+  }
+  
+  # 2. Scopus EID (Electronic Identifier)
+  # Format: "2-s2.0-" followed by digits
+  if (grepl("^2-s2\\.0-\\d+$", raw_id, ignore.case = TRUE)) {
+    return(list(original = raw_id, clean_id = raw_id, type = "Scopus EID", is_doi = FALSE))
+  }
+  
+  # 3. PMCID (PubMed Central ID)
+  # Format: "PMC" followed by digits
+  if (grepl("^PMC\\d+$", raw_id, ignore.case = TRUE)) {
+    return(list(original = raw_id, clean_id = toupper(raw_id), type = "PMCID", is_doi = FALSE))
+  }
+  
+  # 4. PMID (PubMed ID)
+  # Format: 1 to 8 digits, optionally preceded by "PMID:"
+  pmid_match <- regexpr("^(PMID:?\\s*)?(\\d{1,8})$", raw_id, ignore.case = TRUE)
+  if (pmid_match != -1) {
+    # Extract just the pure numeric digits for the clean ID
+    digits_only <- gsub("[^0-9]", "", raw_id)
+    return(list(original = raw_id, clean_id = digits_only, type = "PMID", is_doi = FALSE))
+  }
+  
+  # 5. ArXiv ID
+  # Format: "YYMM.NNNNN" or "arXiv:YYMM.NNNNN"
+  if (grepl("^(arXiv:)?\\d{4}\\.\\d{4,5}(v\\d+)?$", raw_id, ignore.case = TRUE)) {
+    # Strip the "arXiv:" prefix if it exists to normalize
+    clean_arxiv <- gsub("(?i)^arxiv:\\s*", "", raw_id)
+    return(list(original = raw_id, clean_id = clean_arxiv, type = "ArXiv", is_doi = FALSE))
+  }
+  
+  # 6. ISBN (Books/Chapters)
+  # Format: 10 or 13 digits (ignoring hyphens)
+  clean_isbn <- gsub("-", "", raw_id)
+  if (grepl("^(97(8|9))?\\d{9}(\\d|X)$", clean_isbn, ignore.case = TRUE)) {
+    return(list(original = raw_id, clean_id = clean_isbn, type = "ISBN", is_doi = FALSE))
+  }
+  
+  # 7. Generic URL (Webpage scraping)
+  if (grepl("^https?://", raw_id, ignore.case = TRUE)) {
+    return(list(original = raw_id, clean_id = raw_id, type = "URL", is_doi = FALSE))
+  }
+  
+  # Fallback for anything else
+  return(list(original = raw_id, clean_id = raw_id, type = "Other", is_doi = FALSE))
+}
+
+
 extract_ris <- function(doi_or_url,
                         write_file = NULL,
                         timeout_secs = 15,
@@ -97,6 +168,89 @@ extract_ris <- function(doi_or_url,
   #   return(paste(x[2],x[1]))
   # }))
   # return(data.frame(Authors=paste(author_list_corrected, collapse = ", ")))
+}
+
+resolve_non_doi_ris <- function(clean_id, id_type, scopus_key = NULL) {
+  if (is.na(clean_id) || is.na(id_type)) return(NULL)
+  
+  ris_text <- NULL
+  
+  tryCatch({
+    # ==========================================
+    # 1. PubMed (PMID) & PubMed Central (PMCID)
+    # ==========================================
+    if (id_type %in% c("PMID", "PMCID")) {
+      # Hit the NCBI ID Converter API
+      conv_url <- paste0("https://www.ncbi.nlm.nih.gov/pmc/utils/idconv/v1.0/?ids=", 
+                         utils::URLencode(clean_id), "&format=json")
+      
+      # Use base R connection for WASM compatibility
+      con <- url(conv_url)
+      json_data <- paste(readLines(con, warn = FALSE), collapse = "\n")
+      close(con)
+      
+      parsed <- jsonlite::fromJSON(json_data)
+      
+      # If NCBI found a DOI for this PubMed ID, extract it!
+      if (!is.null(parsed$records) && "doi" %in% names(parsed$records)) {
+        mapped_doi <- parsed$records$doi[1]
+        if (!is.na(mapped_doi) && mapped_doi != "") {
+          # Pass the discovered DOI to your existing function!
+          ris_text <- extract_ris(mapped_doi) 
+        }
+      }
+    }
+    
+    # ==========================================
+    # 2. ArXiv IDs
+    # ==========================================
+    else if (id_type == "ArXiv") {
+      # ArXiv assigned official DOIs to all papers using this prefix
+      arxiv_doi <- paste0("10.48550/arXiv.", clean_id)
+      ris_text <- extract_ris(arxiv_doi)
+    }
+    
+    # ==========================================
+    # 3. Scopus EIDs
+    # ==========================================
+    else if (id_type == "Scopus EID") {
+      # Strip the '2-s2.0-' prefix to get the pure Scopus Number
+      scopus_num <- gsub("^2-s2\\.0-", "", clean_id)
+      
+      if (!is.null(scopus_key) && scopus_key != "") {
+        scopus_url <- paste0("https://api.elsevier.com/content/abstract/scopus_id/", scopus_num)
+        
+        if (exists("is_WASM") && is_WASM) {
+          # WASM compatible fetch with Elsevier headers
+          con <- url(scopus_url, headers = c(
+            Accept = "application/x-research-info-systems",
+            `X-ELS-APIKey` = scopus_key
+          ))
+          lines <- readLines(con, warn = FALSE)
+          close(con)
+          ris_text <- paste(lines, collapse = "\n")
+        } else {
+          # Local R httr fetch
+          res <- httr::GET(
+            scopus_url,
+            httr::add_headers(
+              Accept = "application/x-research-info-systems",
+              `X-ELS-APIKey` = scopus_key
+            ),
+            httr::timeout(15)
+          )
+          if (httr::status_code(res) == 200) {
+            ris_text <- httr::content(res, as = "text", encoding = "UTF-8")
+          }
+        }
+      }
+    }
+    
+  }, error = function(e) {
+    if (exists("con")) try(close(con), silent = TRUE)
+  })
+  
+  return(ris_text)
 }
 
 normalize_doi <- function(doi_or_url) {
@@ -220,7 +374,6 @@ get_crossref_count <- function(doi, crossref_key = NULL) {
   if (is.null(cnt)) return(NA_integer_) else return(as.integer(cnt))
 }
 
-
 get_opencitations_count <- function(doi, opencitations_key = NULL) {
   doi_e <- URLencode(doi, reserved = TRUE)
   url <- paste0("https://api.opencitations.net/index/v1/citation-count/", doi_e)
@@ -280,6 +433,33 @@ get_semanticscholar_count <- function(doi, api_key = NULL) {
   return(NA_integer_)
 }
 
+get_crossref_count_async <- function(doi, crossref_key = NULL, input_id = "api_count_result") {
+  # Clean up the key for JS injection
+  key_arg <- if(is.null(crossref_key) || trimws(crossref_key) == "") "null" else paste0("'", crossref_key, "'")
+  
+  js_code <- sprintf("window.fetchCitationCount('crossref', '%s', %s, '%s');", doi, key_arg, input_id)
+  webr::eval_js(js_code)
+}
+
+get_opencitations_count_async <- function(doi, opencitations_key = NULL, input_id = "api_count_result") {
+  key_arg <- if(is.null(opencitations_key) || trimws(opencitations_key) == "") "null" else paste0("'", opencitations_key, "'")
+  
+  js_code <- sprintf("window.fetchCitationCount('opencitations', '%s', %s, '%s');", doi, key_arg, input_id)
+  webr::eval_js(js_code)
+}
+
+get_semanticscholar_count_async <- function(doi, api_key = NULL, input_id = "api_count_result") {
+  # Handle your global environment key logic in R before passing to JS
+  if (is.null(api_key) && !is.null(glens_env$semantic_key) && !stringi::stri_isempty(glens_env$semantic_key)) {
+    api_key <- glens_env$semantic_key
+  }
+  
+  key_arg <- if(is.null(api_key) || trimws(api_key) == "") "null" else paste0("'", api_key, "'")
+  
+  js_code <- sprintf("window.fetchCitationCount('semanticscholar', '%s', %s, '%s');", doi, key_arg, input_id)
+  webr::eval_js(js_code)
+}
+
 # Master function: tries multiple sources and returns a named list (counts may be NA)
 get_citation_counts <- function(doi_or_url, semanticscholar_key = NULL, try_sources = c("crossref","opencitations","semanticscholar")) {
   
@@ -307,14 +487,54 @@ get_citation_counts <- function(doi_or_url, semanticscholar_key = NULL, try_sour
   
   return(res_list)
 }
-# get_citation_counts <- function(doi_or_url, semanticscholar_key = NULL, try_sources = c("crossref","opencitations","semanticscholar")) {
+
+get_citation_counts_async <- function(doi_or_url, 
+                                      semanticscholar_key = NULL, 
+                                      try_sources = c("crossref","opencitations","semanticscholar"), 
+                                      input_id = "api_counts_ready",
+                                      request_id = NULL) {
+  
+  doi <- normalize_doi(doi_or_url)
+  
+  # Format keys for JavaScript injection
+  ss_key <- if (is.null(semanticscholar_key)) "null" else paste0("'", semanticscholar_key, "'")
+  
+  # Format array and request ID for JS
+  sources_js <- paste0("['", paste(try_sources, collapse = "','"), "']")
+  req_id_js <- if(is.null(request_id)) "null" else paste0("'", request_id, "'")
+  
+  # Construct the JS call
+  js_code <- sprintf("
+    window.fetchAllCitationCounts('%s', %s, {semanticscholar: %s}, '%s', %s);
+  ", doi, sources_js, ss_key, input_id, req_id_js)
+  
+  # CRITICAL FIX: Use shinyjs instead of webr
+  # This works perfectly in BOTH local RStudio testing and deployed WASM
+  shinyjs::runjs(js_code)
+}
+
+# get_citation_counts_async <- function(doi_or_url, 
+#                                       semanticscholar_key = NULL, 
+#                                       try_sources = c("crossref","opencitations","semanticscholar"), 
+#                                       input_id = "api_counts_ready",
+#                                       request_id = NULL) {
+#   
 #   doi <- normalize_doi(doi_or_url)
-#   # res <- list(doi = doi)
-#   res <- list()
-#   if ("crossref" %in% try_sources) res$crossref <- tryCatch(get_crossref_count(doi), error = function(e) NA_integer_)
-#   if ("opencitations" %in% try_sources) res$opencitations <- tryCatch(get_opencitations_count(doi), error = function(e) NA_integer_)
-#   if ("semanticscholar" %in% try_sources) res$semanticscholar <- tryCatch(get_semanticscholar_count(doi, semanticscholar_key), error = function(e) NA_integer_)
-#   return(res)
+#   
+#   # Format keys for JavaScript injection
+#   ss_key <- if (is.null(semanticscholar_key)) "null" else paste0("'", semanticscholar_key, "'")
+#   
+#   # Format array and request ID for JS
+#   sources_js <- paste0("['", paste(try_sources, collapse = "','"), "']")
+#   req_id_js <- if(is.null(request_id)) "null" else paste0("'", request_id, "'")
+#   
+#   # Construct the JS call
+#   js_code <- sprintf("
+#     window.fetchAllCitationCounts('%s', %s, {semanticscholar: %s}, '%s', %s);
+#   ", doi, sources_js, ss_key, input_id, req_id_js)
+#   
+#   # Dispatch to the browser
+#   webr::eval_js(js_code)
 # }
 
 get_title_from_ris <- function(ris){
@@ -417,119 +637,174 @@ construct_author_list_from_ris <- function(ris){
   }
 }
 
-doi2gscholarlens <- function(doi_input, orcid, rv, write_file = NULL){
+prepare_doi_metadata <- function(doi_input, orcid, rv, id_type = "DOI", write_file = NULL) {
   if(is.null(doi_input) || length(doi_input) == 0 || is.na(doi_input[1]) || stringi::stri_length(doi_input[1]) <= 0){
     warning("Empty DOI")
     return(NULL)
   }
   
-  # message(doi_input)
-  # message(orcid)
-  # message(str(doi_input))
-  # message(str(orcid))
-  # message(class(doi_input))
-  # message(class(orcid))
-  # # message(paste("glens_env:"))
-  # # message(glens_env$scopus_key)
-  
-  # if (rv$is_cancelled) return(NULL)
   if(!fs::file_exists(file.path("run.lock"))) return(NULL)
-  if(stringi::stri_isempty(doi_input)){
+  if(stringi::stri_isempty(doi_input)) return(NULL)
+  
+  ris <- NULL
+  
+  # If it is a true DOI, use your standard function
+  if (id_type == "DOI") {
+    ris <- extract_ris(doi_input, write_file = write_file)
+  } else {
+    # If it is NOT a DOI, pass it to our new translator!
+    ris <- resolve_non_doi_ris(doi_input, id_type, scopus_key = glens_env$scopus_key)
+  }
+  
+  # If BOTH extraction methods fail, abort row processing
+  if(is.null(ris) || trimws(ris) == ""){
+    rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'> RIS Extraction Failed for:", doi_input, "(", id_type, ")</span>"), sep="<br>")
     return(NULL)
   }
   
-  ris <- extract_ris(doi_input, write_file = write_file)
-  if(is.null(ris)){
-    rv$log_text <- paste(rv$log_text, paste("<span  style='color: red;'> RIS Extraction Failed for:",doi_input,"</span>"),sep="<br>")
-    return(NULL)
-  }
   ris_lines <- strsplit(ris, "\n")[[1]]
-  
   journal_text <- construct_journal_from_ris(ris)
   
-  publisher_text <- gsub(paste0("^PB\\s+-\\s+"), "", x = grep(pattern = "PB", ris_lines,value = T))
-  publisher_text <- ifelse(length(publisher_text) > 0,publisher_text, NA)
+  publisher_text <- gsub(paste0("^PB\\s+-\\s+"), "", x = grep(pattern = "PB", ris_lines, value = T))
+  publisher_text <- ifelse(length(publisher_text) > 0, publisher_text, NA)
   
-  publisher_year_text <- gsub(paste0("^(PY|Y1|Y2)\\s+-\\s+"), "", x = grep(pattern = "PY|Y1|Y2", ris_lines,value = T))
-  publisher_year_text <- ifelse(length(publisher_year_text) > 0,publisher_year_text, NA)
+  publisher_year_text <- gsub(paste0("^(PY|Y1|Y2)\\s+-\\s+"), "", x = grep(pattern = "PY|Y1|Y2", ris_lines, value = T))
+  publisher_year_text <- ifelse(length(publisher_year_text) > 0, publisher_year_text, NA)
   
   author_list <- tidyr::tibble(na.omit(construct_author_list_from_ris(ris)))
-  
-  if(nrow(author_list) <=0){
-    return(NULL)
-  }
+  if(nrow(author_list) <= 0) return(NULL)
   
   author_text <- author_list$Authors 
   author_text <- ifelse(length(author_text) > 0, author_text, NA)
   title_text <- get_title_from_ris(ris)
-  # message(doi_input)
-  doi_citations <- get_citation_counts(doi_input)
   
-  # Safely extract valid citations using standard base logic
-  valid_citations <- na.omit(unlist(doi_citations))
-  max_cit <- if (length(valid_citations) == 0) 0 else as.numeric(max(valid_citations))
-  
+  # Return the dataframe WITHOUT citations (we will add them asynchronously)
   return(data.frame(
     Title = title_text, 
     Authors = author_text,
     Author_Count = author_list$Author_Count, 
-    Citations = max_cit, 
+    Citations = NA_real_, # Placeholder
     Journal = journal_text, 
     Publisher = publisher_text, 
     Year = publisher_year_text,
     doi = trimws(doi_input),
     orcid = trimws(orcid)
   ))
-  
-  # doi_lines_input <- strsplit(doi_input, "\n")[[1]]
-  #
-  # return(dplyr::bind_rows(lapply(doi_lines_input, function(doi_line){
-  #   # if (rv$is_cancelled) return(NULL)
-  #   if(!fs::file_exists(file.path("run.lock"))) return(NULL)
-  #   if(stringi::stri_isempty(doi_line)){
-  #     return(NULL)
-  #   }
-  #   
-  #   ris <- extract_ris(doi_line, write_file = write_file)
-  #   ris_lines <- strsplit(ris, "\n")[[1]]
-  #   
-  #   journal_text <- construct_journal_from_ris(ris)
-  #   
-  #   publisher_text <- gsub(paste0("^PB\\s+-\\s+"), "", x = grep(pattern = "PB", ris_lines,value = T))
-  #   publisher_text <- ifelse(length(publisher_text) > 0,publisher_text, NA)
-  #   
-  #   publisher_year_text <- gsub(paste0("^(PY|Y1|Y2)\\s+-\\s+"), "", x = grep(pattern = "PY|Y1|Y2", ris_lines,value = T))
-  #   publisher_year_text <- ifelse(length(publisher_year_text) > 0,publisher_year_text, NA)
-  #   
-  #   author_list <- tidyr::tibble(na.omit(construct_author_list_from_ris(ris)))
-  #   
-  #   if(nrow(author_list) <=0){
-  #     return(NULL)
-  #   }
-  #   
-  #   author_text <- author_list$Authors 
-  #   author_text <- ifelse(length(author_text) > 0, author_text, NA)
-  #   title_text <- get_title_from_ris(ris)
-  #   # message(doi_line)
-  #   doi_citations <- get_citation_counts(doi_line)
-  #   
-  #   # Safely extract valid citations using standard base logic
-  #   valid_citations <- na.omit(unlist(doi_citations))
-  #   max_cit <- if (length(valid_citations) == 0) 0 else as.numeric(max(valid_citations))
-  #   
-  #   return(data.frame(
-  #     Title = title_text, 
-  #     Authors = author_text,
-  #     Author_Count = author_list$Author_Count, 
-  #     Citations = max_cit, 
-  #     Journal = journal_text, 
-  #     Publisher = publisher_text, 
-  #     Year = publisher_year_text,
-  #     doi = trimws(doi_line),
-  #     orcid = trimws(orcid)
-  #   ))
-  # })))
 }
+
+# doi2gscholarlens <- function(doi_input, orcid, rv, write_file = NULL){
+#   if(is.null(doi_input) || length(doi_input) == 0 || is.na(doi_input[1]) || stringi::stri_length(doi_input[1]) <= 0){
+#     warning("Empty DOI")
+#     return(NULL)
+#   }
+#   
+#   # message(doi_input)
+#   # message(orcid)
+#   # message(str(doi_input))
+#   # message(str(orcid))
+#   # message(class(doi_input))
+#   # message(class(orcid))
+#   # # message(paste("glens_env:"))
+#   # # message(glens_env$scopus_key)
+#   
+#   # if (rv$is_cancelled) return(NULL)
+#   if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+#   if(stringi::stri_isempty(doi_input)){
+#     return(NULL)
+#   }
+#   
+#   ris <- extract_ris(doi_input, write_file = write_file)
+#   if(is.null(ris)){
+#     rv$log_text <- paste(rv$log_text, paste("<span  style='color: red;'> RIS Extraction Failed for:",doi_input,"</span>"),sep="<br>")
+#     return(NULL)
+#   }
+#   ris_lines <- strsplit(ris, "\n")[[1]]
+#   
+#   journal_text <- construct_journal_from_ris(ris)
+#   
+#   publisher_text <- gsub(paste0("^PB\\s+-\\s+"), "", x = grep(pattern = "PB", ris_lines,value = T))
+#   publisher_text <- ifelse(length(publisher_text) > 0,publisher_text, NA)
+#   
+#   publisher_year_text <- gsub(paste0("^(PY|Y1|Y2)\\s+-\\s+"), "", x = grep(pattern = "PY|Y1|Y2", ris_lines,value = T))
+#   publisher_year_text <- ifelse(length(publisher_year_text) > 0,publisher_year_text, NA)
+#   
+#   author_list <- tidyr::tibble(na.omit(construct_author_list_from_ris(ris)))
+#   
+#   if(nrow(author_list) <=0){
+#     return(NULL)
+#   }
+#   
+#   author_text <- author_list$Authors 
+#   author_text <- ifelse(length(author_text) > 0, author_text, NA)
+#   title_text <- get_title_from_ris(ris)
+#   # message(doi_input)
+#   doi_citations <- get_citation_counts(doi_input)
+#   
+#   # Safely extract valid citations using standard base logic
+#   valid_citations <- na.omit(unlist(doi_citations))
+#   max_cit <- if (length(valid_citations) == 0) 0 else as.numeric(max(valid_citations))
+#   
+#   return(data.frame(
+#     Title = title_text, 
+#     Authors = author_text,
+#     Author_Count = author_list$Author_Count, 
+#     Citations = max_cit, 
+#     Journal = journal_text, 
+#     Publisher = publisher_text, 
+#     Year = publisher_year_text,
+#     doi = trimws(doi_input),
+#     orcid = trimws(orcid)
+#   ))
+#   
+#   # doi_lines_input <- strsplit(doi_input, "\n")[[1]]
+#   #
+#   # return(dplyr::bind_rows(lapply(doi_lines_input, function(doi_line){
+#   #   # if (rv$is_cancelled) return(NULL)
+#   #   if(!fs::file_exists(file.path("run.lock"))) return(NULL)
+#   #   if(stringi::stri_isempty(doi_line)){
+#   #     return(NULL)
+#   #   }
+#   #   
+#   #   ris <- extract_ris(doi_line, write_file = write_file)
+#   #   ris_lines <- strsplit(ris, "\n")[[1]]
+#   #   
+#   #   journal_text <- construct_journal_from_ris(ris)
+#   #   
+#   #   publisher_text <- gsub(paste0("^PB\\s+-\\s+"), "", x = grep(pattern = "PB", ris_lines,value = T))
+#   #   publisher_text <- ifelse(length(publisher_text) > 0,publisher_text, NA)
+#   #   
+#   #   publisher_year_text <- gsub(paste0("^(PY|Y1|Y2)\\s+-\\s+"), "", x = grep(pattern = "PY|Y1|Y2", ris_lines,value = T))
+#   #   publisher_year_text <- ifelse(length(publisher_year_text) > 0,publisher_year_text, NA)
+#   #   
+#   #   author_list <- tidyr::tibble(na.omit(construct_author_list_from_ris(ris)))
+#   #   
+#   #   if(nrow(author_list) <=0){
+#   #     return(NULL)
+#   #   }
+#   #   
+#   #   author_text <- author_list$Authors 
+#   #   author_text <- ifelse(length(author_text) > 0, author_text, NA)
+#   #   title_text <- get_title_from_ris(ris)
+#   #   # message(doi_line)
+#   #   doi_citations <- get_citation_counts(doi_line)
+#   #   
+#   #   # Safely extract valid citations using standard base logic
+#   #   valid_citations <- na.omit(unlist(doi_citations))
+#   #   max_cit <- if (length(valid_citations) == 0) 0 else as.numeric(max(valid_citations))
+#   #   
+#   #   return(data.frame(
+#   #     Title = title_text, 
+#   #     Authors = author_text,
+#   #     Author_Count = author_list$Author_Count, 
+#   #     Citations = max_cit, 
+#   #     Journal = journal_text, 
+#   #     Publisher = publisher_text, 
+#   #     Year = publisher_year_text,
+#   #     doi = trimws(doi_line),
+#   #     orcid = trimws(orcid)
+#   #   ))
+#   # })))
+# }
 
 # # If run as script with args, use them
 # args <- commandArgs(trailingOnly = TRUE)

@@ -634,6 +634,65 @@ ui <- fluidPage(
       }, 500); // 500ms delay ensures UI is loaded
     });
   ")),
+    tags$script(HTML("
+    window.fetchAllCitationCounts = async function(doi, sources, keys, inputId, requestId) {
+      try {
+        let reqIndex = 0;
+        if (requestId) {
+          let parts = requestId.split('_');
+          reqIndex = parseInt(parts[parts.length - 1]) || 0;
+        }
+        await new Promise(r => setTimeout(r, reqIndex * 400)); 
+
+        const safeDoi = encodeURI(doi).replace(/#/g, '%23');
+        let results = {};
+
+        const fetchSource = async (apiName) => {
+          let url, headers = { 'Accept': 'application/json' };
+          if (apiName === 'crossref') {
+            url = `https://api.crossref.org/works/${safeDoi}`;
+            if (keys.crossref) headers['Crossref-Plus-API-Token'] = keys.crossref;
+          } else if (apiName === 'opencitations') {
+            url = `https://api.opencitations.net/index/v1/citation-count/${safeDoi}`;
+            if (keys.opencitations) headers['authorization'] = keys.opencitations;
+          } else if (apiName === 'semanticscholar') {
+            url = `https://api.semanticscholar.org/graph/v1/paper/DOI:${safeDoi}?fields=citationCount`;
+            if (keys.semanticscholar) headers['Authorization'] = `Bearer ${keys.semanticscholar}`;
+          }
+
+          let count = null, maxRetries = 3, waitTime = 2000;
+          for (let i = 0; i < maxRetries; i++) {
+            try {
+              let res = await fetch(url, { headers });
+              if (res.ok) {
+                let data = await res.json();
+                if (apiName === 'crossref') count = data.message?.['is-referenced-by-count'];
+                else if (apiName === 'opencitations') count = Array.isArray(data) ? data[0]?.count : data?.count;
+                else if (apiName === 'semanticscholar') count = data.citationCount;
+                break; 
+              }
+              if (res.status === 429) {
+                let retryAfter = res.headers.get('retry-after');
+                waitTime = retryAfter ? (parseInt(retryAfter) + 1) * 1000 : waitTime * 1.5;
+              } else if (res.status >= 400 && res.status < 500) { break; }
+            } catch (e) { console.warn(`Fetch error for ${apiName}`); }
+            if (i < maxRetries - 1 && count === null) await new Promise(r => setTimeout(r, waitTime));
+          }
+          return count !== null ? parseInt(count) : null;
+        };
+
+        const promises = sources.map(async (source) => { results[source] = await fetchSource(source); });
+        await Promise.all(promises);
+
+        Shiny.setInputValue(inputId, { doi: doi, counts: results, requestId: requestId }, {priority: 'event'});
+        
+      } catch (err) {
+        console.error('Critical Failure on DOI:', doi, err);
+        // THE SAFETY NET: ALWAYS return to R so the pipeline doesn't hang!
+        Shiny.setInputValue(inputId, { doi: doi, counts: {}, requestId: requestId }, {priority: 'event'});
+      }
+    };
+  "))
   ),
   
   # 1. Custom Title Header with Settings & Dark Mode
@@ -853,8 +912,8 @@ ui <- fluidPage(
         plotly::plotlyOutput("cdist_plot"),
         tags$br(),
         fluidRow(
-          column(6, plotly::plotlyOutput("aperc_plot")),
-          column(6, plotly::plotlyOutput("cperc_plot"))
+          column(6, plotly::plotlyOutput("aperc_plot", height = "150px")),
+          column(6, plotly::plotlyOutput("cperc_plot", height = "150px"))
         )
       ),
       
