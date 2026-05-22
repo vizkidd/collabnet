@@ -208,7 +208,7 @@ decide_label_for_target <- function(author_field, target_variants_norm, author_r
   else if (this_pos == 2) "Second_Author"
   else "Co_Author"
   
-  list(label=label, matched_token=toks$clean[idx])
+  list(label=label, matched_token=toks$clean[idx], token_count=length(toks$clean))
 }
 
 # apply_author_logic <- function(pubs_df, primary_regex, selected_authors, gate) {

@@ -127,10 +127,10 @@ extend_input_table <- function(rv, df, author_match_regex, target_variants_norm)
   ext_match <- if (!is.null(rv$ext_match)) rv$ext_match else TRUE
   ignore_case <- if (!is.null(rv$ignore_case)) rv$ignore_case else TRUE
   
-  print(paste("ext_match:", ext_match))
-  print(paste("rv$ext_match:", rv$ext_match))
-  print(paste("ignore_case:", ignore_case))
-  print(paste("rv$ignore_case:", rv$ignore_case))
+  # print(paste("ext_match:", ext_match))
+  # print(paste("rv$ext_match:", rv$ext_match))
+  # print(paste("ignore_case:", ignore_case))
+  # print(paste("rv$ignore_case:", rv$ignore_case))
   
   # Fetch selected columns and delimiters from the extended controls panel
   search_cols <- names(rv$detected_mv_cols)
@@ -176,7 +176,7 @@ extend_input_table <- function(rv, df, author_match_regex, target_variants_norm)
               match_found <- FALSE
               
               for (kw in kw_list) {
-                print(paste("kw:",kw))
+                # print(paste("kw:",kw))
                 is_match <- tryCatch(
                   grepl(kw, val, ignore.case = ignore_case),
                   error = function(e) FALSE
@@ -195,7 +195,8 @@ extend_input_table <- function(rv, df, author_match_regex, target_variants_norm)
         best_match
       }),
       label = dec$label,
-      matched_token = dec$matched_token
+      matched_token = dec$matched_token,
+      token_count = dec$token_count
     ) %>%
     ungroup() %>%
     filter(label != "Not_found") %>%

@@ -2333,8 +2333,9 @@ server <- function(input, output, session) {
     print(rv$author_list)
     print("glens_year_filtered_rx:extend_input_table():")
     # --- D. CALCULATE CITATION WEIGHTS ---
-    # FIX 4: Wrap extend_input_table in isolate() to break the infinite loop!
-    df <- isolate(extend_input_table(rv, df, rv$author_match_regex, rv$target_variants_norm))
+    if(!all(c("matched_token","token_count","First_Author","Second_Author","Co_Author","Corresponding_Author") %in% colnames(df))){
+      df <- isolate(extend_input_table(rv, df, rv$author_match_regex, rv$target_variants_norm))
+    }
     # if(stringi::stri_isempty(input$author_list)){
     #   df <- df %>% 
     #     select(-any_of(c(
@@ -2375,14 +2376,20 @@ server <- function(input, output, session) {
     # We use try() because if the skeleton isn't fully rendered in the UI yet, 
     # the proxy might throw a temporary error.
     try({
-      print("Updating plots via Proxy...")
-      plot_glens_table(rv, df, session)
+      req(input$enable_plots)
+      # if(input$enable_plots){
+        print("Updating plots via Proxy...")
+        plot_glens_table(rv, df, session)
+      # }else{
+      #   render_skeleton_plots(rv, df, output)
+      # }
     }, silent = TRUE)
   })
   
   # 4. Indices Computation (Calculates based on what is currently visible/filtered)
   # 1. The Reactive Calculation
   indices_rx <- reactive({
+    req(input$enable_summary)
     df <- glens_year_filtered_rx()
     req(df, nrow(df) > 0)
     return(compute_indices(rv, df))
@@ -2440,6 +2447,7 @@ server <- function(input, output, session) {
   
   # --- UI OUTPUTS ---
   output$summary_table <- renderTable({
+    req(input$enable_summary)
     idx <- indices_rx()
     # print("HERE2")
     req(idx, idx$summary_table) # Wait for valid data
@@ -2449,6 +2457,7 @@ server <- function(input, output, session) {
     }, striped = T)
   
   output$sh_index <- renderUI({
+    req(input$enable_summary)
     # Only render if sh_index exists and is not NULL
     idx <- indices_rx()
     # print("HERE1")
@@ -2478,6 +2487,7 @@ server <- function(input, output, session) {
   })
   
   output$extended_table <- DT::renderDT({
+    req(input$enable_table)
     df <- glens_year_filtered_rx() # Or however you pull your dataframe
     
     req(df, nrow(df) > 0)
@@ -2558,25 +2568,79 @@ server <- function(input, output, session) {
   #   build_collaboration_network(rv$glens_full_table, rv$author_list, target_col, target_delim)
   # })
   # net_data_full_debounced <- net_data_full_raw %>% debounce(800)
+
+  # Calculate Filtered Network Data (Debounced)
+  # 1. Initialize a reactiveVal outside your reactive to act as your state cache
+  network_cache <- reactiveVal(list(
+    col = NULL,
+    delim = NULL,
+    result = NULL,
+    author_list=c(),
+    custom_edge_count = 1500,
+    custom_conn_count = 1
+  ))
   
   # Calculate Filtered Network Data (Debounced)
   net_data_filtered_raw <- reactive({
-    # Explicitly depend on the column choice AND the delimiter list
+    if(!input$enable_network){
+      return(list(nodes = data.frame(), edges = data.frame()))
+    }
+    req(input$custom_conn_count, input$custom_edge_count)
+    # req(rv$detected_mv_cols)
+    
     col <- input$net_col_filtered
     delims <- rv$detected_mv_cols
     df <- glens_year_filtered_rx()
     
+    req(input$custom_edge_count)
     req(col, df, nrow(df) > 0)
     
-    # Get the specific delimiter for this column
-    target_delim <- if (!is.null(delims[[col]])) delims[[col]] else ","
+    req(delims[[col]])
+    target_delim <- delims[[col]]
     
-    # Debug print to verify it's firing
+    # 2. CACHE CHECK LOGIC
+    cache <- network_cache()
+    
+    # If the column and delim match the previous run, return the saved graph data instantly!
+    if (!is.null(cache$col) && cache$col == col && cache$delim == target_delim && cache$custom_edge_count == input$custom_edge_count && cache$custom_conn_count == input$custom_conn_count) {
+      if(length(cache$author_list) == length(rv$author_list)){
+        # print(paste("cache$author_list[order(cache$author_list)]:",cache$author_list[order(cache$author_list)]))
+        # print(paste("rv$author_list[order(rv$author_list)]:",rv$author_list[order(rv$author_list)]))
+        # print(paste("all(match(cache$author_list[order(cache$author_list)], rv$author_list[order(rv$author_list)])):",all(match(cache$author_list[order(cache$author_list)], rv$author_list[order(rv$author_list)]))))
+        if(isTRUE(all(match(cache$author_list[order(cache$author_list)], rv$author_list[order(rv$author_list)]))) ){
+          # message("Column unchanged. Returning cached network...")
+          return(cache$result)
+        }
+      }
+    }
+    
+    # 3. IF DIFFERENT, RUN THE MATH...
     message(paste("Generating network for:", col, "with delim:", target_delim))
     
-    build_collaboration_network(df, rv$author_list, col, target_delim)
+    raw_net <- build_collaboration_network(df, input$custom_conn_count, input$custom_edge_count, rv$author_list, col, target_delim)
+    
+    req(nrow(raw_net$nodes) > 0)
+    
+    # Precompute the layout
+    g <- igraph::graph_from_data_frame(d = raw_net$edges, vertices = raw_net$nodes, directed = FALSE)
+    coords <- igraph::layout_with_fr(g)
+    
+    raw_net$nodes$x <- coords[, 1] * 500
+    raw_net$nodes$y <- coords[, 2] * 500
+    
+    # 4. SAVE THE NEW RESULT TO THE CACHE
+    network_cache(list(
+      col = col, 
+      delim = target_delim, 
+      result = raw_net,
+      custom_edge_count = input$custom_edge_count,
+      custom_conn_count = input$custom_conn_count,
+      author_list = rv$author_list
+    ))
+    
+    return(raw_net)
   })
-  net_data_filtered_debounced <- net_data_filtered_raw %>% debounce(800)
+  net_data_filtered_debounced <- net_data_filtered_raw %>% debounce(1000)
   
   # # Render Full Data Network
   # output$network_full <- renderVisNetwork({
@@ -2648,22 +2712,41 @@ server <- function(input, output, session) {
         color = list(highlight = list(background = "red", border = "darkred"))
       ) %>%
       visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = TRUE) %>%
-      visPhysics(
-        solver = "forceAtlas2Based",
-        forceAtlas2Based = list(
-          gravitationalConstant = -50,
-          springConstant = 0.08,
-          springLength = 100,
-          damping = 0.7 # <-- The higher this is (0 to 1), the less "jitter" and bounce you get.
-        ),
-        stabilization = list(
-          enabled = TRUE,
-          iterations = 300, # Runs the physics invisibly 300 times before displaying
-          updateInterval = 50,
-          onlyDynamicEdges = FALSE,
-          fit = TRUE
-        )
-      ) %>%
+      # visPhysics(
+      #   solver = "forceAtlas2Based",
+      #   forceAtlas2Based = list(
+      #     gravitationalConstant = -50,
+      #     springConstant = 0.08,
+      #     springLength = 100,
+      #     damping = 0.7 # <-- The higher this is (0 to 1), the less "jitter" and bounce you get.
+      #   ),
+      #   stabilization = list(
+      #     enabled = TRUE,
+      #     iterations = 300, # Runs the physics invisibly 300 times before displaying
+      #     updateInterval = 50,
+      #     onlyDynamicEdges = FALSE,
+      #     fit = TRUE
+      #   )
+      # ) %>%
+      # visIgraphLayout(layout = "layout_with_fr") %>%
+      visNetwork::visNodes(physics = FALSE) %>% # Physics must be off if passing custom x,y
+      visNetwork::visEvents(beforeDrawing = htmlwidgets::JS("
+        function(ctx) {
+          if (window.attentionCircles && window.attentionCircles.length > 0) {
+            window.attentionCircles.forEach(function(circle) {
+              if (circle.r > 0) {
+                ctx.beginPath();
+                ctx.arc(circle.x, circle.y, circle.r, 0, 2 * Math.PI, false);
+                ctx.fillStyle = 'rgba(201, 100, 128, 0.15)'; 
+                ctx.fill();
+                ctx.lineWidth = 2;
+                ctx.strokeStyle = '#C96480';
+                ctx.stroke();
+              }
+            });
+          }
+        }
+      ")) %>%
       # ADDED: multiselect = TRUE allows Ctrl+Click on the canvas
       visInteraction(hover = TRUE, multiselect = TRUE) %>% 
       visOptions(
@@ -2684,15 +2767,86 @@ server <- function(input, output, session) {
     
   })
   
+  # 1. Trigger on BOTH inputs so changing the keyword draws the circle instantly
+  observeEvent(list(input$attention_slider, input$custom_node_selector), {
+    req(input$enable_network)
+    # 2. Use the live debounced data, NOT rv$nodes
+    net_data <- net_data_filtered_debounced()
+    req(net_data, nrow(net_data$nodes) > 0)
+    req(length(input$custom_node_selector) > 0)
+    
+    # Extract the nodes dataframe
+    current_nodes <- net_data$nodes
+    
+    # Safety check: Ensure X and Y actually exist
+    if (!("x" %in% colnames(current_nodes)) || !("y" %in% colnames(current_nodes))) {
+      return()
+    }
+    
+    centroid_ids <- input$custom_node_selector
+    
+    # Ensure the centroids actually exist in the data
+    valid_centroids <- current_nodes[current_nodes$id %in% centroid_ids, ]
+    if (nrow(valid_centroids) == 0) return()
+    
+    # Calculate Distance Matrix using current_nodes
+    dist_matrix <- sapply(1:nrow(valid_centroids), function(i) {
+      sqrt((current_nodes$x - valid_centroids$x[i])^2 + (current_nodes$y - valid_centroids$y[i])^2)
+    })
+    
+    # Calculate R_max (Handling single vs multiple rows safely)
+    if (is.vector(dist_matrix)) {
+      r_max <- max(dist_matrix, na.rm = TRUE)
+      in_any_circle <- dist_matrix <= current_radius
+    } else {
+      r_max <- max(dist_matrix, na.rm = TRUE)
+      attention_val <- input$attention_slider
+      current_radius <- r_max * (1 - (attention_val / 100))
+      in_any_circle <- rowSums(dist_matrix <= current_radius) > 0
+    }
+    
+    current_radius <- r_max * (1 - (input$attention_slider / 100))
+    nodes_in_circle <- current_nodes$id[in_any_circle]
+    
+    # Update the Attention Nodes selector
+    updateSelectizeInput(
+      session, 
+      "attention_nodes", 
+      selected = nodes_in_circle,
+      choices = current_nodes$id # Ensure choices are populated so it displays correctly
+    )
+    
+    # Prepare multiple circles for JavaScript
+    circles_js <- lapply(1:nrow(valid_centroids), function(i) {
+      list(
+        x = valid_centroids$x[i],
+        y = valid_centroids$y[i],
+        r = current_radius
+      )
+    })
+    
+    # Send the array of circles to JS
+    session$sendCustomMessage("draw_attention_circle", circles_js)
+    
+    # Force redraw to show the newly painted canvas
+    visNetwork::visNetworkProxy("network_filtered") %>% 
+      visNetwork::visRedraw()
+  })
+  
   observeEvent(net_data_filtered_debounced(), {
     net_data <- net_data_filtered_debounced()
     proxy <- visNetworkProxy("network_filtered")
     
-    if (is.null(net_data) || nrow(net_data$nodes) == 0) {
-      empty_nodes <- data.frame(id = "placeholder_empty", label = "No links", shape = "text", font.size = 20, font.color = "red")
+    if (!input$enable_network || is.null(net_data) || nrow(net_data$nodes) == 0) {
+      empty_nodes <- if(input$enable_network){
+        data.frame(id = "placeholder_empty", label = "No links", shape = "text", font.size = 20, font.color = "red")
+      }else{
+        data.frame(id = "placeholder_empty", label = "Network Disabled", shape = "text", font.size = 20, font.color = "blue")  
+        }
       empty_edges <- data.frame(from = character(0), to = character(0))
       proxy %>% visSetData(nodes = empty_nodes, edges = empty_edges)
       updateSelectizeInput(session, "custom_node_selector", choices = character(0))
+      updateSelectizeInput(session, "attention_nodes", choices = character(0))
       return()
     }
     
@@ -2703,6 +2857,28 @@ server <- function(input, output, session) {
     
     proxy %>% visSetData(nodes = net_data$nodes, edges = net_data$edges)
     
+    proxy %>% visPhysics(enabled = FALSE)
+    
+    if (input$net_col_filtered == "Authors") {
+      proxy %>%
+        visGroups(groupname = "Queried Target", shape = "icon", 
+                  icon = list(face = "FontAwesome", code = "f007", color = "#E74C3C")) %>%
+        visGroups(groupname = "Associated Entity", shape = "icon", 
+                  icon = list(face = "FontAwesome", code = "f007", color = "#3498DB"))
+    } else {
+      # If rendering Keywords or other shapes, fall back to native dots
+      proxy %>%
+        visGroups(groupname = "Queried Target", shape = "dot", 
+                  color = list(background = "#E74C3C", border = "#2c3e50")) %>%
+        visGroups(groupname = "Associated Entity", shape = "dot", 
+                  color = list(background = "#3498DB", border = "#2c3e50"))
+    }
+    
+    proxy %>% visOptions(
+      highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE),
+      autoResize = TRUE
+    )
+    
     dropdown_choices <- setNames(net_data$nodes$id, net_data$nodes$label)
     updateSelectizeInput(session, "custom_node_selector", 
                          choices = c("Select keyword(s)..." = "", dropdown_choices))
@@ -2711,10 +2887,11 @@ server <- function(input, output, session) {
   
   # 1. Dropdown -> Canvas (Highlights nodes when you type in the dropdown)
   observeEvent(input$custom_node_selector, {
+    req(input$enable_network)
     proxy <- visNetworkProxy("network_filtered")
-    
     if (is.null(input$custom_node_selector) || length(input$custom_node_selector) == 0 || all(input$custom_node_selector == "")) {
       proxy %>% visUnselectAll() 
+      updateSelectizeInput(session,  "attention_nodes", choices = character(0))
     } else {
       proxy %>% visSelectNodes(id = input$custom_node_selector)
     }
@@ -2722,6 +2899,7 @@ server <- function(input, output, session) {
   
   # 2. Canvas -> Dropdown (Updates the dropdown when you click the graph)
   observeEvent(input$network_filtered_clicked, {
+    req(input$enable_network)
     # This captures the array of IDs sent from Javascript
     updateSelectizeInput(session, "custom_node_selector", selected = input$network_filtered_clicked)
   }, ignoreNULL = FALSE, ignoreInit = TRUE)
@@ -4467,3 +4645,4 @@ server <- function(input, output, session) {
   outputOptions(output, "network_filtered", suspendWhenHidden = FALSE)
   
 } #server end
+

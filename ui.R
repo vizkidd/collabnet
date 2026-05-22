@@ -591,49 +591,28 @@ ui <- fluidPage(
       });
     ")),
     tags$script(HTML("
-    $(document).ready(function() {
-      // 1. Wait a moment for Shiny to render the initial UI
-      setTimeout(function() {
-        
-        // 2. Loop through every custom-card
-        $('.custom-card').each(function() {
-          // Find the first element (usually your header/title like h3 or div)
-          var firstChild = $(this).children().first();
-          
-          // Force it to use flexbox so we can push the button to the right
-          firstChild.css({
-            'display': 'flex', 
-            'justify-content': 'space-between', 
-            'align-items': 'center',
-            'cursor': 'pointer' // Make the whole header look clickable
-          });
-          
-          // Inject the minimize button
-          firstChild.append('<button type=\"button\" class=\"btn-minimize\" style=\"background:transparent; border:none; font-size:1.5em; line-height:1; cursor:pointer; color:inherit;\">&minus;</button>');
-        });
-
-        // 3. Attach the click event to toggle the content
-        $(document).on('click', '.btn-minimize, .custom-card > :first-child', function(e) {
-          // Prevent double-triggering if they click the button directly
-          e.stopPropagation(); 
-          
-          var card = $(this).closest('.custom-card');
-          var button = card.find('.btn-minimize');
-          
-          // Toggle everything in the card EXCEPT the header
-          card.children().not(':first').slideToggle(300, function() {
-            // Swap the minus/plus icon based on visibility
-            if ($(this).is(':visible')) {
+      $(document).ready(function() {
+        $(document).on('click', '.custom-card-header', function(e) {
+          // Prevent collapse if the user is explicitly interacting with the checkbox
+          if ($(e.target).closest('.shiny-input-container, input[type=\"checkbox\"]').length) {
+            return;
+          }
+    
+          var header = $(this);
+          var card = header.closest('.custom-card');
+          var content = card.find('.custom-card-content');
+          var button = header.find('.btn-minimize');
+    
+          content.slideToggle(300, function() {
+            if (content.is(':visible')) {
               button.html('&minus;');
             } else {
               button.html('&#43;'); // Plus symbol
             }
           });
         });
-        
-      }, 500); // 500ms delay ensures UI is loaded
-    });
-  ")),
+      });
+    ")),
     tags$script(HTML("
     window.fetchAllCitationCounts = async function(doi, sources, keys, inputId, requestId) {
       try {
@@ -692,7 +671,14 @@ ui <- fluidPage(
         Shiny.setInputValue(inputId, { doi: doi, counts: {}, requestId: requestId }, {priority: 'event'});
       }
     };
-  "))
+  ")),
+    tags$script(HTML("
+      window.attentionCircles = []; // Now an array
+      
+      Shiny.addCustomMessageHandler('draw_attention_circle', function(message) {
+        window.attentionCircles = message; // Expects an array of {x, y, r} objects
+      });
+    "))
   ),
   
   # 1. Custom Title Header with Settings & Dark Mode
@@ -757,59 +743,73 @@ ui <- fluidPage(
       tags$div(
         class = "custom-card",
         style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; margin-bottom: 25px;",
-        h4("Search & Identification", style = "margin-top: 0; font-weight: bold; font-size: 16px;"),
-        div(
-          style = "display: inline-flex; align-items: center; gap: 5px;",
-          tags$b("DOI input:"),
-          icon(
-            "circle-question",
-            "data-toggle" = "tooltip",
-            style = "color: #007bc2; cursor: help;",
-            title = "Type the DOI(s) here line-by-line and run CollabNET. Auto-refresh does NOT apply to DOI(s)."
-            )
+        tags$div(
+          class = "custom-card-header",
+          style = "display: flex; justify-content: space-between; align-items: center; cursor: pointer; user-select: none; margin-bottom: 0;",
+          h4("Search & Identification", style = "margin: 0; font-weight: bold; font-size: 16px;"),
+          tags$button(
+            type = "button", 
+            class = "btn-minimize", 
+            style = "background: transparent; border: none; font-size: 1.6em; line-height: 1; cursor: pointer; padding: 0 5px;",
+            HTML("&minus;")
+          ),
         ),
-        textAreaInput("doi_text", value = "", rows = 2, width = "100%", label = NULL),
-        div(
-          style = "display: inline-flex; align-items: center; gap: 5px;",
-          tags$b("Lookup Keywords:"),
-          icon(
-            "circle-question",
-            "data-toggle" = "tooltip",
-            style = "color: #007bc2; cursor: help;",
-            title = "Type the lookup-keywords here line-by-line. Keywords are matched in-order."
+        tags$div(
+          class = "custom-card-content",
+          style = "margin-top: 15px;", 
+          div(
+            style = "display: inline-flex; align-items: center; gap: 5px;",
+            tags$b("DOI input:"),
+            icon(
+              "circle-question",
+              "data-toggle" = "tooltip",
+              style = "color: #007bc2; cursor: help;",
+              title = "Type the DOI(s) here line-by-line and run CollabNET. Auto-refresh does NOT apply to DOI(s)."
+              )
+          ),
+          textAreaInput("doi_text", value = "", rows = 2, width = "100%", label = NULL),
+          div(
+            style = "display: inline-flex; align-items: center; gap: 5px;",
+            tags$b("Lookup Keywords:"),
+            icon(
+              "circle-question",
+              "data-toggle" = "tooltip",
+              style = "color: #007bc2; cursor: help;",
+              title = "Type the lookup-keywords here line-by-line. Keywords are matched in-order."
+              )
+          ),
+          textAreaInput("author_list",  value = "", rows = 2, width = "100%", label = NULL),
+          uiOutput("dynamic_author_filter"),
+          div(
+            style = "display: inline-flex; align-items: center; gap: 5px;",
+            tags$b("ORCiD input:"),
+            icon("circle-question",
+                 "data-toggle" = "tooltip",
+                 style = "color: #007bc2; cursor: help;",
+                 title = "Type the ORCiD(s) here line-by-line and run CollabNET. Auto-refresh does NOT apply to ORCiD(s)."
+                 )
+          ),
+          textAreaInput("orcid_text", value = "", rows = 2, width = "100%", label = NULL),
+          shinyjs::hidden(div(
+            id = "scopusid_label_wrapper", 
+            style = "display: inline-flex; align-items: center; gap: 5px;",
+            tags$b("SCOPUS IDs:"),
+            icon(
+              "circle-question",
+              "data-toggle" = "tooltip",
+              style = "color: #007bc2; cursor: help;",
+              title = "Type the SCOPUS Author ID(s) here line-by-line and run CollabNET. Auto-refresh does NOT apply to SCOPUS ID(s)."
+              )
+          )),
+          shinyjs::hidden(textAreaInput("scopusid_text", value = "", rows = 2, width = "100%", label = NULL)),
+          actionButton("submit_button", "Run CollabNET", icon = icon("play", lib = "font-awesome"), class = "btn-primary", style = "width: 100%; font-weight: bold; margin-top: 10px; background-color: #4B8BBE; border: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"),
+          # The Toggle Lock Button
+          actionButton("toggle_extended", "Show Lookup Controls", icon = icon("magnifying-glass"), 
+                       class = "btn-secondary", style = "margin-top: 10px; width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"),
+          shinyjs::hidden(
+            tags$div(id = "extended_controls_container",
+                     uiOutput("lookup_controls_panel")
             )
-        ),
-        textAreaInput("author_list",  value = "", rows = 2, width = "100%", label = NULL),
-        uiOutput("dynamic_author_filter"),
-        div(
-          style = "display: inline-flex; align-items: center; gap: 5px;",
-          tags$b("ORCiD input:"),
-          icon("circle-question",
-               "data-toggle" = "tooltip",
-               style = "color: #007bc2; cursor: help;",
-               title = "Type the ORCiD(s) here line-by-line and run CollabNET. Auto-refresh does NOT apply to ORCiD(s)."
-               )
-        ),
-        textAreaInput("orcid_text", value = "", rows = 2, width = "100%", label = NULL),
-        shinyjs::hidden(div(
-          id = "scopusid_label_wrapper", 
-          style = "display: inline-flex; align-items: center; gap: 5px;",
-          tags$b("SCOPUS IDs:"),
-          icon(
-            "circle-question",
-            "data-toggle" = "tooltip",
-            style = "color: #007bc2; cursor: help;",
-            title = "Type the SCOPUS Author ID(s) here line-by-line and run CollabNET. Auto-refresh does NOT apply to SCOPUS ID(s)."
-            )
-        )),
-        shinyjs::hidden(textAreaInput("scopusid_text", value = "", rows = 2, width = "100%", label = NULL)),
-        actionButton("submit_button", "Run CollabNET", icon = icon("play", lib = "font-awesome"), class = "btn-primary", style = "width: 100%; font-weight: bold; margin-top: 10px; background-color: #4B8BBE; border: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"),
-        # The Toggle Lock Button
-        actionButton("toggle_extended", "Show Lookup Controls", icon = icon("magnifying-glass"), 
-                     class = "btn-secondary", style = "margin-top: 10px; width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"),
-        shinyjs::hidden(
-          tags$div(id = "extended_controls_container",
-                   uiOutput("lookup_controls_panel")
           )
         )
       ),
@@ -824,16 +824,44 @@ ui <- fluidPage(
       tags$div(
         class = "custom-card",
         style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; margin-bottom: 25px;",
-        h4("Filter by Timeline", style = "margin-top: 0; font-weight: bold; font-size: 16px;"),
-        shinyjs::hidden(sliderInput("year_slider", "Publication Years", min = 0, max = 0, value = c(0, 0), step = 1, round = TRUE, width = "100%"))
+        tags$div(
+          class = "custom-card-header",
+          style = "display: flex; justify-content: space-between; align-items: center; cursor: pointer; user-select: none; margin-bottom: 0;",
+          h4("Filter by Timeline", style = "margin: 0; font-weight: bold; font-size: 16px;"),
+          tags$button(
+            type = "button", 
+            class = "btn-minimize", 
+            style = "background: transparent; border: none; font-size: 1.6em; line-height: 1; cursor: pointer; padding: 0 5px;",
+            HTML("&minus;")
+          ),
+        ),
+        tags$div(
+          class = "custom-card-content",
+          style = "margin-top: 15px;", 
+          shinyjs::hidden(sliderInput("year_slider", "Publication Years", min = 0, max = 0, value = c(0, 0), step = 1, round = TRUE, width = "100%"))
+        )
       ),
       
       # Section 3: Source
       tags$div(
         class = "custom-card",
         style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; margin-bottom: 25px;",
-        h4("Source", style = "margin-top: 0; font-weight: bold; font-size: 16px;"),
-        uiOutput("dynamic_source_ui") 
+        tags$div(
+          class = "custom-card-header",
+          style = "display: flex; justify-content: space-between; align-items: center; cursor: pointer; user-select: none; margin-bottom: 0;",
+          h4("Source", style = "margin: 0; font-weight: bold; font-size: 16px;"),
+          tags$button(
+            type = "button", 
+            class = "btn-minimize", 
+            style = "background: transparent; border: none; font-size: 1.6em; line-height: 1; cursor: pointer; padding: 0 5px;",
+            HTML("&minus;")
+          ),
+        ),
+        tags$div(
+          class = "custom-card-content",
+          style = "margin-top: 15px;", 
+          uiOutput("dynamic_source_ui") 
+        )
       ),
       
       # Section 4: Log Output 
@@ -881,39 +909,87 @@ ui <- fluidPage(
       tags$div(
         class = "custom-card",
         style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; margin-bottom: 25px;",
-        h3("Collaboration Metrics", style = "color: #4B8BBE; margin-top: 0; font-weight: bold;"),
-        hr(style = "border-top: 1px solid #edf2f7; margin-bottom: 20px;"), # Softened the hr() line
-        
-        fluidRow(
-          # Wrapped in minimal-table
-          column(6, tags$div(class = "minimal-table", tableOutput("orcid_table"))),
-          
-          # Vertically centering the SH-Index next to the table
-          column(6, 
-                 style = "display: flex; align-items: center; justify-content: flex-start; height: 100%; min-height: 80px;", 
-                 shinyjs::disabled(shiny::uiOutput("sh_index")))
+        tags$div(
+          class = "custom-card-header",
+          style = "display: flex; justify-content: space-between; align-items: center; cursor: pointer; user-select: none; margin-bottom: 0;",
+          tags$div(
+            style = "display: flex; align-items: center; gap: 12px;",
+            tags$input(
+              id = "enable_summary", 
+              type = "checkbox", 
+              checked = TRUE,
+              class = "shiny-input-checkbox",
+              style = "width: 20px; height: 20px; cursor: pointer; margin: 0; accent-color: #4B8BBE;" 
+            ),
+            h3("Collaboration Metrics", style = "color: #4B8BBE; margin: 0; font-weight: bold; line-height: 1;"),
+          ),
+          tags$button(
+            type = "button", 
+            class = "btn-minimize", 
+            style = "background: transparent; border: none; font-size: 1.6em; line-height: 1; cursor: pointer; color: #4B8BBE; padding: 0 5px;",
+            HTML("&minus;")
+          )
         ),
-        
-        # Wrapped in minimal-table
-        tags$div(class = "minimal-table", tableOutput("summary_table"))
+        # hr(style = "border-top: 1px solid #edf2f7; margin-bottom: 20px;"), # Softened the hr() line
+        tags$div(
+          class = "custom-card-content",
+          style = "margin-top: 15px;", 
+          hr(),        
+          fluidRow(
+            # Wrapped in minimal-table
+            column(6, tags$div(class = "minimal-table", tableOutput("summary_table"))),
+            
+            # Vertically centering the SH-Index next to the table
+            column(6, 
+                   style = "display: flex; align-items: center; justify-content: flex-start; height: 100%; min-height: 80px;", 
+                   shinyjs::disabled(shiny::uiOutput("sh_index")))
+          )
+        )
+        # # Wrapped in minimal-table
+        # tags$div(class = "minimal-table", tableOutput("summary_table"))
       ),
       
       # 4) Visualizations
       tags$div(
         class = "custom-card",
         style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #2E8B57; margin-bottom: 25px;",
-        h3("Publication & Citation Trends", style = "color: #2E8B57; margin-top: 0; font-weight: bold;"),
-        hr(),
-        fluidRow(
-          column(6, plotly::plotlyOutput("acounts_plot")),
-          column(6, plotly::plotlyOutput("ccounts_plot"))
+        tags$div(
+          class = "custom-card-header",
+          style = "display: flex; justify-content: space-between; align-items: center; cursor: pointer; user-select: none; margin-bottom: 0;",
+          
+          tags$div(
+            style = "display: flex; align-items: center; gap: 12px;",
+            tags$input(
+              id = "enable_plots", 
+              type = "checkbox", 
+              checked = TRUE,
+              class = "shiny-input-checkbox",
+              style = "width: 20px; height: 20px; cursor: pointer; margin: 0; accent-color: #2E8B57;"
+            ),
+            h3("Publication & Citation Trends", style = "color: #2E8B57; margin: 0; font-weight: bold; line-height: 1;"),
+          ),
+          tags$button(
+            type = "button", 
+            class = "btn-minimize", 
+            style = "background: transparent; border: none; font-size: 1.6em; line-height: 1; cursor: pointer; color: #2E8B57; padding: 0 5px;",
+            HTML("&minus;")
+          )
         ),
-        tags$br(),
-        plotly::plotlyOutput("cdist_plot"),
-        tags$br(),
-        fluidRow(
-          column(6, plotly::plotlyOutput("aperc_plot", height = "150px")),
-          column(6, plotly::plotlyOutput("cperc_plot", height = "150px"))
+        tags$div(
+          class = "custom-card-content",
+          style = "margin-top: 15px;", 
+          hr(),
+          fluidRow(
+            column(6, plotly::plotlyOutput("acounts_plot")),
+            column(6, plotly::plotlyOutput("ccounts_plot"))
+          ),
+          tags$br(),
+          plotly::plotlyOutput("cdist_plot"),
+          tags$br(),
+          fluidRow(
+            column(6, plotly::plotlyOutput("aperc_plot", height = "150px")),
+            column(6, plotly::plotlyOutput("cperc_plot", height = "150px"))
+          )
         )
       ),
       
@@ -921,29 +997,92 @@ ui <- fluidPage(
       tags$div(
         class = "custom-card",
         style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #D6A77A; margin-bottom: 25px;",
-        h3("Detailed Publication Record", style = "color: #D6A77A; margin-top: 0; font-weight: bold;"),
-        hr(),
-        DT::DTOutput("extended_table")
+        tags$div(
+          class = "custom-card-header",
+          style = "display: flex; justify-content: space-between; align-items: center; cursor: pointer; user-select: none; margin-bottom: 0;",
+          
+          tags$div(
+            style = "display: flex; align-items: center; gap: 12px;",
+            
+            tags$input(
+              id = "enable_table", 
+              type = "checkbox", 
+              checked = TRUE,
+              class = "shiny-input-checkbox", 
+              style = "width: 20px; height: 20px; cursor: pointer; margin: 0; accent-color: #D6A77A;" 
+            ),
+            h3("Detailed Publication Record", style = "color: #D6A77A; margin: 0; font-weight: bold; line-height: 1;"),
+          ),
+          
+          # Right Side: Fixed Toggle Button
+          tags$button(
+            type = "button", 
+            class = "btn-minimize", 
+            style = "background: transparent; border: none; font-size: 1.6em; line-height: 1; cursor: pointer; color: #D6A77A; padding: 0 5px;",
+            HTML("&minus;")
+          )
+        ),
+        tags$div(
+          class = "custom-card-content",
+          style = "margin-top: 15px;", 
+          hr(),
+          DT::DTOutput("extended_table")
         # DT::dataTableOutput("extended_table")
+        )
       ),
       # 6) Network graph - filtered
       tags$div(
         class = "custom-card",
         style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #C96480; margin-bottom: 25px;",
         
-        h3("Network Graph - Filtered", style = "color: #C96480; margin-top: 0; font-weight: bold;"),
+        # 1. FIXED HEADER ROW CONTAINER (margin-bottom set to 0)
+        tags$div(
+          class = "custom-card-header",
+          style = "display: flex; justify-content: space-between; align-items: center; cursor: pointer; user-select: none; margin-bottom: 0;",
+          
+          tags$div(
+            style = "display: flex; align-items: center; gap: 12px;",
+            
+            tags$input(
+              id = "enable_network", 
+              type = "checkbox", 
+              checked = TRUE, #FALSE
+              class = "shiny-input-checkbox", 
+              style = "width: 20px; height: 20px; cursor: pointer; margin: 0; accent-color: #C96480;"
+            ),
+            h3("Network Graph - Filtered", style = "color: #C96480; margin: 0; font-weight: bold; line-height: 1;")
+          ),
+          
+          # Right Side: Fixed Toggle Button
+          tags$button(
+            type = "button", 
+            class = "btn-minimize", 
+            style = "background: transparent; border: none; font-size: 1.6em; line-height: 1; cursor: pointer; color: #C96480; padding: 0 5px;",
+            HTML("&minus;")
+          )
+        ),
         
-        # Standard selectInput instead of uiOutput
-        # div(style = "background: #fdfdfd; padding: 10px 15px; border-radius: 6px; border: 1px solid #eaeaea; margin-bottom: 15px;",
-        #     selectInput("net_col_filtered", "Choose column to visualize:", choices = NULL, width = "100%")
-        # ),
-        selectInput("net_col_filtered", "Choose column to visualize:", choices = NULL, width = "100%"),
-        selectizeInput("custom_node_selector", "Search/Select Keyword:", 
-                       multiple = TRUE,
-                       choices = NULL, # We will populate this from the server
-                       width = "300px", 
-                       options = list(placeholder = 'Type an keyword...')),
-        visNetwork::visNetworkOutput("network_filtered", height = "500px")
+        # 2. COLLAPSIBLE CONTENT CONTAINER (Using margin-top for dynamic spacing)
+        tags$div(
+          class = "custom-card-content",
+          style = "margin-top: 15px;", 
+          hr(),
+          selectInput("net_col_filtered", "Choose column to visualize:", choices = NULL, width = "100%"),
+          selectizeInput("custom_node_selector", "Search/Select Keyword:", 
+                         multiple = TRUE,
+                         choices = NULL, 
+                         width = "300px", 
+                         options = list(placeholder = 'Type a keyword...')),
+          numericInput("custom_edge_count", "Maximum Edge Count:", 1500, min = 1, step = 1),
+          numericInput("custom_conn_count", "Minimum Connection Count:", 1, min = 0, step = 1),
+          sliderInput("attention_slider", "Attention", min = 0, max = 100, value = 100, round = F, width = "100%"),
+          shinyjs::disabled(selectizeInput("attention_nodes", "Attention Nodes:", 
+                         multiple = TRUE,
+                         choices = NULL, 
+                         width = "auto", 
+                         options = list(placeholder = 'Attention Nodes...'))),
+          visNetwork::visNetworkOutput("network_filtered", height = "500px")
+        )
       ),
       
       # # 7) Network graph - full
