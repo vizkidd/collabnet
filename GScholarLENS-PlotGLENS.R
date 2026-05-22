@@ -893,10 +893,15 @@ plot_glens_table <- function(rv,df,session){
   # })
   # acounts_animate_payload <- lapply(acounts_proxy_data, function(y_vals) list(y = y_vals))
   # Create a list of lists containing both the new Y values and the new Hover Text
+  # min_acounts <- 0
+  # max_acounts <- 1
   acounts_animate_payload <- lapply(all_quartiles, function(q) {
     sub_data <- agg_all %>% filter(Qscore == q) %>% arrange(Position)
-    print(q)
-    print(sub_data)
+    # print(q)
+    # print(sub_data)
+    # if(max_acounts < sub_data$Total_P_Pubs){
+    #   max_acounts <- sub_data$Total_P_Pubs
+    # }
     list(
       x = sub_data$Position,
       y = sub_data$Count,
@@ -912,16 +917,19 @@ plot_glens_table <- function(rv,df,session){
       )
     )
   })
+  # print(str(acounts_animate_payload))
+  # print(paste("max_acounts:",max_acounts))
   plotlyProxyInvoke(acounts_proxy, 
                     "animate",
                     list(
                       data = acounts_animate_payload, 
                       traces = as.list(0:(length(all_quartiles) - 1)),
-                      layout = list(yaxis = list(autorange = TRUE))
+                      layout = list(yaxis = list(range=c(0,max(na.omit(agg_all$Total_P_Pubs))), autorange = TRUE, rangemode = "nonnegative"),
+                                    autosize = TRUE)
                       ),
                     list(
                       transition = list(duration = 200, easing = "cubic-in-out"), 
-                      frame = list(duration = 200, redraw = TRUE)
+                      frame = list(duration = 200, redraw = F)
                       )
                     )
   
@@ -933,9 +941,9 @@ plot_glens_table <- function(rv,df,session){
   # })
   # ccounts_animate_payload <- lapply(ccounts_proxy_data, function(y_vals) list(y = y_vals))
   # Use SumCitations instead of Count for the Citation plot
+  # min_ccounts <- 0
   ccounts_animate_payload <- lapply(all_quartiles, function(q) {
     sub_data <- agg_all %>% filter(Qscore == q) %>% arrange(Position)
-
     list(
       x = sub_data$Position,
       y = sub_data$SumCitations,
@@ -951,16 +959,18 @@ plot_glens_table <- function(rv,df,session){
       )
     )
   })
+  # print(paste("max_ccounts:",max_ccounts))
   plotlyProxyInvoke(ccounts_proxy, 
                     "animate", 
                     list(
                       data = ccounts_animate_payload, 
                       traces = as.list(0:(length(all_quartiles) - 1)),
-                      layout = list(yaxis = list(autorange = TRUE))
+                      layout = list(yaxis = list(range=c(0,max(na.omit(agg_all$Total_P_Cites))), autorange = TRUE, rangemode = "nonnegative"),
+                                    autosize = TRUE)
                       ),
                     list(
                       transition = list(duration = 200, easing = "cubic-in-out"),
-                      frame = list(duration = 200, redraw = TRUE)
+                      frame = list(duration = 200, redraw = F)
                       )
                     )
   
@@ -1215,7 +1225,8 @@ render_skeleton_plots <- function(rv, df, output){
   #     )
   # })
   print(paste("full_grid:", nrow(full_grid)))
-  print(agg_all$Total_Position)
+  # print(agg_all$Total_Position)
+  print(str(agg_all))
   output$acounts_plot <- renderPlotly({
     plot_ly(
       data = agg_all, 
@@ -1243,9 +1254,9 @@ render_skeleton_plots <- function(rv, df, output){
         title = list(text = "Publication Count based on Authorship with Journal Rank Categorization", x = 0.5),
         barmode = "stack", 
         xaxis = list(title = "", tickangle = 15, categoryorder = "array", categoryarray = all_positions), 
-        yaxis = list(title = ""),
+        yaxis = list(title = "", range=c(0,1), rangemode = "nonnegative", autorange = TRUE),
         showlegend = FALSE,
-        autosize = TRUE  # This helps with the non-maximized window bug
+        autosize = TRUE
       )
   })
   outputOptions(output, "acounts_plot", suspendWhenHidden = FALSE)
@@ -1289,7 +1300,7 @@ render_skeleton_plots <- function(rv, df, output){
         title = list(text = "Citation Count based on Authorship with Journal Rank Categorization", x = 0.5),
         barmode = "stack", 
         xaxis = list(title = "", tickangle = 15, categoryorder = "array", categoryarray = all_positions), 
-        yaxis = list(title = ""),
+        yaxis = list(title = "", range=c(0,1), rangemode = "nonnegative", autorange = TRUE),
         showlegend = FALSE,
         autosize = TRUE
       )

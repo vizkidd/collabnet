@@ -2642,6 +2642,7 @@ server <- function(input, output, session) {
     init_edges <- data.frame(from = character(0), to = character(0))
     
     visNetwork(init_nodes, init_edges, width = "100%", height = "500px") %>%
+      visLayout(improvedLayout = FALSE) %>%
       visNodes(
         font = list(size = 14),
         color = list(highlight = list(background = "red", border = "darkred"))
@@ -2649,8 +2650,19 @@ server <- function(input, output, session) {
       visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = TRUE) %>%
       visPhysics(
         solver = "forceAtlas2Based",
-        forceAtlas2Based = list(gravitationalConstant = -50),
-        stabilization = list(iterations = 150)
+        forceAtlas2Based = list(
+          gravitationalConstant = -50,
+          springConstant = 0.08,
+          springLength = 100,
+          damping = 0.7 # <-- The higher this is (0 to 1), the less "jitter" and bounce you get.
+        ),
+        stabilization = list(
+          enabled = TRUE,
+          iterations = 300, # Runs the physics invisibly 300 times before displaying
+          updateInterval = 50,
+          onlyDynamicEdges = FALSE,
+          fit = TRUE
+        )
       ) %>%
       # ADDED: multiselect = TRUE allows Ctrl+Click on the canvas
       visInteraction(hover = TRUE, multiselect = TRUE) %>% 
@@ -2666,8 +2678,10 @@ server <- function(input, output, session) {
         deselectNode = "function(properties) {
           Shiny.setInputValue('network_filtered_clicked', properties.nodes);
         }"
+        # stabilizationIterationsDone = "function () {this.setOptions( { physics: false } );}"
       ) %>%
       addFontAwesome()
+    
   })
   
   observeEvent(net_data_filtered_debounced(), {
