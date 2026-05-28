@@ -427,205 +427,590 @@ compute_indices <- function(rv, df) {
   ))
 }
 
-match_journals <- function(rv, df){
-  # print("match_journals(rv):")
-  # need_cols <- c("Title","Authors","Adjusted_Citations","First_Author","Second_Author","Co_Author","Corresponding_Author")
-  # missing_cols <- setdiff(need_cols, names(df))
-  # if (length(missing_cols) > 0) {
-  #   # warning(paste("Author-level file missing columns:", paste(missing_cols, collapse = ", ")))
-  #   rv$log_text <- paste("<span style='color: red;'>Author-level file missing columns:", paste(missing_cols, collapse = ", "),"</span>",sep="<br>")
-  #   return(df)
-  # }
-  # 
-  # # --- Safely extract a target journal column to normalize ---
-  # # Look for User_Journal first, fallback to Journal
-  # if ("User_Journal" %in% names(df)) {
-  #   target_journal_col <- df$User_Journal
-  # } else if ("Journal" %in% names(df)) {
-  #   target_journal_col <- df$Journal
-  # } else {
-  #   warning("No Journal or User_Journal column found to match against!")
-  #   return(df)
-  # }
-  # 
-  # unique_journals <- unique(target_journal_col)
-  # cat("Unique journals to match:", length(unique_journals), "\n")
-  # 
-  # df$Name_norm <- sapply(target_journal_col, function(x) normalize_journal(x))
-  # 
-  # match_idx <- unique(
-  #   bind_rows(
-  #     future_sapply(
-  #       seq_len(length(unique_journals)),
-  #       getExcelColumns,
-  #       unique_journals = unique_journals,
-  #       jsonData = jcr_names_norm,
-  #       simplify = FALSE,
-  #       future.packages = c("stringr", "dplyr"),
-  #       future.globals = c("jcr_names_norm", "getExcelColumns"),
-  #       future.seed = TRUE
-  #     )
-  #   )
-  # )
-  # 
-  # print(paste("CHECK FLOW1:",colnames(jcr_names_norm),collapse=","))
-  # print(paste("CHECK FLOW2:",colnames(match_idx),collapse=","))
-  # # print(paste("match_idx:", paste(match_idx,collapse = ",")))
-  # if (nrow(match_idx) > 0) {
-  #   jcr_matched <- inner_join(jcr_names_norm, match_idx, by = c("Name_norm", "Qscore", "JIF5Years"))
-  # } else {
-  #   jcr_matched <- jcr_names_norm[0, ] 
-  # }
-  # 
-  # # --- CRITICAL FIX: Isolate JCR columns before joining ---
-  # jcr_subset <- jcr_matched %>%
-  #   dplyr::select(Name_norm, 
-  #                 JCR_Journal = Name, 
-  #                 JCR_Qscore = Qscore, 
-  #                 JCR_JIF5Years = JIF5Years) %>%
-  #   dplyr::distinct(Name_norm, .keep_all = TRUE)
-  # 
-  # # --- NEW: PRE-JOIN CLEANUP ---
-  # # If this runs multiple times, JCR_Journal will already exist in the app.
-  # # We must drop it before the join to prevent .x and .y collisions!
-  # if ("JCR_Journal" %in% names(df)) {
-  #   df <- df %>% dplyr::select(-JCR_Journal)
-  # }
-  # 
-  # print("CHECK FLOW3:")
-  # # Perform the join. Because we dropped the old JCR_Journal, 
-  # # NO OTHER COLUMNS will overlap, and no .x or .y suffixes can be created!
-  # df_auth_joined <- dplyr::left_join(df, jcr_subset, by = "Name_norm")
-  # 
-  # # --- 1. Safely resolve Qscore ---
-  # if ("Qscore" %in% names(df_auth_joined)) {
-  #   # If app already has Qscore, fill missing ones with JCR, but prioritize JCR
-  #   df_auth_joined <- df_auth_joined %>%
-  #     dplyr::mutate(Qscore = dplyr::coalesce(as.character(JCR_Qscore), as.character(Qscore))) %>%
-  #     dplyr::select(-JCR_Qscore)
-  # } else {
-  #   # Otherwise just rename the newly brought over JCR column
-  #   df_auth_joined <- df_auth_joined %>% dplyr::rename(Qscore = JCR_Qscore)
-  # }
-  # 
-  # # --- 2. Safely resolve JIF5Years ---
-  # if ("JIF5Years" %in% names(df_auth_joined)) {
-  #   df_auth_joined <- df_auth_joined %>%
-  #     dplyr::mutate(JIF5Years = dplyr::coalesce(as.character(JCR_JIF5Years), as.character(JIF5Years))) %>%
-  #     dplyr::select(-JCR_JIF5Years)
-  # } else {
-  #   df_auth_joined <- df_auth_joined %>% dplyr::rename(JIF5Years = JCR_JIF5Years)
-  # }
-  # 
-  # # Perform the join. Because jcr_subset ONLY has Name_norm + 3 unique columns, 
-  # # NO OTHER COLUMNS in df will be touched, renamed, or suffixed!
-  # df_auth_joined <- dplyr::left_join(df, jcr_subset, by = "Name_norm")
-  # 
-  # # --- 1. Safely resolve Qscore ---
-  # if ("Qscore" %in% names(df_auth_joined)) {
-  #   # If app already has Qscore, fill missing ones with JCR, but prioritize JCR
-  #   df_auth_joined <- df_auth_joined %>%
-  #     dplyr::mutate(Qscore = dplyr::coalesce(as.character(JCR_Qscore), as.character(Qscore))) %>%
-  #     dplyr::select(-JCR_Qscore)
-  # } else {
-  #   # Otherwise just rename the newly brought over JCR column
-  #   df_auth_joined <- df_auth_joined %>% dplyr::rename(Qscore = JCR_Qscore)
-  # }
-  # 
-  # # --- 2. Safely resolve JIF5Years ---
-  # if ("JIF5Years" %in% names(df_auth_joined)) {
-  #   df_auth_joined <- df_auth_joined %>%
-  #     dplyr::mutate(JIF5Years = dplyr::coalesce(as.character(JCR_JIF5Years), as.character(JIF5Years))) %>%
-  #     dplyr::select(-JCR_JIF5Years)
-  # } else {
-  #   df_auth_joined <- df_auth_joined %>% dplyr::rename(JIF5Years = JCR_JIF5Years)
-  # }
-  # 
-  # print(paste("colnames(df_auth_joined):",paste(colnames(df_auth_joined), collapse=",")))
-  # # Note: "User_Journal" and "Journal" are left completely intact exactly as they were!
+#' Fetch Metrics from SciMango API with Session-Level Caching and Explicit API Auth Headers
+#' @param journal_names A character vector of unique journal names to query
+#' @param rv The reactiveValues object hosting our persistent cache
+#' @return A data.frame containing Name_norm, JCR_Journal, Qscore, and JIF5Years
+fetch_scimango_metrics <- function(journal_names, rv, api_key) {
+  # Initialize empty return dataframe structure
+  api_results <- data.frame(
+    Name_norm = character(),
+    JCR_Journal = character(),
+    Qscore = character(),
+    JIF5Years = character(),
+    stringsAsFactors = FALSE
+  )
   
-  print("match_journals(rv): Starting matching...")
+  journal_names <- unique(journal_names[!is.na(journal_names) & trimws(journal_names) != ""])
+  if (length(journal_names) == 0) return(api_results)
   
-  # 1. Validation
+  # Check local memory cache first
+  cached_names <- names(rv$api_journal_cache)
+  names_to_fetch <- setdiff(journal_names, cached_names)
+  
+  # 1. Gather what we already have in local RAM
+  names_from_cache <- intersect(journal_names, cached_names)
+  if (length(names_from_cache) > 0) {
+    cached_list <- lapply(names_from_cache, function(jn) rv$api_journal_cache[[jn]])
+    api_results <- do.call(rbind, cached_list)
+  }
+  
+  # 2. Query missing journals ONLY if an API key is provided
+  if (length(names_to_fetch) > 0) {
+    if (is.null(api_key) || trimws(api_key) == "") {
+      cat("No SciMango API key detected. Skipping network execution loop.\n")
+      # Generate empty/unranked records for the uncached entries automatically
+      for (journal in names_to_fetch) {
+        fallback_record <- data.frame(Name_norm = journal, JCR_Journal = journal, Qscore = "Unranked", JIF5Years = "0", stringsAsFactors = FALSE)
+        rv$api_journal_cache[[journal]] <- fallback_record
+        api_results <- rbind(api_results, fallback_record)
+      }
+      return(api_results)
+    }
+    
+    cat("Querying SciMango API for", length(names_to_fetch), "new elements using credentials...\n")
+    
+    for (journal in names_to_fetch) {
+      safe_query <- utils::URLencode(journal, repeated = TRUE)
+      api_url <- paste0("https://api.scimango.com/v1/journals?query=", safe_query)
+      
+      response <- tryCatch({
+        # Passing authorization token securely inside the HTTP request headers boundary
+        req <- curl::curl_fetch_memory(
+          url = api_url,
+          handle = curl::new_handle(
+            HTTPHEADER = c(
+              paste0("Authorization: Bearer ", api_key),
+              "Accept: application/json"
+            )
+          )
+        )
+        if (req$status_code == 200) jsonlite::fromJSON(rawToChar(req$content)) else NULL
+      }, error = function(e) {
+        warning("SciMango API Network Connectivity failure for: ", journal, " - ", e$message)
+        NULL
+      })
+      
+      # Process Response Object Maps
+      if (!is.null(response) && !is.null(response$data) && length(response$data) > 0) {
+        matched_title <- if(!is.null(response$data$title)) response$data$title[1] else journal
+        fetched_q     <- if(!is.null(response$data$quartile)) response$data$quartile[1] else "Unranked"
+        fetched_jif   <- if(!is.null(response$data$jif)) as.character(response$data$jif[1]) else "0"
+      } else {
+        matched_title <- journal
+        fetched_q     <- "Unranked"
+        fetched_jif   <- "0"
+      }
+      
+      journal_record <- data.frame(
+        Name_norm = journal, JCR_Journal = matched_title,
+        Qscore = as.character(fetched_q), JIF5Years = as.character(fetched_jif),
+        stringsAsFactors = FALSE
+      )
+      
+      # Save to structural cache matrix
+      rv$api_journal_cache[[journal]] <- journal_record
+      api_results <- rbind(api_results, journal_record)
+    }
+  }
+  
+  return(api_results)
+}
+
+# fetch_journal_metrics_openalex <- function(journal_names, rv, api_key = NULL) {
+#   api_results <- data.frame(
+#     Name_norm = character(), JCR_Journal = character(),
+#     Qscore = character(), JIF5Years = character(),
+#     stringsAsFactors = FALSE
+#   )
+#   
+#   journal_names <- unique(journal_names[!is.na(journal_names) & trimws(journal_names) != ""])
+#   if (length(journal_names) == 0) return(api_results)
+#   
+#   cached_names <- names(rv$api_journal_cache)
+#   names_to_fetch <- setdiff(journal_names, cached_names)
+#   
+#   # 1. Pull from Local Cache
+#   names_from_cache <- intersect(journal_names, cached_names)
+#   if (length(names_from_cache) > 0) {
+#     cached_list <- lapply(names_from_cache, function(jn) rv$api_journal_cache[[jn]])
+#     api_results <- do.call(rbind, cached_list)
+#   }
+#   
+#   # 2. Optimized Fetch from OpenAlex
+#   if (length(names_to_fetch) > 0) {
+#     cat("Querying OpenAlex API for", length(names_to_fetch), "journals...\n")
+#     
+#     # Priority resolution for the OpenAlex API key
+#     resolved_key <- if (!is.null(api_key) && api_key != "") {
+#       api_key
+#     } else if (!is.null(rv$openalex_api_key) && rv$openalex_api_key != "") {
+#       rv$openalex_api_key
+#     } else {
+#       Sys.getenv("OPENALEX_API_KEY", unset = "")
+#     }
+#     
+#     # Optional polite mailto pool configuration fallback
+#     mailto_param <- Sys.getenv("OPENALEX_MAILTO", unset = "")
+#     
+#     for (journal in names_to_fetch) {
+#       safe_query <- utils::URLencode(journal, repeated = TRUE)
+#       
+#       # Base Query
+#       api_url <- paste0("https://api.openalex.org/sources?search=", safe_query)
+#       
+#       # OPTIMIZATION 1: Field Selection (Minimizes network payload & accelerates JSON parsing load)
+#       api_url <- paste0(api_url, "&select=display_name,summary_stats")
+#       
+#       # OPTIMIZATION 2: Attach Premium/Free Key or Polite Email parameter
+#       if (resolved_key != "") {
+#         api_url <- paste0(api_url, "&api_key=", resolved_key)
+#       } else if (mailto_param != "") {
+#         api_url <- paste0(api_url, "&mailto=", utils::URLencode(mailto_param, repeated = TRUE))
+#       }
+#       
+#       response <- tryCatch({
+#         req <- curl::curl_fetch_memory(api_url)
+#         if (req$status_code == 200) {
+#           jsonlite::fromJSON(rawToChar(req$content), flatten = TRUE) 
+#         } else {
+#           NULL
+#         }
+#       }, error = function(e) { 
+#         NULL 
+#       })
+#       
+#       # Defensive payload validation
+#       if (!is.null(response) && 
+#           is.list(response) && 
+#           "results" %in% names(response) && 
+#           is.data.frame(response$results) && 
+#           nrow(response$results) > 0) {
+#         
+#         # Pull top matching record
+#         best_match <- response$results[1, ]
+#         matched_title <- if ("display_name" %in% names(best_match)) best_match$display_name else journal
+#         
+#         # --- Handle JIF (2-year mean citedness) ---
+#         jif_col <- "summary_stats.2yr_mean_citedness"
+#         jif_value <- 0
+#         
+#         if (jif_col %in% names(best_match) && !is.na(best_match[[jif_col]])) {
+#           jif_value <- as.numeric(best_match[[jif_col]])
+#           fetched_jif <- round(jif_value, 2)
+#         } else { 
+#           fetched_jif <- "0" 
+#         }
+#         
+#         # --- Handle Dynamic Qscore Evaluation ---
+#         fetched_q <- if (jif_value >= 4.0) {
+#           "Q1"
+#         } else if (jif_value >= 2.0) {
+#           "Q2"
+#         } else if (jif_value >= 0.75) {
+#           "Q3"
+#         } else if (jif_value > 0.0) {
+#           "Q4"
+#         } else {
+#           "NA"
+#         }
+#         
+#       } else {
+#         # Executed cleanly when the journal is not found in the index
+#         matched_title <- journal
+#         fetched_q <- "NA"
+#         fetched_jif <- "0"
+#       }
+#       
+#       journal_record <- data.frame(
+#         Name_norm = journal, JCR_Journal = matched_title,
+#         Qscore = as.character(fetched_q), JIF5Years = as.character(fetched_jif),
+#         stringsAsFactors = FALSE
+#       )
+#       
+#       # Save to reactive cache
+#       rv$api_journal_cache[[journal]] <- journal_record
+#       api_results <- rbind(api_results, journal_record)
+#     }
+#   }
+#   
+#   return(api_results)
+# }
+
+fetch_journal_metrics_openalex <- function(journal_names, rv, api_key = NULL, session = NULL) {
+  api_results <- data.frame(
+    Name_norm = character(), JCR_Journal = character(),
+    Qscore = character(), JIF5Years = character(),
+    stringsAsFactors = FALSE
+  )
+  
+  journal_names <- unique(journal_names[!is.na(journal_names) & trimws(journal_names) != ""])
+  if (length(journal_names) == 0) {
+    if (!is.null(session)) shinyWidgets::updateProgressBar(session = session, id = "prog_journal", value = 100, title = "100%")
+    return(api_results)
+  }
+  
+  cached_names <- names(rv$api_journal_cache)
+  names_to_fetch <- setdiff(journal_names, cached_names)
+  
+  # 1. Pull from Local Cache
+  names_from_cache <- intersect(journal_names, cached_names)
+  if (length(names_from_cache) > 0) {
+    cached_list <- lapply(names_from_cache, function(jn) rv$api_journal_cache[[jn]])
+    api_results <- do.call(rbind, cached_list)
+  }
+  
+  # 2. Optimized Fetch from OpenAlex
+  if (length(names_to_fetch) > 0) {
+    cat("Querying OpenAlex API for", length(names_to_fetch), "journals...\n")
+    
+    resolved_key <- if (!is.null(api_key) && api_key != "") {
+      api_key
+    } else if (!is.null(rv$openalex_api_key) && rv$openalex_api_key != "") {
+      rv$openalex_api_key
+    } else {
+      Sys.getenv("OPENALEX_API_KEY", unset = "")
+    }
+    
+    mailto_param <- Sys.getenv("OPENALEX_MAILTO", unset = "")
+    
+    total_to_fetch <- length(names_to_fetch)
+    
+    for (i in seq_along(names_to_fetch)) {
+      journal <- names_to_fetch[i]
+      
+      # --- UPDATE PROGRESS BAR ---
+      if (!is.null(session)) {
+        pct <- round((i / total_to_fetch) * 100)
+        shinyWidgets::updateProgressBar(
+          session = session, 
+          id = "prog_journal", 
+          value = pct, 
+          title = paste0(pct, "% (", i, "/", total_to_fetch, ")")
+        )
+      }
+      
+      safe_query <- utils::URLencode(journal, repeated = TRUE)
+      api_url <- paste0("https://api.openalex.org/sources?search=", safe_query, "&select=display_name,summary_stats")
+      
+      if (resolved_key != "") {
+        api_url <- paste0(api_url, "&api_key=", resolved_key)
+      } else if (mailto_param != "") {
+        api_url <- paste0(api_url, "&mailto=", utils::URLencode(mailto_param, repeated = TRUE))
+      }
+      
+      response <- tryCatch({
+        req <- curl::curl_fetch_memory(api_url)
+        if (req$status_code == 200) {
+          jsonlite::fromJSON(rawToChar(req$content), flatten = TRUE) 
+        } else {
+          NULL
+        }
+      }, error = function(e) { 
+        NULL 
+      })
+      
+      # Defensive payload validation
+      if (!is.null(response) && is.list(response) && "results" %in% names(response) && 
+          is.data.frame(response$results) && nrow(response$results) > 0) {
+        
+        best_match <- response$results[1, ]
+        matched_title <- if ("display_name" %in% names(best_match)) best_match$display_name else journal
+        
+        jif_col <- "summary_stats.2yr_mean_citedness"
+        jif_value <- if (jif_col %in% names(best_match) && !is.na(best_match[[jif_col]])) {
+          as.numeric(best_match[[jif_col]])
+        } else { 0 }
+        
+        fetched_jif <- round(jif_value, 2)
+        
+        fetched_q <- if (jif_value >= 4.0) { "Q1" } 
+        else if (jif_value >= 2.0) { "Q2" } 
+        else if (jif_value >= 0.75) { "Q3" } 
+        else if (jif_value > 0.0) { "Q4" } 
+        else { "NA" }
+        
+      } else {
+        matched_title <- journal
+        fetched_q <- "NA"
+        fetched_jif <- "0"
+      }
+      
+      journal_record <- data.frame(
+        Name_norm = journal, JCR_Journal = matched_title,
+        Qscore = as.character(fetched_q), JIF5Years = as.character(fetched_jif),
+        stringsAsFactors = FALSE
+      )
+      
+      rv$api_journal_cache[[journal]] <- journal_record
+      api_results <- rbind(api_results, journal_record)
+    }
+  } else {
+    # If everything was cached, jump straight to 100%
+    if (!is.null(session)) shinyWidgets::updateProgressBar(session = session, id = "prog_journal", value = 100, title = "100%")
+  }
+  
+  return(api_results)
+}
+
+#' Overhauled Match Journals Pipeline (API Driven)
+match_journals <- function(rv, df, openalex_key=NULL, session = NULL){
+  print("match_journals(rv): Starting API matching engine...")
+  
+  # 1. Validation Pre-Flight Checklist
   need_cols <- c("Title","Authors","Adjusted_Citations","First_Author","Second_Author","Co_Author","Corresponding_Author")
   missing_cols <- setdiff(need_cols, names(df))
   if (length(missing_cols) > 0) {
     rv$log_text <- paste(rv$log_text, paste0("<span style='color: red;'>Missing columns: ", paste(missing_cols, collapse = ", "), "</span>"), sep="<br>")
-    return(df) # Return early if data is broken
+    return(df) # Safe exit strategy
   }
   
-  # 2. Determine Column
+  # 2. Target Extraction
   target_journal_col <- if ("User_Journal" %in% names(df)) df$User_Journal else df$Journal
   if (is.null(target_journal_col)) {
     return(df)
   }
   
-  # 3. Normalization & Matching
+  # 3. Create tracking key column
   df$Name_norm <- sapply(target_journal_col, normalize_journal)
-  unique_journals <- unique(target_journal_col)
+  unique_normalized_journals <- unique(df$Name_norm)
   
-  match_idx <- unique(bind_rows(
-    future_sapply(seq_along(unique_journals), getExcelColumns, 
-                  unique_journals = unique_journals, jsonData = jcr_names_norm, 
-                  simplify = FALSE, future.packages = c("stringr", "dplyr"))
-  ))
+  # Reset the UI progress bar to 0 before starting the loop
+  if (!is.null(session)) shinyWidgets::updateProgressBar(session = session, id = "prog_journal", value = 0, title = "Journals Matched : 0%")
   
-  # 4. Join with JCR Data
-  jcr_subset <- if (nrow(match_idx) > 0) {
-    inner_join(jcr_names_norm, match_idx, by = c("Name_norm", "Qscore", "JIF5Years")) %>%
-      dplyr::select(Name_norm, JCR_Journal = Name, JCR_Qscore = Qscore, JCR_JIF5Years = JIF5Years) %>%
-      dplyr::distinct(Name_norm, .keep_all = TRUE)
+  # 4. Fetch metrics using our optimized caching API driver
+  # jcr_subset <- fetch_scimango_metrics(unique_normalized_journals, rv, api_key)
+  openalex_key <- if(!is.null(openalex_key) && !stringi::stri_isempty(openalex_key)) openalex_key else NULL
+  jcr_subset <- fetch_journal_metrics_openalex(unique_normalized_journals, rv, openalex_key, session)
+  
+  if (!is.null(session)) shinyWidgets::updateProgressBar(session = session, id = "prog_journal", value = 100, status = "success", title = "Journals Matched : 100%")
+  
+  # 5. Drop any pre-existing metric tracking labels to avoid .x/.y joining conflicts
+  df <- df %>% dplyr::select(-any_of(c("JCR_Journal", "JCR_Qscore", "JCR_JIF5Years", "Qscore", "JIF5Years")))
+  
+  # 6. Merge API Metrics back into the primary dataframe workflow
+  if (!is.null(jcr_subset) && nrow(jcr_subset) > 0) {
+    df <- dplyr::left_join(df, jcr_subset, by = "Name_norm")
   } else {
-    NULL
+    # Absolute zero-network fallback generation layout
+    df$JCR_Journal <- df$Name_norm
+    df$Qscore <- "Unranked"
+    df$JIF5Years <- "0"
   }
   
-  # 5. Clean up existing columns to prevent .x / .y conflicts
-  df <- df %>% dplyr::select(-any_of(c("JCR_Journal", "JCR_Qscore", "JCR_JIF5Years")))
-  
-  # 6. Merge and Coalesce
-  if (!is.null(jcr_subset)) {
-    # Ensure columns exist before coalescing to avoid errors
-    if (!"Qscore" %in% names(df)) df$Qscore <- "NA"
-    if (!"JIF5Years" %in% names(df)) df$JIF5Years <- "0"
-    
-    df <- left_join(df, jcr_subset, by = "Name_norm") %>%
-      mutate(
-        # Use JCR data if available, otherwise keep existing/default
-        Qscore = coalesce(as.character(JCR_Qscore), as.character(Qscore)),
-        JIF5Years = coalesce(as.character(JCR_JIF5Years), as.character(JIF5Years))
-      ) %>%
-      dplyr::select(-any_of(c("JCR_Qscore", "JCR_JIF5Years")))
-  }
-  
-  # 7. Fallback Regex Matching (Simplified loop)
-  unmatched <- which(is.na(df$JCR_Journal))
-  if (length(unmatched) > 0) {
-    cat("Trying fallback substring match for", length(unmatched), "journals...\n")
-    for (i in unmatched) {
-      jn <- df$Name_norm[i]
-      if (is.na(jn) || nchar(jn) < 3) next
-      hits <- grep(jn, jcr_names_norm$Name_norm, value = TRUE)
-      
-      if (length(hits) == 1) {
-        idx <- which(jcr_names_norm$Name_norm == hits)[1]
-        df$JCR_Journal[i] <- jcr_names_norm$Name[idx]
-        df$Qscore[i] <- as.character(jcr_names_norm$Qscore[idx])
-      }
-    }
-  }
-  
-  # Final formatting
+  # Final safety sanitization checks
   df <- df %>%
-    dplyr::mutate(Qscore = dplyr::if_else(is.na(Qscore), "Unranked", as.character(Qscore)))
+    dplyr::mutate(
+      Qscore = dplyr::if_else(is.na(Qscore) | Qscore == "" | Qscore == "Unranked", "NA", as.character(Qscore)),
+      JIF5Years = dplyr::if_else(is.na(JIF5Years) | JIF5Years == "", "0", as.character(JIF5Years))
+    ) %>%
+    dplyr::distinct()
   
-  n_unmatched <- length(which(is.na(df$JCR_Journal)))
-  cat("Number of unmatched journal rows:", n_unmatched, "\n")
+  n_unmatched <- length(which(df$Qscore == "Unranked"))
+  cat("Matching process finished. Total unranked entries:", n_unmatched, "\n")
   
-  # Save the protected dataframe back to reactive values
-  # rv$glens_etable_final <- df_auth_joined %>% dplyr::distinct()
-  df <- df %>% dplyr::distinct()
   return(df)
 }
+
+# match_journals <- function(rv, df){
+#   # print("match_journals(rv):")
+#   # need_cols <- c("Title","Authors","Adjusted_Citations","First_Author","Second_Author","Co_Author","Corresponding_Author")
+#   # missing_cols <- setdiff(need_cols, names(df))
+#   # if (length(missing_cols) > 0) {
+#   #   # warning(paste("Author-level file missing columns:", paste(missing_cols, collapse = ", ")))
+#   #   rv$log_text <- paste("<span style='color: red;'>Author-level file missing columns:", paste(missing_cols, collapse = ", "),"</span>",sep="<br>")
+#   #   return(df)
+#   # }
+#   # 
+#   # # --- Safely extract a target journal column to normalize ---
+#   # # Look for User_Journal first, fallback to Journal
+#   # if ("User_Journal" %in% names(df)) {
+#   #   target_journal_col <- df$User_Journal
+#   # } else if ("Journal" %in% names(df)) {
+#   #   target_journal_col <- df$Journal
+#   # } else {
+#   #   warning("No Journal or User_Journal column found to match against!")
+#   #   return(df)
+#   # }
+#   # 
+#   # unique_journals <- unique(target_journal_col)
+#   # cat("Unique journals to match:", length(unique_journals), "\n")
+#   # 
+#   # df$Name_norm <- sapply(target_journal_col, function(x) normalize_journal(x))
+#   # 
+#   # match_idx <- unique(
+#   #   bind_rows(
+#   #     future_sapply(
+#   #       seq_len(length(unique_journals)),
+#   #       getExcelColumns,
+#   #       unique_journals = unique_journals,
+#   #       jsonData = jcr_names_norm,
+#   #       simplify = FALSE,
+#   #       future.packages = c("stringr", "dplyr"),
+#   #       future.globals = c("jcr_names_norm", "getExcelColumns"),
+#   #       future.seed = TRUE
+#   #     )
+#   #   )
+#   # )
+#   # 
+#   # print(paste("CHECK FLOW1:",colnames(jcr_names_norm),collapse=","))
+#   # print(paste("CHECK FLOW2:",colnames(match_idx),collapse=","))
+#   # # print(paste("match_idx:", paste(match_idx,collapse = ",")))
+#   # if (nrow(match_idx) > 0) {
+#   #   jcr_matched <- inner_join(jcr_names_norm, match_idx, by = c("Name_norm", "Qscore", "JIF5Years"))
+#   # } else {
+#   #   jcr_matched <- jcr_names_norm[0, ] 
+#   # }
+#   # 
+#   # # --- CRITICAL FIX: Isolate JCR columns before joining ---
+#   # jcr_subset <- jcr_matched %>%
+#   #   dplyr::select(Name_norm, 
+#   #                 JCR_Journal = Name, 
+#   #                 JCR_Qscore = Qscore, 
+#   #                 JCR_JIF5Years = JIF5Years) %>%
+#   #   dplyr::distinct(Name_norm, .keep_all = TRUE)
+#   # 
+#   # # --- NEW: PRE-JOIN CLEANUP ---
+#   # # If this runs multiple times, JCR_Journal will already exist in the app.
+#   # # We must drop it before the join to prevent .x and .y collisions!
+#   # if ("JCR_Journal" %in% names(df)) {
+#   #   df <- df %>% dplyr::select(-JCR_Journal)
+#   # }
+#   # 
+#   # print("CHECK FLOW3:")
+#   # # Perform the join. Because we dropped the old JCR_Journal, 
+#   # # NO OTHER COLUMNS will overlap, and no .x or .y suffixes can be created!
+#   # df_auth_joined <- dplyr::left_join(df, jcr_subset, by = "Name_norm")
+#   # 
+#   # # --- 1. Safely resolve Qscore ---
+#   # if ("Qscore" %in% names(df_auth_joined)) {
+#   #   # If app already has Qscore, fill missing ones with JCR, but prioritize JCR
+#   #   df_auth_joined <- df_auth_joined %>%
+#   #     dplyr::mutate(Qscore = dplyr::coalesce(as.character(JCR_Qscore), as.character(Qscore))) %>%
+#   #     dplyr::select(-JCR_Qscore)
+#   # } else {
+#   #   # Otherwise just rename the newly brought over JCR column
+#   #   df_auth_joined <- df_auth_joined %>% dplyr::rename(Qscore = JCR_Qscore)
+#   # }
+#   # 
+#   # # --- 2. Safely resolve JIF5Years ---
+#   # if ("JIF5Years" %in% names(df_auth_joined)) {
+#   #   df_auth_joined <- df_auth_joined %>%
+#   #     dplyr::mutate(JIF5Years = dplyr::coalesce(as.character(JCR_JIF5Years), as.character(JIF5Years))) %>%
+#   #     dplyr::select(-JCR_JIF5Years)
+#   # } else {
+#   #   df_auth_joined <- df_auth_joined %>% dplyr::rename(JIF5Years = JCR_JIF5Years)
+#   # }
+#   # 
+#   # # Perform the join. Because jcr_subset ONLY has Name_norm + 3 unique columns, 
+#   # # NO OTHER COLUMNS in df will be touched, renamed, or suffixed!
+#   # df_auth_joined <- dplyr::left_join(df, jcr_subset, by = "Name_norm")
+#   # 
+#   # # --- 1. Safely resolve Qscore ---
+#   # if ("Qscore" %in% names(df_auth_joined)) {
+#   #   # If app already has Qscore, fill missing ones with JCR, but prioritize JCR
+#   #   df_auth_joined <- df_auth_joined %>%
+#   #     dplyr::mutate(Qscore = dplyr::coalesce(as.character(JCR_Qscore), as.character(Qscore))) %>%
+#   #     dplyr::select(-JCR_Qscore)
+#   # } else {
+#   #   # Otherwise just rename the newly brought over JCR column
+#   #   df_auth_joined <- df_auth_joined %>% dplyr::rename(Qscore = JCR_Qscore)
+#   # }
+#   # 
+#   # # --- 2. Safely resolve JIF5Years ---
+#   # if ("JIF5Years" %in% names(df_auth_joined)) {
+#   #   df_auth_joined <- df_auth_joined %>%
+#   #     dplyr::mutate(JIF5Years = dplyr::coalesce(as.character(JCR_JIF5Years), as.character(JIF5Years))) %>%
+#   #     dplyr::select(-JCR_JIF5Years)
+#   # } else {
+#   #   df_auth_joined <- df_auth_joined %>% dplyr::rename(JIF5Years = JCR_JIF5Years)
+#   # }
+#   # 
+#   # print(paste("colnames(df_auth_joined):",paste(colnames(df_auth_joined), collapse=",")))
+#   # # Note: "User_Journal" and "Journal" are left completely intact exactly as they were!
+#   
+#   print("match_journals(rv): Starting matching...")
+#   
+#   # 1. Validation
+#   need_cols <- c("Title","Authors","Adjusted_Citations","First_Author","Second_Author","Co_Author","Corresponding_Author")
+#   missing_cols <- setdiff(need_cols, names(df))
+#   if (length(missing_cols) > 0) {
+#     rv$log_text <- paste(rv$log_text, paste0("<span style='color: red;'>Missing columns: ", paste(missing_cols, collapse = ", "), "</span>"), sep="<br>")
+#     return(df) # Return early if data is broken
+#   }
+#   
+#   # 2. Determine Column
+#   target_journal_col <- if ("User_Journal" %in% names(df)) df$User_Journal else df$Journal
+#   if (is.null(target_journal_col)) {
+#     return(df)
+#   }
+#   
+#   # 3. Normalization & Matching
+#   df$Name_norm <- sapply(target_journal_col, normalize_journal)
+#   unique_journals <- unique(target_journal_col)
+#   
+#   match_idx <- unique(bind_rows(
+#     future_sapply(seq_along(unique_journals), getExcelColumns, 
+#                   unique_journals = unique_journals, jsonData = jcr_names_norm, 
+#                   simplify = FALSE, future.packages = c("stringr", "dplyr"))
+#   ))
+#   
+#   # 4. Join with JCR Data
+#   jcr_subset <- if (nrow(match_idx) > 0) {
+#     inner_join(jcr_names_norm, match_idx, by = c("Name_norm", "Qscore", "JIF5Years")) %>%
+#       dplyr::select(Name_norm, JCR_Journal = Name, JCR_Qscore = Qscore, JCR_JIF5Years = JIF5Years) %>%
+#       dplyr::distinct(Name_norm, .keep_all = TRUE)
+#   } else {
+#     NULL
+#   }
+#   
+#   # 5. Clean up existing columns to prevent .x / .y conflicts
+#   df <- df %>% dplyr::select(-any_of(c("JCR_Journal", "JCR_Qscore", "JCR_JIF5Years")))
+#   
+#   # 6. Merge and Coalesce
+#   if (!is.null(jcr_subset)) {
+#     # Ensure columns exist before coalescing to avoid errors
+#     if (!"Qscore" %in% names(df)) df$Qscore <- "NA"
+#     if (!"JIF5Years" %in% names(df)) df$JIF5Years <- "0"
+#     
+#     df <- left_join(df, jcr_subset, by = "Name_norm") %>%
+#       mutate(
+#         # Use JCR data if available, otherwise keep existing/default
+#         Qscore = coalesce(as.character(JCR_Qscore), as.character(Qscore)),
+#         JIF5Years = coalesce(as.character(JCR_JIF5Years), as.character(JIF5Years))
+#       ) %>%
+#       dplyr::select(-any_of(c("JCR_Qscore", "JCR_JIF5Years")))
+#   }
+#   
+#   # 7. Fallback Regex Matching (Simplified loop)
+#   unmatched <- which(is.na(df$JCR_Journal))
+#   if (length(unmatched) > 0) {
+#     cat("Trying fallback substring match for", length(unmatched), "journals...\n")
+#     for (i in unmatched) {
+#       jn <- df$Name_norm[i]
+#       if (is.na(jn) || nchar(jn) < 3) next
+#       hits <- grep(jn, jcr_names_norm$Name_norm, value = TRUE)
+#       
+#       if (length(hits) == 1) {
+#         idx <- which(jcr_names_norm$Name_norm == hits)[1]
+#         df$JCR_Journal[i] <- jcr_names_norm$Name[idx]
+#         df$Qscore[i] <- as.character(jcr_names_norm$Qscore[idx])
+#       }
+#     }
+#   }
+#   
+#   # Final formatting
+#   df <- df %>%
+#     dplyr::mutate(Qscore = dplyr::if_else(is.na(Qscore), "Unranked", as.character(Qscore)))
+#   
+#   n_unmatched <- length(which(is.na(df$JCR_Journal)))
+#   cat("Number of unmatched journal rows:", n_unmatched, "\n")
+#   
+#   # Save the protected dataframe back to reactive values
+#   # rv$glens_etable_final <- df_auth_joined %>% dplyr::distinct()
+#   df <- df %>% dplyr::distinct()
+#   return(df)
+# }
 
 refresh_data <- function(rv, session){
   

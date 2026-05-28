@@ -1345,7 +1345,7 @@ ui <- fluidPage(
               id = "progress_bars_container",
               style = "text-align: left; margin-bottom: 25px;",
               
-              tags$div(class = "api-progress-wrapper",
+              tags$div(id = "orcid_bar_container", class = "api-progress-wrapper",
                        tags$label("DOI / ORCID Resolver", class = "api-progress-label"),
                        shinyWidgets::progressBar(id = "prog_doi", title = "0%", value = 0, total = 100, status = "warning")
               ),
@@ -1353,14 +1353,18 @@ ui <- fluidPage(
                        tags$label("Scopus API", class = "api-progress-label"),
                        shinyWidgets::progressBar(id = "prog_scopus", title = "0%", value = 0, total = 100, status = "info")
               ),
-              tags$div(id = "wos_bar_container", class = "api-progress-wrapper",
-                       tags$label("Web of Science API", class = "api-progress-label"),
-                       shinyWidgets::progressBar(id = "prog_wos", title = "0%", value = 0, total = 100, status = "primary")
-              ),
-              tags$div(id = "semantic_bar_container", class = "api-progress-wrapper",
-                       tags$label("Semantic Scholar API", class = "api-progress-label"),
-                       shinyWidgets::progressBar(id = "prog_semantic", title = "0%", value = 0, total = 100, status = "success")
+              tags$div(id = "journal_bar_container", class = "api-progress-wrapper",
+                       tags$label("Journal Matcher", class = "api-progress-label"),
+                       shinyWidgets::progressBar(id = "prog_journal", title = "0%", value = 0, total = 100, status = "warning")
               )
+              # tags$div(id = "wos_bar_container", class = "api-progress-wrapper",
+              #          tags$label("Web of Science API", class = "api-progress-label"),
+              #          shinyWidgets::progressBar(id = "prog_wos", title = "0%", value = 0, total = 100, status = "primary")
+              # ),
+              # tags$div(id = "semantic_bar_container", class = "api-progress-wrapper",
+              #          tags$label("Semantic Scholar API", class = "api-progress-label"),
+              #          shinyWidgets::progressBar(id = "prog_semantic", title = "0%", value = 0, total = 100, status = "success")
+              # )
             ),
             
             # --- Cancel Button ---

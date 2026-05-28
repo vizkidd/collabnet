@@ -193,6 +193,7 @@ server <- function(input, output, session) {
     summary_table = data.frame(),
     scopus_df = data.frame(),
     scopus_future_list = list(),
+    api_journal_cache = list(),
     wos_df = data.frame(),
     semantic_df = data.frame(),
     doi_count = 0,
@@ -253,34 +254,37 @@ server <- function(input, output, session) {
     shinyjs::hide("scopusid_label_wrapper")
     shinyjs::hide("scopusid_text")
   }
-  # --- 2. Web of Science ---
-  glens_env$wos_key <- get_resolved_key("wos.key", glens_env$wos_key)
-  if (!is.null(glens_env$wos_key) && glens_env$wos_key != "") {
-    shinyjs::show("wos_bar_container")
-  } else {
-    shinyjs::hide("wos_bar_container")
-  }
-  # --- 3. Semantic Scholar ---
-  glens_env$semantic_key <- get_resolved_key("semantic.key", glens_env$semantic_key)
-  if (!is.null(glens_env$semantic_key) && glens_env$semantic_key != "") {
-    shinyjs::show("semantic_bar_container")
-  } else {
-    shinyjs::hide("semantic_bar_container")
-  }
-  # --- 4. Crossref ---
-  glens_env$crossref_key  <- get_resolved_key("crossref.key", glens_env$crossref_key)
-  if (!is.null(glens_env$crossref_key) && glens_env$crossref_key != "") {
-    shinyjs::show("crossref_bar_container")
-  } else {
-    shinyjs::hide("crossref_bar_container")
-  }
-  # --- 5. OpenCitations ---
-  glens_env$opencites_key <- get_resolved_key("opencites.key", glens_env$opencites_key)
-  if (!is.null(glens_env$opencites_key) && glens_env$opencites_key != "") {
-    shinyjs::show("opencites_bar_container")
-  } else {
-    shinyjs::hide("opencites_bar_container")
-  }
+  # --- 2. OpenAlex ---
+  glens_env$openalex_key <- get_resolved_key("openalex.key", glens_env$openalex_key)
+
+  # # --- 2. Web of Science ---
+  # glens_env$wos_key <- get_resolved_key("wos.key", glens_env$wos_key)
+  # if (!is.null(glens_env$wos_key) && glens_env$wos_key != "") {
+  #   shinyjs::show("wos_bar_container")
+  # } else {
+  #   shinyjs::hide("wos_bar_container")
+  # }
+  # # --- 3. Semantic Scholar ---
+  # glens_env$semantic_key <- get_resolved_key("semantic.key", glens_env$semantic_key)
+  # if (!is.null(glens_env$semantic_key) && glens_env$semantic_key != "") {
+  #   shinyjs::show("semantic_bar_container")
+  # } else {
+  #   shinyjs::hide("semantic_bar_container")
+  # }
+  # # --- 4. Crossref ---
+  # glens_env$crossref_key  <- get_resolved_key("crossref.key", glens_env$crossref_key)
+  # if (!is.null(glens_env$crossref_key) && glens_env$crossref_key != "") {
+  #   shinyjs::show("crossref_bar_container")
+  # } else {
+  #   shinyjs::hide("crossref_bar_container")
+  # }
+  # # --- 5. OpenCitations ---
+  # glens_env$opencites_key <- get_resolved_key("opencites.key", glens_env$opencites_key)
+  # if (!is.null(glens_env$opencites_key) && glens_env$opencites_key != "") {
+  #   shinyjs::show("opencites_bar_container")
+  # } else {
+  #   shinyjs::hide("opencites_bar_container")
+  # }
 
   output$log <- renderUI({
     # Safely handle empty or missing log text so it never sends 'undefined' to JS
@@ -296,10 +300,11 @@ server <- function(input, output, session) {
     keys <- input$browser_stored_keys
     
     if (!is.null(keys$scopus_key) && keys$scopus_key != "") glens_env$scopus_key <- keys$scopus_key
-    if (!is.null(keys$wos_key) && keys$wos_key != "") glens_env$wos_key <- keys$wos_key
-    if (!is.null(keys$semantic_key) && keys$semantic_key != "") glens_env$semantic_key <- keys$semantic_key
-    if (!is.null(keys$crossref_key) && keys$crossref_key != "") glens_env$crossref_key <- keys$crossref_key
-    if (!is.null(keys$opencites_key) && keys$opencites_key != "") glens_env$opencites_key <- keys$opencites_key
+    if (!is.null(keys$openalex_key) && keys$openalex_key != "") glens_env$openalex_key <- keys$openalex_key
+    # if (!is.null(keys$wos_key) && keys$wos_key != "") glens_env$wos_key <- keys$wos_key
+    # if (!is.null(keys$semantic_key) && keys$semantic_key != "") glens_env$semantic_key <- keys$semantic_key
+    # if (!is.null(keys$crossref_key) && keys$crossref_key != "") glens_env$crossref_key <- keys$crossref_key
+    # if (!is.null(keys$opencites_key) && keys$opencites_key != "") glens_env$opencites_key <- keys$opencites_key
     
     if (!is.null(glens_env$scopus_key) && glens_env$scopus_key != "") {
       shinyjs::show("scopus_bar_container")
@@ -310,30 +315,30 @@ server <- function(input, output, session) {
       shinyjs::hide("scopusid_label_wrapper")
       shinyjs::hide("scopusid_text")
     }
-    # --- 2. Web of Science ---
-    if (!is.null(glens_env$wos_key) && glens_env$wos_key != "") {
-      shinyjs::show("wos_bar_container")
-    } else {
-      shinyjs::hide("wos_bar_container")
-    }
-    # --- 3. Semantic Scholar ---
-    if (!is.null(glens_env$semantic_key) && glens_env$semantic_key != "") {
-      shinyjs::show("semantic_bar_container")
-    } else {
-      shinyjs::hide("semantic_bar_container")
-    }
-    # --- 4. Crossref ---
-    if (!is.null(glens_env$crossref_key) && glens_env$crossref_key != "") {
-      shinyjs::show("crossref_bar_container")
-    } else {
-      shinyjs::hide("crossref_bar_container")
-    }
-    # --- 5. OpenCitations ---
-    if (!is.null(glens_env$opencites_key) && glens_env$opencites_key != "") {
-      shinyjs::show("opencites_bar_container")
-    } else {
-      shinyjs::hide("opencites_bar_container")
-    }
+    # # --- 2. Web of Science ---
+    # if (!is.null(glens_env$wos_key) && glens_env$wos_key != "") {
+    #   shinyjs::show("wos_bar_container")
+    # } else {
+    #   shinyjs::hide("wos_bar_container")
+    # }
+    # # --- 3. Semantic Scholar ---
+    # if (!is.null(glens_env$semantic_key) && glens_env$semantic_key != "") {
+    #   shinyjs::show("semantic_bar_container")
+    # } else {
+    #   shinyjs::hide("semantic_bar_container")
+    # }
+    # # --- 4. Crossref ---
+    # if (!is.null(glens_env$crossref_key) && glens_env$crossref_key != "") {
+    #   shinyjs::show("crossref_bar_container")
+    # } else {
+    #   shinyjs::hide("crossref_bar_container")
+    # }
+    # # --- 5. OpenCitations ---
+    # if (!is.null(glens_env$opencites_key) && glens_env$opencites_key != "") {
+    #   shinyjs::show("opencites_bar_container")
+    # } else {
+    #   shinyjs::hide("opencites_bar_container")
+    # }
     
   })
   
@@ -601,6 +606,12 @@ server <- function(input, output, session) {
   observeEvent(input$confirm_import, {
     req(rv$intermediate_merged_df)
     shinyjs::disable("confirm_import")
+    
+    removeModal()
+    shinyjs::hide("orcid_bar_container")
+    shinyjs::hide("scopus_bar_container")
+    shinyjs::show("progress_overlay")
+    
     merged_df <- rv$intermediate_merged_df
     rv$glens_full_table_tmp <- rv$glens_full_table
     
@@ -662,7 +673,7 @@ server <- function(input, output, session) {
     # --- 3. THE HEAVY LIFTING (Hybrid Paradigm) ---
     # NOW raw_df has standardized column names!
     extended_df <- extend_input_table(rv, raw_df, rv$author_match_regex, rv$target_variants_norm)
-    merged_df <- match_journals(rv, extended_df)
+    merged_df <- match_journals(rv, extended_df,  glens_env$openalex_key, session = session)
     
     # --- 4. NA REMOVAL ---
     # Keep rows if ANY column has a non-NA value (drops rows where ALL are NA)
@@ -751,7 +762,11 @@ server <- function(input, output, session) {
       rv$intermediate_merged_df <- NULL
       rv$saved_col_import_type <- NULL
       rv$glens_full_table <- rv$glens_full_table_tmp
-      removeModal()
+      # removeModal()
+      
+      shinyjs::hide("progress_overlay")
+      shinyjs::show("orcid_bar_container")
+      shinyjs::show("scopus_bar_container")
       return()
     }
     
@@ -791,9 +806,12 @@ server <- function(input, output, session) {
     rv$saved_col_import_type <- NULL
     rv$log_text <- paste(rv$log_text, paste("Post-Import Total:",nrow(rv$glens_full_table),"lines..."),sep="<br>")
     
-    saveRDS(rv$glens_full_table, "glens_full_table.rds")
+    # saveRDS(rv$glens_full_table, "glens_full_table.rds")
     
-    removeModal()
+    # removeModal()
+    shinyjs::hide("progress_overlay")
+    shinyjs::show("orcid_bar_container")
+    shinyjs::show("scopus_bar_container")
   })
   
   # output$dynamic_author_filter <- renderUI({
@@ -1608,17 +1626,19 @@ server <- function(input, output, session) {
     
     # Resolve keys: Try VFS first. If NULL, fallback to the browser-stored glens_env
     val_scopus    <- if(!is.null(get_vfs_key("scopus.key"))) get_vfs_key("scopus.key") else glens_env$scopus_key
-    val_wos       <- if(!is.null(get_vfs_key("wos.key"))) get_vfs_key("wos.key") else glens_env$wos_key
-    val_semantic  <- if(!is.null(get_vfs_key("semantic.key"))) get_vfs_key("semantic.key") else glens_env$semantic_key
-    val_crossref  <- if(!is.null(get_vfs_key("crossref.key"))) get_vfs_key("crossref.key") else glens_env$crossref_key
-    val_opencites <- if(!is.null(get_vfs_key("opencites.key"))) get_vfs_key("opencites.key") else glens_env$opencites_key
+    val_openalex    <- if(!is.null(get_vfs_key("openalex.key"))) get_vfs_key("openalex.key") else glens_env$openalex_key
+    # val_wos       <- if(!is.null(get_vfs_key("wos.key"))) get_vfs_key("wos.key") else glens_env$wos_key
+    # val_semantic  <- if(!is.null(get_vfs_key("semantic.key"))) get_vfs_key("semantic.key") else glens_env$semantic_key
+    # val_crossref  <- if(!is.null(get_vfs_key("crossref.key"))) get_vfs_key("crossref.key") else glens_env$crossref_key
+    # val_opencites <- if(!is.null(get_vfs_key("opencites.key"))) get_vfs_key("opencites.key") else glens_env$opencites_key
     
     # Evaluate boolean flags for the UI Badges (TRUE if we found a key anywhere)
     rv$has_key_scopus    <- !is.null(val_scopus) && val_scopus != ""
-    rv$has_key_wos       <- !is.null(val_wos) && val_wos != ""
-    rv$has_key_semantic  <- !is.null(val_semantic) && val_semantic != ""
-    rv$has_key_crossref  <- !is.null(val_crossref) && val_crossref != ""
-    rv$has_key_opencites <- !is.null(val_opencites) && val_opencites != ""
+    rv$has_key_openalex    <- !is.null(val_openalex) && val_openalex != ""
+    # rv$has_key_wos       <- !is.null(val_wos) && val_wos != ""
+    # rv$has_key_semantic  <- !is.null(val_semantic) && val_semantic != ""
+    # rv$has_key_crossref  <- !is.null(val_crossref) && val_crossref != ""
+    # rv$has_key_opencites <- !is.null(val_opencites) && val_opencites != ""
     
     # --- BUILD MODAL ---
     showModal(modalDialog(
@@ -1652,6 +1672,37 @@ server <- function(input, output, session) {
                         ),
                tags$div(class = "api-save-wrap",
                         actionButton("save_scopus", "Save Scopus Key", class = "btn-success save-btn-custom")
+               )
+               )
+      ),
+      
+      # OpenAlex
+      tags$div(class = "api-row",
+               tags$div(class = "input-button-group",
+                        passwordInput("openalex_key", 
+                                      label = HTML(paste0('
+             <div style="display: flex; align-items: center;">
+               OpenAlex API Key :
+               <span class="api-help-container" style="position: relative; display: inline-block;">
+                 <span class="help-icon" style="cursor: pointer; margin-left: 5px; color: #17a2b8; font-size: 16px;">&#9432;</span>
+                 <div class="api-help-content" style="display: none; position: absolute; bottom: 130%; left: 50%; transform: translateX(-50%); width: 220px; background: #ffffff; padding: 12px; border: 1px solid #ccc; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 9999; font-weight: normal; font-size: 13px; text-align: left;">
+                   Need a key? Register at the <br>
+                   <a href="https://openalex.org/settings/api" target="_blank" style="text-decoration: underline; color: #007bff; font-weight: bold;">OpenAlex Developer Portal</a>.
+                 </div>
+               </span>
+               
+               ', if(rv$has_key_openalex) {
+                 '<span class="status-badge badge-found" style="margin-left: auto; font-weight: normal; font-size: 12px;"><i class="fa fa-check"></i> Key Found</span>'
+               } else {
+                 '<span class="status-badge badge-missing" style="margin-left: auto; font-weight: normal; font-size: 12px; color: #dc3545;">Missing</span>'
+               }, 
+               '</div>'
+                                      )), 
+               placeholder = "Enter OpenAlex Key", 
+               width = "100%"
+                        ),
+               tags$div(class = "api-save-wrap",
+                        actionButton("save_openalex", "Save OpenAlex Key", class = "btn-success save-btn-custom")
                )
                )
       ),
@@ -1779,10 +1830,12 @@ server <- function(input, output, session) {
     # --- FILL TEXT INPUTS ---
     # Update the input boxes safely using the unified values
     if(rv$has_key_scopus) updateTextInput(session, "scopus_key", value = val_scopus)
-    if(rv$has_key_wos) updateTextInput(session, "wos_key", value = val_wos)
-    if(rv$has_key_semantic) updateTextInput(session, "semantic_key", value = val_semantic)
-    if(rv$has_key_crossref) updateTextInput(session, "crossref_key", value = val_crossref)
-    if(rv$has_key_opencites) updateTextInput(session, "opencites_key", value = val_opencites)
+    if(rv$has_key_openalex) updateTextInput(session, "openalex_key", value = val_openalex)
+  
+    # if(rv$has_key_wos) updateTextInput(session, "wos_key", value = val_wos)
+    # if(rv$has_key_semantic) updateTextInput(session, "semantic_key", value = val_semantic)
+    # if(rv$has_key_crossref) updateTextInput(session, "crossref_key", value = val_crossref)
+    # if(rv$has_key_opencites) updateTextInput(session, "opencites_key", value = val_opencites)
   })
   
   # Save handlers
@@ -1805,6 +1858,23 @@ server <- function(input, output, session) {
       # return()
     }else{
       showNotification("Scopus Key Encrypted and Saved.", type = "message")
+    }
+    # removeModal()
+  })
+  observeEvent(input$save_openalex, {
+    raw_key <- charToRaw(trimws(input$openalex_key))
+    encrypted_scopus <- sodium::data_encrypt(raw_key, key=sha256(glens_env$privkey_dec))
+    saveRDS(encrypted_scopus, file = file.path("keys","scopus.key"))
+    if(is_WASM){
+      session$sendCustomMessage("save_key_to_browser", list(platform = "openalex_key", key = raw_key))
+    }
+    if(is.null(input$openalex_key) || stringi::stri_isempty(input$openalex_key)){
+      if(fs::file_exists(file.path("keys","openalex.key")))
+        fs::file_delete(file.path("keys","openalex.key"))
+      # removeModal()
+      # return()
+    }else{
+      showNotification("OpenAlex Key Encrypted and Saved.", type = "message")
     }
     # removeModal()
   })
@@ -3639,7 +3709,7 @@ server <- function(input, output, session) {
       print("submit_btn:extend_input_table():")
       # --- 3. THE HEAVY LIFTING ---
       extended_df <- extend_input_table(rv, raw_df, rv$author_match_regex, rv$target_variants_norm)
-      matched_df <- match_journals(rv, extended_df)
+      matched_df <- match_journals(rv, extended_df,  glens_env$openalex_key, session = session)
 
       if(nrow(matched_df) > 0){
         rv$glens_full_table <- matched_df
@@ -3824,38 +3894,46 @@ server <- function(input, output, session) {
         rv$log_text <- paste(rv$log_text, "No Scopus key found. Skipping Scopus.", sep="<br>")
         rv$has_key_scopus <- F
       }
-      # --- 2. Web of Science ---
-      if (!is.null(glens_env$wos_key) && glens_env$wos_key != "") {
-        rv$log_text <- paste(rv$log_text, "Found Web of Science API key!", sep="<br>")
-        rv$has_key_wos <- T
+      # --- 2. OpenAlex ---
+      if (!is.null(glens_env$openalex_key) && glens_env$openalex_key != "") {
+        rv$log_text <- paste(rv$log_text, "Found OpenAlex API key!", sep="<br>")
+        rv$has_key_openalex <- T
       } else {
-        rv$log_text <- paste(rv$log_text, "No WoS key found. Skipping WoS.", sep="<br>")
-        rv$has_key_wos <- F
+        rv$log_text <- paste(rv$log_text, "No OpenAlex key found.", sep="<br>")
+        rv$has_key_openalex <- F
       }
-      # --- 3. Semantic Scholar ---
-      if (!is.null(glens_env$semantic_key) && glens_env$semantic_key != "") {
-        rv$log_text <- paste(rv$log_text, "Found Semantic Scholar API key!", sep="<br>")
-        rv$has_key_semantic <- T
-      } else {
-        rv$log_text <- paste(rv$log_text, "No Semantic Scholar key found. Skipping Semantic Scholar.", sep="<br>")
-        rv$has_key_semantic <- F
-      }
-      # --- 4. Crossref ---
-      if (!is.null(glens_env$crossref_key) && glens_env$crossref_key != "") {
-        rv$log_text <- paste(rv$log_text, "Found Crossref API key!", sep="<br>")
-        rv$have_key_crossref <- T
-      } else {
-        rv$log_text <- paste(rv$log_text, "No Crossref key found.", sep="<br>")
-        rv$have_key_crossref <- F
-      }
-      # --- 5. OpenCitations ---
-      if (!is.null(glens_env$opencites_key) && glens_env$opencites_key != "") {
-        rv$log_text <- paste(rv$log_text, "Found OpenCitations API key!", sep="<br>")
-        rv$have_key_opencites <- T
-      } else {
-        rv$log_text <- paste(rv$log_text, "No OpenCitations key found.", sep="<br>")
-        rv$have_key_opencites <- F
-      }
+      # # --- 2. Web of Science ---
+      # if (!is.null(glens_env$wos_key) && glens_env$wos_key != "") {
+      #   rv$log_text <- paste(rv$log_text, "Found Web of Science API key!", sep="<br>")
+      #   rv$has_key_wos <- T
+      # } else {
+      #   rv$log_text <- paste(rv$log_text, "No WoS key found. Skipping WoS.", sep="<br>")
+      #   rv$has_key_wos <- F
+      # }
+      # # --- 3. Semantic Scholar ---
+      # if (!is.null(glens_env$semantic_key) && glens_env$semantic_key != "") {
+      #   rv$log_text <- paste(rv$log_text, "Found Semantic Scholar API key!", sep="<br>")
+      #   rv$has_key_semantic <- T
+      # } else {
+      #   rv$log_text <- paste(rv$log_text, "No Semantic Scholar key found. Skipping Semantic Scholar.", sep="<br>")
+      #   rv$has_key_semantic <- F
+      # }
+      # # --- 4. Crossref ---
+      # if (!is.null(glens_env$crossref_key) && glens_env$crossref_key != "") {
+      #   rv$log_text <- paste(rv$log_text, "Found Crossref API key!", sep="<br>")
+      #   rv$have_key_crossref <- T
+      # } else {
+      #   rv$log_text <- paste(rv$log_text, "No Crossref key found.", sep="<br>")
+      #   rv$have_key_crossref <- F
+      # }
+      # # --- 5. OpenCitations ---
+      # if (!is.null(glens_env$opencites_key) && glens_env$opencites_key != "") {
+      #   rv$log_text <- paste(rv$log_text, "Found OpenCitations API key!", sep="<br>")
+      #   rv$have_key_opencites <- T
+      # } else {
+      #   rv$log_text <- paste(rv$log_text, "No OpenCitations key found.", sep="<br>")
+      #   rv$have_key_opencites <- F
+      # }
       
       # ==============================================================================
       # PHASE 1: ORCID -> SCOPUS Mapping
