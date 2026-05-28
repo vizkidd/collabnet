@@ -1,0 +1,80 @@
+name: Build and Deploy Shinylive App
+
+on:
+  push:
+    branches: [main, master]
+
+# Permissions required for secure GitHub Pages deployment
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code Repository
+        uses: actions/checkout@v4
+
+      - name: Setup R Environment
+        uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true # Leverages pre-compiled Linux binary speeds
+
+      - name: Install Build Toolchain Dependencies
+        run: |
+          install.packages(c("fs", "shinylive"), repos = "https://cran.rstudio.com")
+        shell: Rscript {0}
+
+      - name: Execute buildWASM Bundling Pipeline
+        run: |
+          # 1. Create clean workspace staging environments
+          if(fs::dir_exists("wasm_build")) fs::dir_delete("wasm_build")
+          if(fs::dir_exists("staging_app")) fs::dir_delete("staging_app")
+          fs::dir_create("staging_app")
+
+          # 2. Identify application layouts and dynamic source components
+          app_files <- c("ui.R", "server.R", "app.R")
+          # Filter files to only grab what is present in the workspace
+          app_files <- app_files[file.exists(app_files)]
+          helper_scripts <- list.files(pattern = "GScholarLENS.*\\.R")
+
+          # Flatten, reverse-strip source connections, and merge into app.R
+          cat(unlist(lapply(c(helper_scripts, app_files), function(x){
+            return(grep(pattern = "source\\(.*\\)", x = readLines(x), value = TRUE, invert = TRUE))
+          })), file="staging_app/app.R", sep="\n")
+
+          # 3. Pull required asset files and global web layout assets
+          if(fs::dir_exists("www/")) {
+            fs::dir_copy("www/", "staging_app/")
+          }
+          if(fs::file_exists("2024-JCR_IMPACT_FACTOR.xlsx")) {
+            fs::file_copy("2024-JCR_IMPACT_FACTOR.xlsx", "staging_app/")
+          }
+
+          # 4. Compile the target bundle out to static WebAssembly chunks
+          shinylive::export(
+            appdir = "./staging_app/", 
+            destdir = "./wasm_build/", 
+            wasm_packages = TRUE, 
+            quiet = FALSE
+          )
+        shell: Rscript {0}
+
+      - name: Upload Static Web Site Artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: 'wasm_build' # Configured to target your script's output destination
+          retention-days: 1
+
+      - name: Deploy Directly to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
