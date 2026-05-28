@@ -427,95 +427,95 @@ compute_indices <- function(rv, df) {
   ))
 }
 
-#' Fetch Metrics from SciMango API with Session-Level Caching and Explicit API Auth Headers
-#' @param journal_names A character vector of unique journal names to query
-#' @param rv The reactiveValues object hosting our persistent cache
-#' @return A data.frame containing Name_norm, JCR_Journal, Qscore, and JIF5Years
-fetch_scimango_metrics <- function(journal_names, rv, api_key) {
-  # Initialize empty return dataframe structure
-  api_results <- data.frame(
-    Name_norm = character(),
-    JCR_Journal = character(),
-    Qscore = character(),
-    JIF5Years = character(),
-    stringsAsFactors = FALSE
-  )
-  
-  journal_names <- unique(journal_names[!is.na(journal_names) & trimws(journal_names) != ""])
-  if (length(journal_names) == 0) return(api_results)
-  
-  # Check local memory cache first
-  cached_names <- names(rv$api_journal_cache)
-  names_to_fetch <- setdiff(journal_names, cached_names)
-  
-  # 1. Gather what we already have in local RAM
-  names_from_cache <- intersect(journal_names, cached_names)
-  if (length(names_from_cache) > 0) {
-    cached_list <- lapply(names_from_cache, function(jn) rv$api_journal_cache[[jn]])
-    api_results <- do.call(rbind, cached_list)
-  }
-  
-  # 2. Query missing journals ONLY if an API key is provided
-  if (length(names_to_fetch) > 0) {
-    if (is.null(api_key) || trimws(api_key) == "") {
-      cat("No SciMango API key detected. Skipping network execution loop.\n")
-      # Generate empty/unranked records for the uncached entries automatically
-      for (journal in names_to_fetch) {
-        fallback_record <- data.frame(Name_norm = journal, JCR_Journal = journal, Qscore = "Unranked", JIF5Years = "0", stringsAsFactors = FALSE)
-        rv$api_journal_cache[[journal]] <- fallback_record
-        api_results <- rbind(api_results, fallback_record)
-      }
-      return(api_results)
-    }
-    
-    cat("Querying SciMango API for", length(names_to_fetch), "new elements using credentials...\n")
-    
-    for (journal in names_to_fetch) {
-      safe_query <- utils::URLencode(journal, repeated = TRUE)
-      api_url <- paste0("https://api.scimango.com/v1/journals?query=", safe_query)
-      
-      response <- tryCatch({
-        # Passing authorization token securely inside the HTTP request headers boundary
-        req <- curl::curl_fetch_memory(
-          url = api_url,
-          handle = curl::new_handle(
-            HTTPHEADER = c(
-              paste0("Authorization: Bearer ", api_key),
-              "Accept: application/json"
-            )
-          )
-        )
-        if (req$status_code == 200) jsonlite::fromJSON(rawToChar(req$content)) else NULL
-      }, error = function(e) {
-        warning("SciMango API Network Connectivity failure for: ", journal, " - ", e$message)
-        NULL
-      })
-      
-      # Process Response Object Maps
-      if (!is.null(response) && !is.null(response$data) && length(response$data) > 0) {
-        matched_title <- if(!is.null(response$data$title)) response$data$title[1] else journal
-        fetched_q     <- if(!is.null(response$data$quartile)) response$data$quartile[1] else "Unranked"
-        fetched_jif   <- if(!is.null(response$data$jif)) as.character(response$data$jif[1]) else "0"
-      } else {
-        matched_title <- journal
-        fetched_q     <- "Unranked"
-        fetched_jif   <- "0"
-      }
-      
-      journal_record <- data.frame(
-        Name_norm = journal, JCR_Journal = matched_title,
-        Qscore = as.character(fetched_q), JIF5Years = as.character(fetched_jif),
-        stringsAsFactors = FALSE
-      )
-      
-      # Save to structural cache matrix
-      rv$api_journal_cache[[journal]] <- journal_record
-      api_results <- rbind(api_results, journal_record)
-    }
-  }
-  
-  return(api_results)
-}
+#' #' Fetch Metrics from SciMango API with Session-Level Caching and Explicit API Auth Headers
+#' #' @param journal_names A character vector of unique journal names to query
+#' #' @param rv The reactiveValues object hosting our persistent cache
+#' #' @return A data.frame containing Name_norm, JCR_Journal, Qscore, and JIF5Years
+#' fetch_scimango_metrics <- function(journal_names, rv, api_key) {
+#'   # Initialize empty return dataframe structure
+#'   api_results <- data.frame(
+#'     Name_norm = character(),
+#'     JCR_Journal = character(),
+#'     Qscore = character(),
+#'     JIF5Years = character(),
+#'     stringsAsFactors = FALSE
+#'   )
+#'   
+#'   journal_names <- unique(journal_names[!is.na(journal_names) & trimws(journal_names) != ""])
+#'   if (length(journal_names) == 0) return(api_results)
+#'   
+#'   # Check local memory cache first
+#'   cached_names <- names(rv$api_journal_cache)
+#'   names_to_fetch <- setdiff(journal_names, cached_names)
+#'   
+#'   # 1. Gather what we already have in local RAM
+#'   names_from_cache <- intersect(journal_names, cached_names)
+#'   if (length(names_from_cache) > 0) {
+#'     cached_list <- lapply(names_from_cache, function(jn) rv$api_journal_cache[[jn]])
+#'     api_results <- do.call(rbind, cached_list)
+#'   }
+#'   
+#'   # 2. Query missing journals ONLY if an API key is provided
+#'   if (length(names_to_fetch) > 0) {
+#'     if (is.null(api_key) || trimws(api_key) == "") {
+#'       cat("No SciMango API key detected. Skipping network execution loop.\n")
+#'       # Generate empty/unranked records for the uncached entries automatically
+#'       for (journal in names_to_fetch) {
+#'         fallback_record <- data.frame(Name_norm = journal, JCR_Journal = journal, Qscore = "Unranked", JIF5Years = "0", stringsAsFactors = FALSE)
+#'         rv$api_journal_cache[[journal]] <- fallback_record
+#'         api_results <- rbind(api_results, fallback_record)
+#'       }
+#'       return(api_results)
+#'     }
+#'     
+#'     cat("Querying SciMango API for", length(names_to_fetch), "new elements using credentials...\n")
+#'     
+#'     for (journal in names_to_fetch) {
+#'       safe_query <- utils::URLencode(journal, repeated = TRUE)
+#'       api_url <- paste0("https://api.scimango.com/v1/journals?query=", safe_query)
+#'       
+#'       response <- tryCatch({
+#'         # Passing authorization token securely inside the HTTP request headers boundary
+#'         req <- curl::curl_fetch_memory(
+#'           url = api_url,
+#'           handle = curl::new_handle(
+#'             HTTPHEADER = c(
+#'               paste0("Authorization: Bearer ", api_key),
+#'               "Accept: application/json"
+#'             )
+#'           )
+#'         )
+#'         if (req$status_code == 200) jsonlite::fromJSON(rawToChar(req$content)) else NULL
+#'       }, error = function(e) {
+#'         warning("SciMango API Network Connectivity failure for: ", journal, " - ", e$message)
+#'         NULL
+#'       })
+#'       
+#'       # Process Response Object Maps
+#'       if (!is.null(response) && !is.null(response$data) && length(response$data) > 0) {
+#'         matched_title <- if(!is.null(response$data$title)) response$data$title[1] else journal
+#'         fetched_q     <- if(!is.null(response$data$quartile)) response$data$quartile[1] else "Unranked"
+#'         fetched_jif   <- if(!is.null(response$data$jif)) as.character(response$data$jif[1]) else "0"
+#'       } else {
+#'         matched_title <- journal
+#'         fetched_q     <- "Unranked"
+#'         fetched_jif   <- "0"
+#'       }
+#'       
+#'       journal_record <- data.frame(
+#'         Name_norm = journal, JCR_Journal = matched_title,
+#'         Qscore = as.character(fetched_q), JIF5Years = as.character(fetched_jif),
+#'         stringsAsFactors = FALSE
+#'       )
+#'       
+#'       # Save to structural cache matrix
+#'       rv$api_journal_cache[[journal]] <- journal_record
+#'       api_results <- rbind(api_results, journal_record)
+#'     }
+#'   }
+#'   
+#'   return(api_results)
+#' }
 
 # fetch_journal_metrics_openalex <- function(journal_names, rv, api_key = NULL) {
 #   api_results <- data.frame(
@@ -636,6 +636,24 @@ fetch_scimango_metrics <- function(journal_names, rv, api_key) {
 #   
 #   return(api_results)
 # }
+
+trigger_openalex_js <- function(unique_journals, api_key = NULL, input_id = "openalex_results") {
+  # Convert R array to JS array safely
+  journals_js <- paste0("['", paste(unique_journals, collapse = "','"), "']")
+  
+  # Safe check for NULL, length-0 vectors, NA, or empty strings
+  if (is.null(api_key) || length(api_key) == 0 || is.na(api_key) || api_key == "") {
+    key_js <- "null"
+  } else {
+    key_js <- paste0("'", api_key, "'")
+  }
+  
+  js_code <- sprintf(
+    "window.fetchOpenAlexJournals(%s, %s, '%s');", 
+    journals_js, key_js, input_id
+  )
+  shinyjs::runjs(js_code)
+}
 
 fetch_journal_metrics_openalex <- function(journal_names, rv, api_key = NULL, session = NULL) {
   api_results <- data.frame(

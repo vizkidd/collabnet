@@ -673,11 +673,104 @@ ui <- fluidPage(
     };
   ")),
     tags$script(HTML("
-      window.neighbourhoodCircles = []; // Now an array
-      
-      Shiny.addCustomMessageHandler('draw_neighbourhood_circle', function(message) {
-        window.neighbourhoodCircles = message; // Expects an array of {x, y, r} objects
-      });
+      window.fetchOpenAlexJournals = async function(journals, apiKey, inputId) {
+        try {
+          let results = [];
+          const total = journals.length;
+          
+          for (let i = 0; i < total; i++) {
+            const journal = journals[i];
+            const safeQuery = encodeURIComponent(journal);
+            
+            // NOTE: Replace the email below with your actual email!
+            let url = `https://api.openalex.org/sources?search=${safeQuery}&select=display_name,summary_stats`;
+            //&mailto=your_email@example.com
+            if (apiKey && apiKey !== 'null') url += `&api_key=${apiKey}`;
+            
+            let success = false;
+            let retries = 0;
+            const maxRetries = 3;
+            
+            while (!success && retries < maxRetries) {
+              try {
+                let res = await fetch(url);
+                
+                // 1. Check for explicit Rate Limit (429)
+                if (res.status === 429) {
+                  let retryAfter = res.headers.get('Retry-After');
+                  // 'Retry-After' is usually in seconds. Fallback to 2000ms if missing.
+                  let waitTime = retryAfter ? parseInt(retryAfter) * 1000 : 2000;
+                  
+                  console.warn(`[429 Rate Limit] Waiting ${waitTime}ms before retrying ${journal}...`);
+                  await new Promise(r => setTimeout(r, waitTime));
+                  retries++;
+                  continue; // Loop again
+                }
+                
+                // 2. Handle successful response
+                if (res.ok) {
+                  let data = await res.json();
+                  if (data.results && data.results.length > 0) {
+                    let bestMatch = data.results[0];
+                    let title = bestMatch.display_name || journal;
+                    
+                    let jifValue = 0;
+                    if (bestMatch.summary_stats && bestMatch.summary_stats['2yr_mean_citedness']) {
+                      jifValue = parseFloat(bestMatch.summary_stats['2yr_mean_citedness']);
+                    }
+                    
+                    let fetched_q = 'NA';
+                    if (jifValue >= 4.0) fetched_q = 'Q1';
+                    else if (jifValue >= 2.0) fetched_q = 'Q2';
+                    else if (jifValue >= 0.75) fetched_q = 'Q3';
+                    else if (jifValue > 0.0) fetched_q = 'Q4';
+                    
+                    results.push({ Name_norm: journal, JCR_Journal: title, Qscore: fetched_q, JIF5Years: jifValue.toFixed(2) });
+                  } else {
+                    results.push({ Name_norm: journal, JCR_Journal: journal, Qscore: 'NA', JIF5Years: '0' });
+                  }
+                  success = true; // Break the while loop
+                } 
+                // 3. Handle other server errors (404, 500) - Do not retry
+                else {
+                  console.warn(`Server returned ${res.status} for: ${journal}`);
+                  results.push({ Name_norm: journal, JCR_Journal: journal, Qscore: 'NA', JIF5Years: '0' });
+                  success = true; 
+                }
+                
+              } catch (e) {
+                // 4. Handle Disguised 429s (CORS errors)
+                // If OpenAlex drops CORS headers on a 429, fetch() throws a TypeError.
+                console.warn(`Network/CORS error for ${journal}. Assuming rate limit and backing off...`);
+                
+                let backoffTime = 2000 * Math.pow(2, retries); // 2s, 4s, 8s
+                await new Promise(r => setTimeout(r, backoffTime));
+                retries++;
+              }
+            }
+            
+            // If we completely exhausted our 3 retries
+            if (!success) {
+               console.error(`Failed to fetch ${journal} after ${maxRetries} retries.`);
+               results.push({ Name_norm: journal, JCR_Journal: journal, Qscore: 'NA', JIF5Years: '0' });
+            }
+            
+            // Update R progress bar
+            let pct = Math.round(((i + 1) / total) * 100);
+            Shiny.setInputValue(inputId + '_progress', pct, {priority: 'event'});
+            
+            // Keep a baseline 100ms delay to prevent triggering 429s in the first place
+            await new Promise(r => setTimeout(r, 100));
+          }
+          
+          // Send final payload
+          Shiny.setInputValue(inputId, JSON.stringify(results), {priority: 'event'});
+          
+        } catch (err) {
+          console.error('Critical OpenAlex JS Error:', err);
+          Shiny.setInputValue(inputId, JSON.stringify([]), {priority: 'event'});
+        }
+      };
     ")),
     tags$style(HTML("
     /* Color the entire unselected background track */

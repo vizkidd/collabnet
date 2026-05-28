@@ -669,149 +669,180 @@ server <- function(input, output, session) {
       rv$author_match_regex <- NULL
     }
     
+    # print("confirm_import:extend_input_table():")
+    # # --- 3. THE HEAVY LIFTING (Hybrid Paradigm) ---
+    # # NOW raw_df has standardized column names!
+    # extended_df <- extend_input_table(rv, raw_df, rv$author_match_regex, rv$target_variants_norm)
+    # merged_df <- match_journals(rv, extended_df,  glens_env$openalex_key, session = session)
+    # 
+    # # --- 4. NA REMOVAL ---
+    # # Keep rows if ANY column has a non-NA value (drops rows where ALL are NA)
+    # merged_df <- merged_df %>%
+    #   dplyr::filter(dplyr::if_any(dplyr::everything(), ~ !is.na(.)))
+    # 
+    # # Keep columns if they don't have ALL NA values (drops columns where ALL are NA)
+    # merged_df <- merged_df %>%
+    #   dplyr::select(dplyr::where(~ !all(is.na(.))))
+    # 
+    # # --- 5. HANDLE ROW LOGIC ---
+    # if (input$row_import_type == "New" || is.null(rv$glens_full_table)) {
+    #   glens_full_table <- merged_df
+    #   
+    # } else if (input$row_import_type == "Append") {
+    #   
+    #   if (rv$saved_col_import_type == "Common Columns") {
+    #     final_common_cols <- intersect(names(rv$glens_full_table), names(merged_df))
+    #     glens_full_table <- dplyr::bind_rows(
+    #       rv$glens_full_table[, final_common_cols, drop = FALSE],
+    #       merged_df[, final_common_cols, drop = FALSE]
+    #     )
+    #   } else {
+    #     print("MERGING:")
+    #     glens_full_table <- dplyr::bind_rows(rv$glens_full_table %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character)), merged_df)
+    #   }
+    #   
+    # } else if (input$row_import_type == "Merge") {
+    #   
+    #   join_keys <- input$row_merge_keys
+    #   join_type <- input$join_type 
+    #   
+    #   print("join_keys:")
+    #   print(join_keys)
+    #   print("join_type:")
+    #   print(join_type)
+    #   
+    #   if (!is.null(join_keys) && length(join_keys) > 0) {
+    #     
+    #     overlap_cols <- setdiff(intersect(names(rv$glens_full_table), names(merged_df)), join_keys)
+    #     
+    #     join_func <- switch(join_type,
+    #                         "inner" = dplyr::inner_join,
+    #                         "left"  = dplyr::left_join,
+    #                         "right" = dplyr::right_join,
+    #                         "full"  = dplyr::full_join)
+    #     
+    #     joined_df <- join_func(
+    #       rv$glens_full_table, 
+    #       merged_df, 
+    #       by = join_keys,  
+    #       suffix = c(".old", ".new"),
+    #       relationship = "many-to-many" 
+    #     )
+    #     
+    #     for(col in overlap_cols) {
+    #       old_col <- paste0(col, ".old")
+    #       new_col <- paste0(col, ".new")
+    #       
+    #       old_vals <- as.character(joined_df[[old_col]])
+    #       new_vals <- as.character(joined_df[[new_col]])
+    #       
+    #       joined_df[[col]] <- dplyr::coalesce(old_vals, new_vals)
+    #       
+    #       joined_df[[old_col]] <- NULL
+    #       joined_df[[new_col]] <- NULL
+    #     }
+    #     
+    #     joined_df <- joined_df %>%
+    #       dplyr::group_by(dplyr::across(dplyr::all_of(join_keys))) %>%
+    #       tidyr::fill(dplyr::everything(), .direction = "downup") %>%
+    #       dplyr::ungroup()
+    #     
+    #     glens_full_table <- joined_df
+    #     
+    #   } else {
+    #     warning("No join keys selected. Falling back to Append.")
+    #     glens_full_table <- dplyr::bind_rows(rv$glens_full_table %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character)), merged_df)
+    #   }
+    # }
+    # 
+    # if(nrow(glens_full_table) <= 0){
+    #   showNotification("Data import/merge returned empty rows. Try different options", type = "error", duration = 10)
+    #   rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'>Data import/merge returned empty rows. Try different options </span>"),sep="<br>")
+    #   rv$imported_data_list <- NULL
+    #   rv$intermediate_merged_df <- NULL
+    #   rv$saved_col_import_type <- NULL
+    #   rv$glens_full_table <- rv$glens_full_table_tmp
+    #   # removeModal()
+    #   
+    #   shinyjs::hide("progress_overlay")
+    #   shinyjs::show("orcid_bar_container")
+    #   shinyjs::show("scopus_bar_container")
+    #   return()
+    # }
+    # 
+    # # --- 6. CHECK FOR MISSING REQUIRED COLUMNS ---
+    # missing_cols <- setdiff(collabnet_required_cols, colnames(glens_full_table))
+    # if(length(missing_cols) > 0) {
+    #   missing_str <- paste(missing_cols, collapse=", ")
+    #   rv$log_text <- paste(rv$log_text, 
+    #                        paste0("<span style='color: red;'>Missing required columns: ", missing_str, "</span>"), 
+    #                        sep="<br>")
+    #   showNotification(paste("Missing columns:", missing_str), type = "error", duration = 10)
+    # }
+    # 
+    # glens_full_table <- dplyr::distinct(glens_full_table)
+    # # Cleanup & Finalize
+    # rv$glens_full_table <- glens_full_table
+    # 
+    # # Initialize empty Skeletons so they are ready for the Proxy
+    # render_skeleton_plots(rv, glens_full_table, output)
+    # 
+    # # Configure Slider safely
+    # years <- as.numeric(na.omit(glens_full_table$Year))
+    # if (length(years) > 0) {
+    #   min_yr <- min(years)
+    #   max_yr <- max(years)
+    #   updateSliderInput(session, "year_slider", min = min_yr, max = max_yr, value = c(min_yr, max_yr))
+    # }
+    # 
+    # # Trigger a manual update if auto-refresh is OFF
+    # if (!isTRUE(input$auto_refresh_lookup)) {
+    #   # Increment a counter to signal the reactive graph
+    #   rv$manual_submit <- if(is.null(rv$manual_submit)) 1 else rv$manual_submit + 1
+    # }
+    # 
+    # rv$imported_data_list <- NULL
+    # rv$intermediate_merged_df <- NULL
+    # rv$saved_col_import_type <- NULL
+    # rv$log_text <- paste(rv$log_text, paste("Post-Import Total:",nrow(rv$glens_full_table),"lines..."),sep="<br>")
+    # 
+    # # saveRDS(rv$glens_full_table, "glens_full_table.rds")
+    # 
+    # # removeModal()
+    # shinyjs::hide("progress_overlay")
+    # shinyjs::show("orcid_bar_container")
+    # shinyjs::show("scopus_bar_container")
+    
     print("confirm_import:extend_input_table():")
-    # --- 3. THE HEAVY LIFTING (Hybrid Paradigm) ---
-    # NOW raw_df has standardized column names!
+    # --- 1. THE HEAVY LIFTING (Part 1: R Formatting) ---
     extended_df <- extend_input_table(rv, raw_df, rv$author_match_regex, rv$target_variants_norm)
-    merged_df <- match_journals(rv, extended_df,  glens_env$openalex_key, session = session)
     
-    # --- 4. NA REMOVAL ---
-    # Keep rows if ANY column has a non-NA value (drops rows where ALL are NA)
-    merged_df <- merged_df %>%
-      dplyr::filter(dplyr::if_any(dplyr::everything(), ~ !is.na(.)))
+    # Extract journals and append Name_norm column
+    target_journal_col <- if ("User_Journal" %in% names(extended_df)) extended_df$User_Journal else extended_df$Journal
     
-    # Keep columns if they don't have ALL NA values (drops columns where ALL are NA)
-    merged_df <- merged_df %>%
-      dplyr::select(dplyr::where(~ !all(is.na(.))))
-    
-    # --- 5. HANDLE ROW LOGIC ---
-    if (input$row_import_type == "New" || is.null(rv$glens_full_table)) {
-      glens_full_table <- merged_df
+    if (!is.null(target_journal_col)) {
+      extended_df$Name_norm <- sapply(target_journal_col, normalize_journal)
       
-    } else if (input$row_import_type == "Append") {
+      # CRITICAL FIX: Save state to rv AFTER adding Name_norm
+      rv$pending_extended_df <- extended_df
+      rv$pending_flow_type <- "confirm_import"
       
-      if (rv$saved_col_import_type == "Common Columns") {
-        final_common_cols <- intersect(names(rv$glens_full_table), names(merged_df))
-        glens_full_table <- dplyr::bind_rows(
-          rv$glens_full_table[, final_common_cols, drop = FALSE],
-          merged_df[, final_common_cols, drop = FALSE]
-        )
+      unique_journals <- unique(extended_df$Name_norm)
+      unique_journals <- unique_journals[!is.na(unique_journals) & trimws(unique_journals) != ""]
+      
+      shinyWidgets::updateProgressBar(session, id = "prog_journal", value = 0, title = "Journals Matched : 0%")
+      
+      if (length(unique_journals) > 0) {
+        trigger_openalex_js(unique_journals, glens_env$openalex_key, "openalex_results")
       } else {
-        print("MERGING:")
-        glens_full_table <- dplyr::bind_rows(rv$glens_full_table %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character)), merged_df)
+        shinyjs::runjs("Shiny.setInputValue('openalex_results', '[]', {priority: 'event'});")
       }
-      
-    } else if (input$row_import_type == "Merge") {
-      
-      join_keys <- input$row_merge_keys
-      join_type <- input$join_type 
-      
-      print("join_keys:")
-      print(join_keys)
-      print("join_type:")
-      print(join_type)
-      
-      if (!is.null(join_keys) && length(join_keys) > 0) {
-        
-        overlap_cols <- setdiff(intersect(names(rv$glens_full_table), names(merged_df)), join_keys)
-        
-        join_func <- switch(join_type,
-                            "inner" = dplyr::inner_join,
-                            "left"  = dplyr::left_join,
-                            "right" = dplyr::right_join,
-                            "full"  = dplyr::full_join)
-        
-        joined_df <- join_func(
-          rv$glens_full_table, 
-          merged_df, 
-          by = join_keys,  
-          suffix = c(".old", ".new"),
-          relationship = "many-to-many" 
-        )
-        
-        for(col in overlap_cols) {
-          old_col <- paste0(col, ".old")
-          new_col <- paste0(col, ".new")
-          
-          old_vals <- as.character(joined_df[[old_col]])
-          new_vals <- as.character(joined_df[[new_col]])
-          
-          joined_df[[col]] <- dplyr::coalesce(old_vals, new_vals)
-          
-          joined_df[[old_col]] <- NULL
-          joined_df[[new_col]] <- NULL
-        }
-        
-        joined_df <- joined_df %>%
-          dplyr::group_by(dplyr::across(dplyr::all_of(join_keys))) %>%
-          tidyr::fill(dplyr::everything(), .direction = "downup") %>%
-          dplyr::ungroup()
-        
-        glens_full_table <- joined_df
-        
-      } else {
-        warning("No join keys selected. Falling back to Append.")
-        glens_full_table <- dplyr::bind_rows(rv$glens_full_table %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character)), merged_df)
-      }
+    } else {
+      rv$pending_extended_df <- extended_df
+      rv$pending_flow_type <- "confirm_import"
+      shinyjs::runjs("Shiny.setInputValue('openalex_results', '[]', {priority: 'event'});")
     }
     
-    if(nrow(glens_full_table) <= 0){
-      showNotification("Data import/merge returned empty rows. Try different options", type = "error", duration = 10)
-      rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'>Data import/merge returned empty rows. Try different options </span>"),sep="<br>")
-      rv$imported_data_list <- NULL
-      rv$intermediate_merged_df <- NULL
-      rv$saved_col_import_type <- NULL
-      rv$glens_full_table <- rv$glens_full_table_tmp
-      # removeModal()
-      
-      shinyjs::hide("progress_overlay")
-      shinyjs::show("orcid_bar_container")
-      shinyjs::show("scopus_bar_container")
-      return()
-    }
-    
-    # --- 6. CHECK FOR MISSING REQUIRED COLUMNS ---
-    missing_cols <- setdiff(collabnet_required_cols, colnames(glens_full_table))
-    if(length(missing_cols) > 0) {
-      missing_str <- paste(missing_cols, collapse=", ")
-      rv$log_text <- paste(rv$log_text, 
-                           paste0("<span style='color: red;'>Missing required columns: ", missing_str, "</span>"), 
-                           sep="<br>")
-      showNotification(paste("Missing columns:", missing_str), type = "error", duration = 10)
-    }
-    
-    glens_full_table <- dplyr::distinct(glens_full_table)
-    # Cleanup & Finalize
-    rv$glens_full_table <- glens_full_table
-    
-    # Initialize empty Skeletons so they are ready for the Proxy
-    render_skeleton_plots(rv, glens_full_table, output)
-    
-    # Configure Slider safely
-    years <- as.numeric(na.omit(glens_full_table$Year))
-    if (length(years) > 0) {
-      min_yr <- min(years)
-      max_yr <- max(years)
-      updateSliderInput(session, "year_slider", min = min_yr, max = max_yr, value = c(min_yr, max_yr))
-    }
-    
-    # Trigger a manual update if auto-refresh is OFF
-    if (!isTRUE(input$auto_refresh_lookup)) {
-      # Increment a counter to signal the reactive graph
-      rv$manual_submit <- if(is.null(rv$manual_submit)) 1 else rv$manual_submit + 1
-    }
-    
-    rv$imported_data_list <- NULL
-    rv$intermediate_merged_df <- NULL
-    rv$saved_col_import_type <- NULL
-    rv$log_text <- paste(rv$log_text, paste("Post-Import Total:",nrow(rv$glens_full_table),"lines..."),sep="<br>")
-    
-    # saveRDS(rv$glens_full_table, "glens_full_table.rds")
-    
-    # removeModal()
-    shinyjs::hide("progress_overlay")
-    shinyjs::show("orcid_bar_container")
-    shinyjs::show("scopus_bar_container")
   })
   
   # output$dynamic_author_filter <- renderUI({
@@ -3601,6 +3632,189 @@ server <- function(input, output, session) {
     )
   })
   
+  observeEvent(input$openalex_results_progress, {
+    shinyWidgets::updateProgressBar(
+      session = session, 
+      id = "prog_journal", 
+      value = input$openalex_results_progress, 
+      title = paste0(input$openalex_results_progress, "%")
+    )
+  })
+  
+  # --- 3. THE HEAVY LIFTING (Part 2: Javascript Receiver) ---
+  observeEvent(input$openalex_results, {
+    js_data_string <- input$openalex_results
+    extended_df <- rv$pending_extended_df
+    flow_type <- rv$pending_flow_type
+    
+    if (is.null(extended_df) || is.null(flow_type)) return()
+    
+    shinyWidgets::updateProgressBar(session = session, id = "prog_journal", value = 100, status = "success", title = "Journals Matched : 100%")
+    
+    # Remove existing metrics to avoid .x/.y duplicate column conflicts
+    extended_df <- extended_df %>% dplyr::select(-dplyr::any_of(c("JCR_Journal", "JCR_Qscore", "JCR_JIF5Years", "Qscore", "JIF5Years")))
+    
+    # CRITICAL FIX: Parse the JSON string natively
+    if (!is.null(js_data_string) && js_data_string != "[]") {
+      
+      # fromJSON perfectly maps the string to a 4-column data.frame!
+      jcr_subset <- jsonlite::fromJSON(js_data_string) 
+      print(str(jcr_subset))
+      matched_df <- dplyr::left_join(extended_df, jcr_subset, by = "Name_norm")
+      
+    } else {
+      matched_df <- extended_df
+      if (!"Name_norm" %in% names(matched_df)) matched_df$Name_norm <- "Unknown"
+      matched_df$JCR_Journal <- matched_df$Name_norm
+      matched_df$Qscore <- "NA"
+      matched_df$JIF5Years <- "0"
+    }
+    
+    # Sanitize NAs
+    matched_df <- matched_df %>%
+      dplyr::mutate(
+        Qscore = dplyr::if_else(is.na(Qscore) | Qscore == "" | Qscore == "Unranked", "NA", as.character(Qscore)),
+        JIF5Years = dplyr::if_else(is.na(JIF5Years) | JIF5Years == "", "0", as.character(JIF5Years))
+      ) %>%
+      dplyr::distinct()
+    
+    # =========================================================
+    # FINALIZE BASED ON WHICH BUTTON TRIGGERED THE FLOW
+    # =========================================================
+    
+    if (flow_type == "submit_btn") {
+      # --- SUBMIT BTN FINALE ---
+      if(nrow(matched_df) > 0) rv$glens_full_table <- matched_df
+      
+      render_skeleton_plots(rv, matched_df, output)
+      
+      years <- as.numeric(na.omit(matched_df$Year))
+      if (length(years) > 0) {
+        min_yr <- min(years)
+        max_yr <- max(years)
+        updateSliderInput(session, "year_slider", min = min_yr, max = max_yr, value = c(min_yr, max_yr))
+      }
+      
+      if (!isTRUE(input$auto_refresh_lookup)) {
+        later::later(function() { isolate({ rv$manual_submit <- if(is.null(rv$manual_submit)) 1 else rv$manual_submit + 1 }) }, delay = 0.8)
+      }
+      
+      shinyjs::show("year_slider")
+      shinyjs::show("sh_index")
+      shinyjs::show("summary_table")
+      shinyjs::show("lookup_controls_panel")
+      
+      rv$log_text <- paste(rv$log_text, "<span style='color: green;'>✓ Run complete.</span>", sep="<br>")
+      try({ if (fs::file_exists("run.lock")) fs::file_delete("run.lock") }, silent = TRUE)
+      
+      rv$is_cancelled <- FALSE
+      rv$is_glens_exec <- FALSE
+      shinyjs::hide("progress_overlay")
+      shinyjs::enable("submit_button")
+      
+    } else if (flow_type == "confirm_import") {
+      # --- CONFIRM IMPORT FINALE ---
+      merged_df <- matched_df
+      
+      # Keep rows if ANY column has a non-NA value
+      merged_df <- merged_df %>% dplyr::filter(dplyr::if_any(dplyr::everything(), ~ !is.na(.)))
+      # Keep columns if they don't have ALL NA values
+      merged_df <- merged_df %>% dplyr::select(dplyr::where(~ !all(is.na(.))))
+      
+      if (input$row_import_type == "New" || is.null(rv$glens_full_table)) {
+        glens_full_table <- merged_df
+      } else if (input$row_import_type == "Append") {
+        if (rv$saved_col_import_type == "Common Columns") {
+          final_common_cols <- intersect(names(rv$glens_full_table), names(merged_df))
+          glens_full_table <- dplyr::bind_rows(
+            rv$glens_full_table[, final_common_cols, drop = FALSE],
+            merged_df[, final_common_cols, drop = FALSE]
+          )
+        } else {
+          glens_full_table <- dplyr::bind_rows(rv$glens_full_table %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character)), merged_df)
+        }
+      } else if (input$row_import_type == "Merge") {
+        join_keys <- input$row_merge_keys
+        join_type <- input$join_type 
+        
+        if (!is.null(join_keys) && length(join_keys) > 0) {
+          overlap_cols <- setdiff(intersect(names(rv$glens_full_table), names(merged_df)), join_keys)
+          join_func <- switch(join_type, "inner" = dplyr::inner_join, "left"  = dplyr::left_join, "right" = dplyr::right_join, "full"  = dplyr::full_join)
+          
+          joined_df <- join_func(rv$glens_full_table, merged_df, by = join_keys, suffix = c(".old", ".new"), relationship = "many-to-many")
+          
+          for(col in overlap_cols) {
+            old_col <- paste0(col, ".old")
+            new_col <- paste0(col, ".new")
+            joined_df[[col]] <- dplyr::coalesce(as.character(joined_df[[old_col]]), as.character(joined_df[[new_col]]))
+            joined_df[[old_col]] <- NULL
+            joined_df[[new_col]] <- NULL
+          }
+          joined_df <- joined_df %>% dplyr::group_by(dplyr::across(dplyr::all_of(join_keys))) %>% tidyr::fill(dplyr::everything(), .direction = "downup") %>% dplyr::ungroup()
+          glens_full_table <- joined_df
+        } else {
+          warning("No join keys selected. Falling back to Append.")
+          glens_full_table <- dplyr::bind_rows(rv$glens_full_table %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character)), merged_df)
+        }
+      }
+      
+      if(nrow(glens_full_table) <= 0){
+        showNotification("Data import/merge returned empty rows. Try different options", type = "error", duration = 10)
+        rv$log_text <- paste(rv$log_text, "<span style='color: red;'>Data import/merge returned empty rows. Try different options </span>",sep="<br>")
+        rv$imported_data_list <- NULL
+        rv$intermediate_merged_df <- NULL
+        rv$saved_col_import_type <- NULL
+        rv$glens_full_table <- rv$glens_full_table_tmp
+        
+        shinyjs::hide("progress_overlay")
+        shinyjs::show("orcid_bar_container")
+        shinyjs::show("scopus_bar_container")
+        
+        # CLEAR PENDING STATE
+        rv$pending_extended_df <- NULL
+        rv$pending_flow_type <- NULL
+        return()
+      }
+      
+      # Check Missing Columns
+      missing_cols <- setdiff(collabnet_required_cols, colnames(glens_full_table))
+      if(length(missing_cols) > 0) {
+        missing_str <- paste(missing_cols, collapse=", ")
+        rv$log_text <- paste(rv$log_text, paste0("<span style='color: red;'>Missing required columns: ", missing_str, "</span>"), sep="<br>")
+        showNotification(paste("Missing columns:", missing_str), type = "error", duration = 10)
+      }
+      
+      glens_full_table <- dplyr::distinct(glens_full_table)
+      rv$glens_full_table <- glens_full_table
+      
+      render_skeleton_plots(rv, glens_full_table, output)
+      
+      years <- as.numeric(na.omit(glens_full_table$Year))
+      if (length(years) > 0) {
+        min_yr <- min(years)
+        max_yr <- max(years)
+        updateSliderInput(session, "year_slider", min = min_yr, max = max_yr, value = c(min_yr, max_yr))
+      }
+      
+      if (!isTRUE(input$auto_refresh_lookup)) {
+        rv$manual_submit <- if(is.null(rv$manual_submit)) 1 else rv$manual_submit + 1
+      }
+      
+      rv$imported_data_list <- NULL
+      rv$intermediate_merged_df <- NULL
+      rv$saved_col_import_type <- NULL
+      rv$log_text <- paste(rv$log_text, paste("Post-Import Total:",nrow(rv$glens_full_table),"lines..."),sep="<br>")
+      
+      shinyjs::hide("progress_overlay")
+      shinyjs::show("orcid_bar_container")
+      shinyjs::show("scopus_bar_container")
+    }
+    
+    # CLEAR PENDING STATE SO IT DOESN'T ACCIDENTALLY REFIRE
+    rv$pending_extended_df <- NULL
+    rv$pending_flow_type <- NULL
+  })
+  
   output$fa_icon_preview <- renderUI({
     req(input$custom_icon_code)
     
@@ -3706,44 +3920,74 @@ server <- function(input, output, session) {
         rv$author_match_regex <- NULL
       }
 
+      # print("submit_btn:extend_input_table():")
+      # # --- 3. THE HEAVY LIFTING ---
+      # extended_df <- extend_input_table(rv, raw_df, rv$author_match_regex, rv$target_variants_norm)
+      # matched_df <- match_journals(rv, extended_df,  glens_env$openalex_key, session = session)
+      # 
+      # if(nrow(matched_df) > 0){
+      #   rv$glens_full_table <- matched_df
+      # }
+      # 
+      # # --- 4. UI SETUP ---
+      # render_skeleton_plots(rv, matched_df, output)
+      # 
+      # years <- as.numeric(na.omit(matched_df$Year))
+      # if (length(years) > 0) {
+      #   min_yr <- min(years)
+      #   max_yr <- max(years)
+      #   updateSliderInput(session, "year_slider", min = min_yr, max = max_yr, value = c(min_yr, max_yr))
+      # }
+      # 
+      # if (!isTRUE(input$auto_refresh_lookup)) {
+      #   later::later(function() {
+      #     isolate({ rv$manual_submit <- if(is.null(rv$manual_submit)) 1 else rv$manual_submit + 1 })
+      #   }, delay = 0.8)
+      # }
+      # 
+      # shinyjs::show("year_slider")
+      # shinyjs::show("sh_index")
+      # shinyjs::show("summary_table")
+      # shinyjs::show("lookup_controls_panel")
+      # 
+      # # --- 5. CLEANUP ---
+      # rv$log_text <- paste(rv$log_text, "<span style='color: green;'>✓ Run complete.</span>", sep="<br>")
+      # try({ if (fs::file_exists("run.lock")) fs::file_delete("run.lock") }, silent = TRUE)
+      # 
+      # rv$is_cancelled <- FALSE
+      # rv$is_glens_exec <- FALSE
+      # shinyjs::hide("progress_overlay")
+      # shinyjs::enable("submit_button")
+      
       print("submit_btn:extend_input_table():")
-      # --- 3. THE HEAVY LIFTING ---
+      # --- 1. THE HEAVY LIFTING (Part 1: R Formatting) ---
       extended_df <- extend_input_table(rv, raw_df, rv$author_match_regex, rv$target_variants_norm)
-      matched_df <- match_journals(rv, extended_df,  glens_env$openalex_key, session = session)
-
-      if(nrow(matched_df) > 0){
-        rv$glens_full_table <- matched_df
+      
+      # Extract journals and append Name_norm column
+      target_journal_col <- if ("User_Journal" %in% names(extended_df)) extended_df$User_Journal else extended_df$Journal
+      
+      if (!is.null(target_journal_col)) {
+        extended_df$Name_norm <- sapply(target_journal_col, normalize_journal)
+        
+        # CRITICAL FIX: Save state to rv AFTER adding Name_norm
+        rv$pending_extended_df <- extended_df
+        rv$pending_flow_type <- "submit_btn"
+        
+        unique_journals <- unique(extended_df$Name_norm)
+        unique_journals <- unique_journals[!is.na(unique_journals) & trimws(unique_journals) != ""]
+        
+        shinyWidgets::updateProgressBar(session, id = "prog_journal", value = 0, title = "Journals Matched : 0%")
+        
+        if (length(unique_journals) > 0) {
+          trigger_openalex_js(unique_journals, glens_env$openalex_key, "openalex_results")
+        } else {
+          shinyjs::runjs("Shiny.setInputValue('openalex_results', '[]', {priority: 'event'});")
+        }
+      } else {
+        rv$pending_extended_df <- extended_df
+        rv$pending_flow_type <- "submit_btn"
+        shinyjs::runjs("Shiny.setInputValue('openalex_results', '[]', {priority: 'event'});")
       }
-
-      # --- 4. UI SETUP ---
-      render_skeleton_plots(rv, matched_df, output)
-
-      years <- as.numeric(na.omit(matched_df$Year))
-      if (length(years) > 0) {
-        min_yr <- min(years)
-        max_yr <- max(years)
-        updateSliderInput(session, "year_slider", min = min_yr, max = max_yr, value = c(min_yr, max_yr))
-      }
-
-      if (!isTRUE(input$auto_refresh_lookup)) {
-        later::later(function() {
-          isolate({ rv$manual_submit <- if(is.null(rv$manual_submit)) 1 else rv$manual_submit + 1 })
-        }, delay = 0.8)
-      }
-
-      shinyjs::show("year_slider")
-      shinyjs::show("sh_index")
-      shinyjs::show("summary_table")
-      shinyjs::show("lookup_controls_panel")
-
-      # --- 5. CLEANUP ---
-      rv$log_text <- paste(rv$log_text, "<span style='color: green;'>✓ Run complete.</span>", sep="<br>")
-      try({ if (fs::file_exists("run.lock")) fs::file_delete("run.lock") }, silent = TRUE)
-
-      rv$is_cancelled <- FALSE
-      rv$is_glens_exec <- FALSE
-      shinyjs::hide("progress_overlay")
-      shinyjs::enable("submit_button")
       
     }, error = function(e) {
       print(e)
