@@ -673,12 +673,28 @@ ui <- fluidPage(
     };
   ")),
     tags$script(HTML("
-      window.attentionCircles = []; // Now an array
+      window.neighbourhoodCircles = []; // Now an array
       
-      Shiny.addCustomMessageHandler('draw_attention_circle', function(message) {
-        window.attentionCircles = message; // Expects an array of {x, y, r} objects
+      Shiny.addCustomMessageHandler('draw_neighbourhood_circle', function(message) {
+        window.neighbourhoodCircles = message; // Expects an array of {x, y, r} objects
       });
-    "))
+    ")),
+    tags$style(HTML("
+    /* Color the entire unselected background track */
+    #edge-slider-wrap .irs-line {
+      background: linear-gradient(to right, #2ECC71 0%, #F1C40F 50%, #E74C3C 100%) !important;
+      border: none !important;
+      height: 10px !important;
+      border-radius: 4px !important;
+    }
+    /* Make the active selection window a completely clear highlighter frame */
+    #edge-slider-wrap .irs-bar {
+      background: rgba(255, 255, 255, 0.15) !important; 
+      border: 2px solid #ffffff !important;             
+      height: 10px !important;
+      top: 24px !important;
+    }
+  "))
   ),
   
   # 1. Custom Title Header with Settings & Dark Mode
@@ -751,12 +767,13 @@ ui <- fluidPage(
             type = "button", 
             class = "btn-minimize", 
             style = "background: transparent; border: none; font-size: 1.6em; line-height: 1; cursor: pointer; padding: 0 5px;",
-            HTML("&minus;")
+            HTML("&plus;")
           ),
         ),
         tags$div(
           class = "custom-card-content",
-          style = "margin-top: 15px;", 
+          # style = "margin-top: 15px;", 
+          style = "display: none;",
           div(
             style = "display: inline-flex; align-items: center; gap: 5px;",
             tags$b("DOI input:"),
@@ -832,12 +849,13 @@ ui <- fluidPage(
             type = "button", 
             class = "btn-minimize", 
             style = "background: transparent; border: none; font-size: 1.6em; line-height: 1; cursor: pointer; padding: 0 5px;",
-            HTML("&minus;")
+            HTML("&plus;")
           ),
         ),
         tags$div(
           class = "custom-card-content",
-          style = "margin-top: 15px;", 
+          # style = "margin-top: 15px;", 
+          style = "display: none;",
           shinyjs::hidden(sliderInput("year_slider", "Publication Years", min = 0, max = 0, value = c(0, 0), step = 1, round = TRUE, width = "100%"))
         )
       ),
@@ -854,12 +872,13 @@ ui <- fluidPage(
             type = "button", 
             class = "btn-minimize", 
             style = "background: transparent; border: none; font-size: 1.6em; line-height: 1; cursor: pointer; padding: 0 5px;",
-            HTML("&minus;")
+            HTML("&plus;")
           ),
         ),
         tags$div(
           class = "custom-card-content",
-          style = "margin-top: 15px;", 
+          # style = "margin-top: 15px;", 
+          style = "display: none;",
           uiOutput("dynamic_source_ui") 
         )
       ),
@@ -917,32 +936,36 @@ ui <- fluidPage(
             tags$input(
               id = "enable_summary", 
               type = "checkbox", 
-              checked = TRUE,
+              # checked = TRUE,
               class = "shiny-input-checkbox",
               style = "width: 20px; height: 20px; cursor: pointer; margin: 0; accent-color: #4B8BBE;" 
             ),
-            h3("Collaboration Metrics", style = "color: #4B8BBE; margin: 0; font-weight: bold; line-height: 1;"),
+            h3("Collaboration Metrics", style = "color: #4B8BBE; margin: 0; font-weight: bold; line-height: 1;", tags$i(class = "fa fa-users", style = "font-size: 0.9em; opacity: 0.85;")),
           ),
           tags$button(
             type = "button", 
             class = "btn-minimize", 
             style = "background: transparent; border: none; font-size: 1.6em; line-height: 1; cursor: pointer; color: #4B8BBE; padding: 0 5px;",
-            HTML("&minus;")
+            HTML("&plus;")
           )
         ),
         # hr(style = "border-top: 1px solid #edf2f7; margin-bottom: 20px;"), # Softened the hr() line
-        tags$div(
-          class = "custom-card-content",
-          style = "margin-top: 15px;", 
-          hr(),        
-          fluidRow(
-            # Wrapped in minimal-table
-            column(6, tags$div(class = "minimal-table", tableOutput("summary_table"))),
-            
-            # Vertically centering the SH-Index next to the table
-            column(6, 
-                   style = "display: flex; align-items: center; justify-content: flex-start; height: 100%; min-height: 80px;", 
-                   shinyjs::disabled(shiny::uiOutput("sh_index")))
+        conditionalPanel(
+          condition = "input.enable_summary == true",
+          tags$div(
+            class = "custom-card-content",
+            # style = "margin-top: 15px;", 
+            style = "display: none;",
+            hr(),        
+            fluidRow(
+              # Wrapped in minimal-table
+              column(6, tags$div(class = "minimal-table", tableOutput("summary_table"))),
+              
+              # Vertically centering the SH-Index next to the table
+              column(6, 
+                     style = "display: flex; align-items: center; justify-content: flex-start; height: 100%; min-height: 80px;", 
+                     shinyjs::disabled(shiny::uiOutput("sh_index")))
+            )
           )
         )
         # # Wrapped in minimal-table
@@ -962,33 +985,37 @@ ui <- fluidPage(
             tags$input(
               id = "enable_plots", 
               type = "checkbox", 
-              checked = TRUE,
+              # checked = TRUE,
               class = "shiny-input-checkbox",
               style = "width: 20px; height: 20px; cursor: pointer; margin: 0; accent-color: #2E8B57;"
             ),
-            h3("Publication & Citation Trends", style = "color: #2E8B57; margin: 0; font-weight: bold; line-height: 1;"),
+            h3("Publication & Citation Trends", style = "color: #2E8B57; margin: 0; font-weight: bold; line-height: 1;", tags$i(class = "fa fa-chart-line", style = "font-size: 0.9em; opacity: 0.85;")),
           ),
           tags$button(
             type = "button", 
             class = "btn-minimize", 
             style = "background: transparent; border: none; font-size: 1.6em; line-height: 1; cursor: pointer; color: #2E8B57; padding: 0 5px;",
-            HTML("&minus;")
+            HTML("&plus;")
           )
         ),
-        tags$div(
-          class = "custom-card-content",
-          style = "margin-top: 15px;", 
-          hr(),
-          fluidRow(
-            column(6, plotly::plotlyOutput("acounts_plot")),
-            column(6, plotly::plotlyOutput("ccounts_plot"))
-          ),
-          tags$br(),
-          plotly::plotlyOutput("cdist_plot"),
-          tags$br(),
-          fluidRow(
-            column(6, plotly::plotlyOutput("aperc_plot", height = "150px")),
-            column(6, plotly::plotlyOutput("cperc_plot", height = "150px"))
+        conditionalPanel(
+          condition = "input.enable_plots == true",
+          tags$div(
+            class = "custom-card-content",
+            # style = "margin-top: 15px;", 
+            style = "display: none;",
+            hr(),
+            fluidRow(
+              column(6, plotly::plotlyOutput("acounts_plot")),
+              column(6, plotly::plotlyOutput("ccounts_plot"))
+            ),
+            tags$br(),
+            plotly::plotlyOutput("cdist_plot"),
+            tags$br(),
+            fluidRow(
+              column(6, plotly::plotlyOutput("aperc_plot", height = "150px")),
+              column(6, plotly::plotlyOutput("cperc_plot", height = "150px"))
+            )
           )
         )
       ),
@@ -1007,11 +1034,10 @@ ui <- fluidPage(
             tags$input(
               id = "enable_table", 
               type = "checkbox", 
-              checked = TRUE,
               class = "shiny-input-checkbox", 
               style = "width: 20px; height: 20px; cursor: pointer; margin: 0; accent-color: #D6A77A;" 
             ),
-            h3("Detailed Publication Record", style = "color: #D6A77A; margin: 0; font-weight: bold; line-height: 1;"),
+            h3("Detailed Publication Record", style = "color: #D6A77A; margin: 0; font-weight: bold; line-height: 1;", tags$i(class = "fa fa-table-list", style = "font-size: 0.9em; opacity: 0.85;")),
           ),
           
           # Right Side: Fixed Toggle Button
@@ -1019,21 +1045,33 @@ ui <- fluidPage(
             type = "button", 
             class = "btn-minimize", 
             style = "background: transparent; border: none; font-size: 1.6em; line-height: 1; cursor: pointer; color: #D6A77A; padding: 0 5px;",
-            HTML("&minus;")
+            HTML("&plus;")
           )
         ),
-        tags$div(
-          class = "custom-card-content",
-          style = "margin-top: 15px;", 
-          hr(),
-          DT::DTOutput("extended_table")
-        # DT::dataTableOutput("extended_table")
+        conditionalPanel(
+          condition = "input.enable_table == true",
+          tags$div(
+            class = "custom-card-content",
+            # style = "margin-top: 15px;", 
+            style = "display: none;",
+            hr(),
+            DT::DTOutput("extended_table")
+          # DT::dataTableOutput("extended_table")
+          )
         )
       ),
       # 6) Network graph - filtered
       tags$div(
         class = "custom-card",
         style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #C96480; margin-bottom: 25px;",
+        
+        # CSS to cap the height of the selectize input and make it scrollable
+        tags$style(HTML("
+    #neighbourhood_nodes + .selectize-control .selectize-input {
+      max-height: 120px; /* Adjust this value if you want the box taller/shorter */
+      overflow-y: auto;
+    }
+  ")),
         
         # 1. FIXED HEADER ROW CONTAINER (margin-bottom set to 0)
         tags$div(
@@ -1046,11 +1084,10 @@ ui <- fluidPage(
             tags$input(
               id = "enable_network", 
               type = "checkbox", 
-              checked = TRUE, #FALSE
               class = "shiny-input-checkbox", 
               style = "width: 20px; height: 20px; cursor: pointer; margin: 0; accent-color: #C96480;"
             ),
-            h3("Network Graph - Filtered", style = "color: #C96480; margin: 0; font-weight: bold; line-height: 1;")
+            h3("Network Graph - Filtered", style = "color: #C96480; margin: 0; font-weight: bold; line-height: 1;", tags$i(class = "fa fa-diagram-project", style = "font-size: 0.9em; opacity: 0.85;"))
           ),
           
           # Right Side: Fixed Toggle Button
@@ -1058,33 +1095,219 @@ ui <- fluidPage(
             type = "button", 
             class = "btn-minimize", 
             style = "background: transparent; border: none; font-size: 1.6em; line-height: 1; cursor: pointer; color: #C96480; padding: 0 5px;",
-            HTML("&minus;")
+            HTML("&plus;")
           )
         ),
-        
-        # 2. COLLAPSIBLE CONTENT CONTAINER (Using margin-top for dynamic spacing)
-        tags$div(
-          class = "custom-card-content",
-          style = "margin-top: 15px;", 
-          hr(),
-          selectInput("net_col_filtered", "Choose column to visualize:", choices = NULL, width = "100%"),
-          selectizeInput("custom_node_selector", "Search/Select Keyword:", 
-                         multiple = TRUE,
-                         choices = NULL, 
-                         width = "300px", 
-                         options = list(placeholder = 'Type a keyword...')),
-          numericInput("custom_edge_count", "Maximum Edge Count:", 1500, min = 1, step = 1),
-          numericInput("custom_conn_count", "Minimum Connection Count:", 1, min = 0, step = 1),
-          sliderInput("attention_slider", "Attention", min = 0, max = 100, value = 100, round = F, width = "100%"),
-          shinyjs::disabled(selectizeInput("attention_nodes", "Attention Nodes:", 
-                         multiple = TRUE,
-                         choices = NULL, 
-                         width = "auto", 
-                         options = list(placeholder = 'Attention Nodes...'))),
-          visNetwork::visNetworkOutput("network_filtered", height = "500px")
+        conditionalPanel(
+          condition = "input.enable_network == true",
+          # 2. COLLAPSIBLE CONTENT CONTAINER (Using margin-top for dynamic spacing)
+          tags$div(
+            class = "custom-card-content",
+            # style = "margin-top: 15px;", 
+            style = "display: none;",
+            hr(),
+            
+            # Grid for most controls
+            tags$div(
+              style = "display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; align-items: end; margin-top: 10px; margin-bottom: 10px; padding: 15px; background: #f8f9fa; border-radius: 6px; border: 1px solid #e9ecef;",
+              
+              selectInput("net_col_filtered", "Choose column to visualize:", choices = NULL, width = "100%"),
+              selectizeInput("custom_node_selector", "Search/Select Keyword:", 
+                             multiple = TRUE,
+                             choices = NULL, 
+                             width = "100%", 
+                             options = list(placeholder = 'Type a keyword...')),
+              numericInput(
+                inputId = "fr_iterations", 
+                label = tags$span(
+                  "Fruchterman-Reingold Iterations (Cluster Stabilization):",
+                  tags$i(
+                    class = "fa fa-info-circle", 
+                    style = "color: #C96480; margin-left: 5px; cursor: help;", 
+                    title = "Controls how many simulation cycles the layout runs. Higher numbers yield more stable, distinct clustering but take longer to calculate."
+                  )
+                ), 
+                value = 500, 
+                min = 1, 
+                step = 1
+              ),
+              sliderInput(
+                inputId = "node_freq_range", 
+                label = tags$span(
+                  "Node Frequency (Min/Max Appearances):",
+                  tags$i(
+                    class = "fa fa-info-circle", 
+                    style = "color: #C96480; margin-left: 5px; cursor: help;", 
+                    title = "Filter nodes by their frequency/occurrence range."
+                  )
+                ), 
+                value = c(1, 2), 
+                min = 1, 
+                max = 5,
+                step = 1,
+                width = "100%"
+              ),
+              tags$div(id = "edge-slider-wrap",
+                       sliderInput(
+                         inputId = "edge_freq_range", 
+                         label = tags$span(
+                           "Edge Frequency (Co-occurrences Range):",
+                           tags$i(
+                             class = "fa fa-info-circle", 
+                             style = "color: #C96480; margin-left: 5px; cursor: help;", 
+                             title = "Filter edges. The lower handle sets the minimum connections required, and the upper handle sets the maximum allowed edges."
+                           )
+                         ), 
+                         value = c(1, 1),
+                         min = 0, 
+                         max = 2, 
+                         step = 1,
+                         width = "100%"
+                       )
+              ),
+              sliderInput("cluster_size_range", 
+                          label = "Cluster Size (Min/Max Nodes per Group):",
+                          min = 1, max = 500, value = c(1, 500)),
+              checkboxInput("prune_leaves", tags$b("Trim Leaf Nodes (Degree = 1)"), value = TRUE),
+              tags$div(
+                style = "margin-top: 10px; margin-bottom: 10px; width: 100%;",
+                
+                # 1. Move the Label completely ABOVE the flex row
+                tags$label(
+                  style = "font-weight: bold; margin-bottom: 5px; color: #333; display: block;",
+                  "Node Icon:",
+                  tags$a(
+                    href = "https://fontawesome.com/search?o=r&m=free", 
+                    target = "_blank", # Opens in new tab
+                    tags$i(
+                      class = "fa fa-info-circle", 
+                      style = "color: #4B8BBE; margin-left: 5px; cursor: pointer;", 
+                      title = "Click to search FontAwesome. Use the 4-character unicode hex (e.g., f007 for user, f19d for graduation-cap)."
+                    )
+                  )
+                ),
+                
+                # 2. Flex Row containing ONLY the input box and the preview box
+                tags$div(
+                  style = "display: flex; align-items: center; gap: 12px; width: 100%;",
+                  
+                  # Textbox container - expands to fill horizontal space
+                  tags$div(
+                    style = "flex-grow: 1;",
+                    # Tiny CSS override to kill the default Bootstrap 15px bottom margin
+                    tags$style(HTML(".kill-margin .form-group { margin-bottom: 0 !important; }")), 
+                    class = "kill-margin",
+                    
+                    textInput(
+                      inputId = "custom_icon_code", 
+                      label = NULL, # Setting this to NULL eliminates layout shifts
+                      value = "f007", 
+                      placeholder = "e.g., f19d",
+                      width = "100%"
+                    )
+                  ),
+                  
+                  # Clean, matching inline Preview Box
+                  tags$div(
+                    style = "width: 40px; height: 34px; display: flex; align-items: center; justify-content: center; background: #ffffff; border: 1px solid #ccc; border-radius: 4px; box-shadow: inset 0 1px 3px rgba(0,0,0,0.05); color: #4B8BBE; font-size: 1.25em;",
+                    uiOutput("fa_icon_preview")
+                  )
+                )
+              ),
+              sliderInput(
+                inputId = "custom_max_keywords", 
+                label = tags$span(
+                  "Maximum Keyword Count:",
+                  tags$i(
+                    class = "fa fa-info-circle", 
+                    style = "color: #C96480; margin-left: 5px; cursor: help;", 
+                    title = "Maximum keyword count allowed for a publication."
+                  )
+                ), 
+                value = c(1,500), 
+                min = 1, 
+                max = 500,
+                step = 1
+              ),
+              shinyjs::disabled(sliderInput("neighbourhood_slider", "Neighbourhood %:", min = 0, max = 100, value = 0, round = F, width = "100%"))
+            ),
+            
+            # Full-width container specifically for the selectize input to prevent squishing
+            tags$div(
+              style = "padding: 0 15px 15px 15px; margin-bottom: 10px;",
+              shinyjs::disabled(
+                selectizeInput(
+                  "neighbourhood_nodes", 
+                  "Neighbourhood Nodes:", 
+                  multiple = TRUE,
+                  choices = NULL, 
+                  width = "100%", 
+                  options = list(
+                    placeholder = 'Neighbourhood Nodes...',
+                    plugins = list('remove_button') # Keeping the delete button for easy removal
+                  )
+                )
+              )
+            ),
+            
+            visNetwork::visNetworkOutput("network_filtered", height = "500px"),
+            uiOutput("network_summary_table")
+          )
         )
       ),
-      
+      tags$div(
+        class = "custom-card",
+        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #391463; margin-bottom: 25px;",
+        
+        tags$div(
+          class = "custom-card-header",
+          style = "display: flex; justify-content: space-between; align-items: center; cursor: pointer; user-select: none; margin-bottom: 0;",
+          
+          tags$div(
+            style = "display: flex; align-items: center; gap: 12px;",
+            
+            tags$input(
+              id = "enable_venn", 
+              type = "checkbox", 
+              class = "shiny-input-checkbox", 
+              style = "width: 20px; height: 20px; cursor: pointer; margin: 0; accent-color: #391463;"
+            ),
+            h3("Overlap Analysis", style = "color: #391463; margin: 0; font-weight: bold; line-height: 1;", tags$i(class = "fa fa-chart-pie", style = "font-size: 0.9em; opacity: 0.85;"))
+          ),
+          
+          # Right Side: Fixed Toggle Button
+          tags$button(
+            type = "button", 
+            class = "btn-minimize", 
+            style = "background: transparent; border: none; font-size: 1.6em; line-height: 1; cursor: pointer; color: #391463; padding: 0 5px;",
+            HTML("&plus;")
+          )
+        ),
+        # Card Body (The Plot)
+        tags$div(
+          class = "custom-card-content",
+          
+          # Move your conditionalPanel inside the wrapper
+          conditionalPanel(
+            condition = "input.enable_venn == true",
+            tags$div(
+              style = "display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; align-items: end; margin-top: 10px; margin-bottom: 10px; padding: 15px; background: #f8f9fa; border-radius: 6px; border: 1px solid #e9ecef;",
+              selectInput("venn_col_filtered", "Choose column to visualize:", choices = NULL, width = "100%"),
+              selectizeInput("custom_venn_selector", "Search/Select Keyword:", 
+                             multiple = TRUE,
+                             choices = NULL, 
+                             width = "100%", 
+                             options = list(placeholder = 'Type a keyword...')),
+              colourpicker::colourInput("venn_theme_color", "Pick base theme color:", value="#391463")
+            ),
+            tags$div(
+              style = "width: 100%; display: flex; justify-content: center; align-items: center;",
+              plotOutput("venn_plot", height = "400px", width = "50%"),
+              plotOutput("venn_upset_plot", height = "400px", width = "50%")
+            )
+          )
+        )
+      ),
       # # 7) Network graph - full
       # tags$div(
       #   class = "custom-card",

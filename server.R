@@ -29,6 +29,10 @@ suppressPackageStartupMessages(require(jsonlite))
 suppressPackageStartupMessages(require(ipc))
 suppressPackageStartupMessages(require(parallel))
 suppressPackageStartupMessages(require(ipc))
+# suppressPackageStartupMessages(require(ggVennDiagram)) # Great for standard Venns
+# suppressPackageStartupMessages(require(eulerr)) # Great for proportional Euler diagrams
+suppressPackageStartupMessages(require(UpSetR))
+suppressPackageStartupMessages(require(colourpicker))
 # suppressPackageStartupMessages(require(QuickBLAST))
 
 is_WASM <- grepl(pattern="wasm",x=Sys.info()["machine"])
@@ -220,7 +224,7 @@ server <- function(input, output, session) {
   shinyjs::hide("cdist_plot")
   shinyjs::hide("aperc_plot")
   shinyjs::hide("cperc_plot")
-  shinyjs::hide("network_filtered")
+  # shinyjs::hide("network_filtered")
   # shinyjs::hide("network_full")
   # shinyjs::hide("extended_table")
   shinyjs::hide("progress_overlay") 
@@ -522,45 +526,81 @@ server <- function(input, output, session) {
     
     removeModal()
     
-    if (length(detected_mv_cols) > 0) {
-      showModal(modalDialog(
-        title = tags$span(icon("cut", lib = "font-awesome"), " Step 1.5: Confirm Splits"),
-        size = "l",
-        uiOutput("delimiter_ui"),
-        footer = tagList(
-          modalButton("Cancel"),
-          actionButton("next_after_delim", "Apply Splits & Continue to Step 2", class = "btn-warning")
-        ),
-        easyClose = FALSE
-      ))
-    } else {
-      show_row_merge_modal(rv, session)
-    }
-  })
-  
-  observeEvent(input$next_after_delim, {
-    req(rv$intermediate_merged_df, rv$detected_mv_cols)
-    merged_df <- rv$intermediate_merged_df
+    # if (length(detected_mv_cols) > 0) {
+    #   showModal(modalDialog(
+    #     title = tags$span(icon("cut", lib = "font-awesome"), " Step 1.5: Confirm Splits"),
+    #     size = "l",
+    #     uiOutput("delimiter_ui"),
+    #     footer = tagList(
+    #       modalButton("Cancel"),
+    #       actionButton("next_after_delim", "Apply Splits & Continue to Step 2", class = "btn-warning")
+    #     ),
+    #     easyClose = FALSE
+    #   ))
+    # } else {
+    #   show_row_merge_modal(rv, session)
+    # }
     
-    for(col in names(rv$detected_mv_cols)) {
-      action <- input[[paste0("delim_action_", make.names(col))]]
-      delim_val <- input[[paste0("delim_val_", make.names(col))]]
-      
-      if (!is.null(action) && action == "rows" && !is.null(delim_val) && trimws(delim_val) != "") {
-        sep_regex <- paste0("\\s*", escape_regex_inline(delim_val), "\\s*")
-        merged_df <- merged_df %>% 
-          tidyr::separate_rows(dplyr::all_of(col), sep = sep_regex) %>%
-          dplyr::mutate(!!col := trimws(.data[[col]]))
-      }
-    }
-    
-    rv$intermediate_merged_df <- merged_df
-    removeModal()
     show_row_merge_modal(rv, session)
   })
+
+  # observeEvent(input$next_after_delim, {
+  #   req(rv$intermediate_merged_df, rv$detected_mv_cols)
+  #   merged_df <- rv$intermediate_merged_df
+  #   
+  #   # 1. Create a temporary list to hold any edits the user made to the delimiters
+  #   updated_mv_cols <- rv$detected_mv_cols
+  #   
+  #   for(col in names(rv$detected_mv_cols)) {
+  #     action <- input[[paste0("delim_action_", make.names(col))]]
+  #     delim_val <- input[[paste0("delim_val_", make.names(col))]]
+  #     
+  #     # 2. SAVE the current delimiter value from the UI, even if they didn't split rows!
+  #     if (!is.null(delim_val) && trimws(delim_val) != "") {
+  #       updated_mv_cols[[col]] <- trimws(delim_val)
+  #     }
+  #     
+  #     if (!is.null(action) && action == "rows" && !is.null(delim_val) && trimws(delim_val) != "") {
+  #       sep_regex <- paste0("\\s*", escape_regex_inline(delim_val), "\\s*")
+  #       merged_df <- merged_df %>% 
+  #         tidyr::separate_rows(dplyr::all_of(col), sep = sep_regex) %>%
+  #         dplyr::mutate(!!col := trimws(.data[[col]]))
+  #     }
+  #   }
+  #   
+  #   rv$intermediate_merged_df <- merged_df
+  #   
+  #   # 3. OVERWRITE the reactive values so the Lookup Panel gets the newest delimiters
+  #   rv$detected_mv_cols <- updated_mv_cols
+  #   
+  #   removeModal()
+  #   show_row_merge_modal(rv, session)
+  # })
+  
+  # observeEvent(input$next_after_delim, {
+  #   req(rv$intermediate_merged_df, rv$detected_mv_cols)
+  #   merged_df <- rv$intermediate_merged_df
+  #   
+  #   for(col in names(rv$detected_mv_cols)) {
+  #     action <- input[[paste0("delim_action_", make.names(col))]]
+  #     delim_val <- input[[paste0("delim_val_", make.names(col))]]
+  #     
+  #     if (!is.null(action) && action == "rows" && !is.null(delim_val) && trimws(delim_val) != "") {
+  #       sep_regex <- paste0("\\s*", escape_regex_inline(delim_val), "\\s*")
+  #       merged_df <- merged_df %>% 
+  #         tidyr::separate_rows(dplyr::all_of(col), sep = sep_regex) %>%
+  #         dplyr::mutate(!!col := trimws(.data[[col]]))
+  #     }
+  #   }
+  #   
+  #   rv$intermediate_merged_df <- merged_df
+  #   removeModal()
+  #   show_row_merge_modal(rv, session)
+  # })
   
   observeEvent(input$confirm_import, {
     req(rv$intermediate_merged_df)
+    shinyjs::disable("confirm_import")
     merged_df <- rv$intermediate_merged_df
     rv$glens_full_table_tmp <- rv$glens_full_table
     
@@ -894,33 +934,33 @@ server <- function(input, output, session) {
     }
   })
   
-  output$delimiter_ui <- renderUI({
-    req(rv$detected_mv_cols)
-    
-    mapping_rows <- lapply(names(rv$detected_mv_cols), function(col) {
-      safe_id <- paste0("delim_action_", make.names(col))
-      delim_id <- paste0("delim_val_", make.names(col))
-      
-      suggested_delim <- rv$detected_mv_cols[[col]]
-      
-      fluidRow(
-        style = "margin-bottom: 10px; align-items: flex-end; display: flex; background: #f8f9fa; padding: 10px; border-radius: 5px;",
-        column(4, tags$strong(col, style="word-break: break-all; color: #333;")),
-        column(4, textInput(delim_id, "Delimiter:", value = suggested_delim)),
-        column(4, 
-               selectizeInput(safe_id, "Action:",  # <--- Changed to selectizeInput
-                              choices = c("Split to Rows (Lengthen)" = "rows", "Do Not Split" = "none"), 
-                              selected = "none",
-                              options = list(dropdownParent = 'body')) # <--- Now this is perfectly valid!
-        )
-      )
-    })
-    
-    tagList(
-      tags$div(style = "max-height: 450px; overflow-y: auto; overflow-x: hidden; padding-right: 10px;",
-               mapping_rows)
-    )
-  })
+  # output$delimiter_ui <- renderUI({
+  #   req(rv$detected_mv_cols)
+  #   
+  #   mapping_rows <- lapply(names(rv$detected_mv_cols), function(col) {
+  #     safe_id <- paste0("delim_action_", make.names(col))
+  #     delim_id <- paste0("delim_val_", make.names(col))
+  #     
+  #     suggested_delim <- rv$detected_mv_cols[[col]]
+  #     
+  #     fluidRow(
+  #       style = "margin-bottom: 10px; align-items: flex-end; display: flex; background: #f8f9fa; padding: 10px; border-radius: 5px;",
+  #       column(4, tags$strong(col, style="word-break: break-all; color: #333;")),
+  #       column(4, textInput(delim_id, "Delimiter:", value = suggested_delim)),
+  #       column(4, 
+  #              selectizeInput(safe_id, "Action:",  # <--- Changed to selectizeInput
+  #                             choices = c("Split to Rows (Lengthen)" = "rows", "Do Not Split" = "none"), 
+  #                             selected = "none",
+  #                             options = list(dropdownParent = 'body')) # <--- Now this is perfectly valid!
+  #       )
+  #     )
+  #   })
+  #   
+  #   tagList(
+  #     tags$div(style = "max-height: 450px; overflow-y: auto; overflow-x: hidden; padding-right: 10px;",
+  #              mapping_rows)
+  #   )
+  # })
   
   observeEvent(input$row_import_type, {
     if (input$row_import_type %in% c("New", "Append")) {
@@ -1616,122 +1656,122 @@ server <- function(input, output, session) {
                )
       ),
       
-      # Web of Science
-      tags$div(class = "api-row",
-               tags$div(class = "input-button-group",
-                        passwordInput("wos_key",
-                                      label = HTML(paste0('
-             <div style="display: flex; align-items: center;">
-                          Web of Science API Key :
-                          <span class="api-help-container" style="position: relative; display: inline-block;">
-                            <span class="help-icon" style="cursor: pointer; margin-left: 5px; color: #17a2b8; font-size: 16px;">&#9432;</span>
-                            <div class="api-help-content" style="display: none; position: absolute; bottom: 130%; left: 50%; transform: translateX(-50%); width: 220px; background: #ffffff; padding: 12px; border: 1px solid #ccc; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 9999; font-weight: normal; font-size: 13px; text-align: left;">
-                              Need a key? Register at the <br>
-                              <a href="https://developer.clarivate.com/apis" target="_blank" style="text-decoration: underline; color: #007bff; font-weight: bold;">Clarivate Developer Portal</a>.
-                            </div>
-                          </span>
-                        ', if(rv$has_key_wos) {
-                          '<span class="status-badge badge-found" style="margin-left: auto; font-weight: normal; font-size: 12px;"><i class="fa fa-check"></i> Key Found</span>'
-                        } else {
-                          '<span class="status-badge badge-missing" style="margin-left: auto; font-weight: normal; font-size: 12px; color: #dc3545;">Missing</span>'
-                        }, 
-                        '</div>'
-                                      )), placeholder = "Enter Web of Science Key", width = "100%"),
-                        tags$div(class = "api-save-wrap",
-                                 actionButton("save_wos", "Save Web of Science Key", class = "btn-success save-btn-custom")
-                        )
-               )
-      ),
-      
-      # Semantic Scholar
-      tags$div(class = "api-row",
-               tags$div(class = "input-button-group",
-                        passwordInput("semantic_key",
-                                      label = HTML(paste0('
-             <div style="display: flex; align-items: center;">
-                          Semantic Scholar API Key :
-                          <span class="api-help-container" style="position: relative; display: inline-block;">
-                            <span class="help-icon" style="cursor: pointer; margin-left: 5px; color: #17a2b8; font-size: 16px;">&#9432;</span>
-                            <div class="api-help-content" style="display: none; position: absolute; bottom: 130%; left: 50%; transform: translateX(-50%); width: 220px; background: #ffffff; padding: 12px; border: 1px solid #ccc; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 9999; font-weight: normal; font-size: 13px; text-align: left;">
-                              Need a key? Request one from the <br>
-                              <a href="https://www.semanticscholar.org/product/api#api-key" target="_blank" style="text-decoration: underline; color: #007bff; font-weight: bold;">Semantic Scholar API Form</a>.
-                            </div>
-                          </span>
-                        ', if(rv$has_key_semantic) {
-                          '<span class="status-badge badge-found" style="margin-left: auto; font-weight: normal; font-size: 12px;"><i class="fa fa-check"></i> Key Found</span>'
-                        } else {
-                          '<span class="status-badge badge-missing" style="margin-left: auto; font-weight: normal; font-size: 12px; color: #dc3545;">Missing</span>'
-                        }, 
-                        '</div>'
-                                      )), placeholder = "Enter Semantic Scholar Key", width = "100%"),
-                        tags$div(class = "api-save-wrap",
-                                 actionButton("save_semantic", "Save Semantic Scholar Key", class = "btn-success save-btn-custom")
-                        )
-               )
-      ),
-      
-      # Crossref
-      tags$div(class = "api-row",
-               tags$div(class = "input-button-group",
-                        passwordInput("crossref_key", 
-                                      label = HTML(paste0('
-             <div style="display: flex; align-items: center;">
-               Crossref API Key :
-               <span class="api-help-container" style="position: relative; display: inline-block;">
-                 <span class="help-icon" style="cursor: pointer; margin-left: 5px; color: #17a2b8; font-size: 16px;">&#9432;</span>
-                 <div class="api-help-content" style="display: none; position: absolute; bottom: 130%; left: 50%; transform: translateX(-50%); width: 220px; background: #ffffff; padding: 12px; border: 1px solid #ccc; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 9999; font-weight: normal; font-size: 13px; text-align: left;">
-                   Need a key? Register at <br>
-                   <a href="https://manage.crossref.org/keys" target="_blank" style="text-decoration: underline; color: #007bff; font-weight: bold;">Crossref Key Manager</a>.
-                 </div>
-               </span>
-               
-               ', if(rv$has_key_crossref) {
-                 '<span class="status-badge badge-found" style="margin-left: auto; font-weight: normal; font-size: 12px;"><i class="fa fa-check"></i> Key Found</span>'
-               } else {
-                 '<span class="status-badge badge-missing" style="margin-left: auto; font-weight: normal; font-size: 12px; color: #dc3545;">Missing</span>'
-               }, 
-               '</div>'
-                                      )), 
-               placeholder = "Enter Crossref Key", 
-               width = "100%"
-                        ),
-               tags$div(class = "api-save-wrap",
-                        actionButton("save_crossref", "Save Crossref Key", class = "btn-success save-btn-custom")
-               )
-               )
-      ),
-      
-      # OpenCitations
-      tags$div(class = "api-row",
-               tags$div(class = "input-button-group",
-                        passwordInput("opencites_key", 
-                                      label = HTML(paste0('
-             <div style="display: flex; align-items: center;">
-               OpenCitations API Key :
-               <span class="api-help-container" style="position: relative; display: inline-block;">
-                 <span class="help-icon" style="cursor: pointer; margin-left: 5px; color: #17a2b8; font-size: 16px;">&#9432;</span>
-                 <div class="api-help-content" style="display: none; position: absolute; bottom: 130%; left: 50%; transform: translateX(-50%); width: 220px; background: #ffffff; padding: 12px; border: 1px solid #ccc; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 9999; font-weight: normal; font-size: 13px; text-align: left;">
-                   Need a key? Register at <br>
-                   <a href="https://opencitations.net/accesstoken/" target="_blank" style="text-decoration: underline; color: #007bff; font-weight: bold;">OpenCitations Access Token</a>.
-                 </div>
-               </span>
-               
-               ', if(rv$has_key_opencites) {
-                 '<span class="status-badge badge-found" style="margin-left: auto; font-weight: normal; font-size: 12px;"><i class="fa fa-check"></i> Key Found</span>'
-               } else {
-                 '<span class="status-badge badge-missing" style="margin-left: auto; font-weight: normal; font-size: 12px; color: #dc3545;">Missing</span>'
-               }, 
-               '</div>'
-                                      )), 
-               placeholder = "Enter OpenCites Token", 
-               width = "100%"
-                        ),
-               tags$div(class = "api-save-wrap",
-                        actionButton("save_opencites", "Save OpenCitations Token", class = "btn-success save-btn-custom")
-               )
-               )
-      ),
-      
+    #   # Web of Science
+    #   tags$div(class = "api-row",
+    #            tags$div(class = "input-button-group",
+    #                     passwordInput("wos_key",
+    #                                   label = HTML(paste0('
+    #          <div style="display: flex; align-items: center;">
+    #                       Web of Science API Key :
+    #                       <span class="api-help-container" style="position: relative; display: inline-block;">
+    #                         <span class="help-icon" style="cursor: pointer; margin-left: 5px; color: #17a2b8; font-size: 16px;">&#9432;</span>
+    #                         <div class="api-help-content" style="display: none; position: absolute; bottom: 130%; left: 50%; transform: translateX(-50%); width: 220px; background: #ffffff; padding: 12px; border: 1px solid #ccc; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 9999; font-weight: normal; font-size: 13px; text-align: left;">
+    #                           Need a key? Register at the <br>
+    #                           <a href="https://developer.clarivate.com/apis" target="_blank" style="text-decoration: underline; color: #007bff; font-weight: bold;">Clarivate Developer Portal</a>.
+    #                         </div>
+    #                       </span>
+    #                     ', if(rv$has_key_wos) {
+    #                       '<span class="status-badge badge-found" style="margin-left: auto; font-weight: normal; font-size: 12px;"><i class="fa fa-check"></i> Key Found</span>'
+    #                     } else {
+    #                       '<span class="status-badge badge-missing" style="margin-left: auto; font-weight: normal; font-size: 12px; color: #dc3545;">Missing</span>'
+    #                     }, 
+    #                     '</div>'
+    #                                   )), placeholder = "Enter Web of Science Key", width = "100%"),
+    #                     tags$div(class = "api-save-wrap",
+    #                              actionButton("save_wos", "Save Web of Science Key", class = "btn-success save-btn-custom")
+    #                     )
+    #            )
+    #   ),
+    #   
+    #   # Semantic Scholar
+    #   tags$div(class = "api-row",
+    #            tags$div(class = "input-button-group",
+    #                     passwordInput("semantic_key",
+    #                                   label = HTML(paste0('
+    #          <div style="display: flex; align-items: center;">
+    #                       Semantic Scholar API Key :
+    #                       <span class="api-help-container" style="position: relative; display: inline-block;">
+    #                         <span class="help-icon" style="cursor: pointer; margin-left: 5px; color: #17a2b8; font-size: 16px;">&#9432;</span>
+    #                         <div class="api-help-content" style="display: none; position: absolute; bottom: 130%; left: 50%; transform: translateX(-50%); width: 220px; background: #ffffff; padding: 12px; border: 1px solid #ccc; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 9999; font-weight: normal; font-size: 13px; text-align: left;">
+    #                           Need a key? Request one from the <br>
+    #                           <a href="https://www.semanticscholar.org/product/api#api-key" target="_blank" style="text-decoration: underline; color: #007bff; font-weight: bold;">Semantic Scholar API Form</a>.
+    #                         </div>
+    #                       </span>
+    #                     ', if(rv$has_key_semantic) {
+    #                       '<span class="status-badge badge-found" style="margin-left: auto; font-weight: normal; font-size: 12px;"><i class="fa fa-check"></i> Key Found</span>'
+    #                     } else {
+    #                       '<span class="status-badge badge-missing" style="margin-left: auto; font-weight: normal; font-size: 12px; color: #dc3545;">Missing</span>'
+    #                     }, 
+    #                     '</div>'
+    #                                   )), placeholder = "Enter Semantic Scholar Key", width = "100%"),
+    #                     tags$div(class = "api-save-wrap",
+    #                              actionButton("save_semantic", "Save Semantic Scholar Key", class = "btn-success save-btn-custom")
+    #                     )
+    #            )
+    #   ),
+    #   
+    #   # Crossref
+    #   tags$div(class = "api-row",
+    #            tags$div(class = "input-button-group",
+    #                     passwordInput("crossref_key", 
+    #                                   label = HTML(paste0('
+    #          <div style="display: flex; align-items: center;">
+    #            Crossref API Key :
+    #            <span class="api-help-container" style="position: relative; display: inline-block;">
+    #              <span class="help-icon" style="cursor: pointer; margin-left: 5px; color: #17a2b8; font-size: 16px;">&#9432;</span>
+    #              <div class="api-help-content" style="display: none; position: absolute; bottom: 130%; left: 50%; transform: translateX(-50%); width: 220px; background: #ffffff; padding: 12px; border: 1px solid #ccc; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 9999; font-weight: normal; font-size: 13px; text-align: left;">
+    #                Need a key? Register at <br>
+    #                <a href="https://manage.crossref.org/keys" target="_blank" style="text-decoration: underline; color: #007bff; font-weight: bold;">Crossref Key Manager</a>.
+    #              </div>
+    #            </span>
+    #            
+    #            ', if(rv$has_key_crossref) {
+    #              '<span class="status-badge badge-found" style="margin-left: auto; font-weight: normal; font-size: 12px;"><i class="fa fa-check"></i> Key Found</span>'
+    #            } else {
+    #              '<span class="status-badge badge-missing" style="margin-left: auto; font-weight: normal; font-size: 12px; color: #dc3545;">Missing</span>'
+    #            }, 
+    #            '</div>'
+    #                                   )), 
+    #            placeholder = "Enter Crossref Key", 
+    #            width = "100%"
+    #                     ),
+    #            tags$div(class = "api-save-wrap",
+    #                     actionButton("save_crossref", "Save Crossref Key", class = "btn-success save-btn-custom")
+    #            )
+    #            )
+    #   ),
+    #   
+    #   # OpenCitations
+    #   tags$div(class = "api-row",
+    #            tags$div(class = "input-button-group",
+    #                     passwordInput("opencites_key", 
+    #                                   label = HTML(paste0('
+    #          <div style="display: flex; align-items: center;">
+    #            OpenCitations API Key :
+    #            <span class="api-help-container" style="position: relative; display: inline-block;">
+    #              <span class="help-icon" style="cursor: pointer; margin-left: 5px; color: #17a2b8; font-size: 16px;">&#9432;</span>
+    #              <div class="api-help-content" style="display: none; position: absolute; bottom: 130%; left: 50%; transform: translateX(-50%); width: 220px; background: #ffffff; padding: 12px; border: 1px solid #ccc; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 9999; font-weight: normal; font-size: 13px; text-align: left;">
+    #                Need a key? Register at <br>
+    #                <a href="https://opencitations.net/accesstoken/" target="_blank" style="text-decoration: underline; color: #007bff; font-weight: bold;">OpenCitations Access Token</a>.
+    #              </div>
+    #            </span>
+    #            
+    #            ', if(rv$has_key_opencites) {
+    #              '<span class="status-badge badge-found" style="margin-left: auto; font-weight: normal; font-size: 12px;"><i class="fa fa-check"></i> Key Found</span>'
+    #            } else {
+    #              '<span class="status-badge badge-missing" style="margin-left: auto; font-weight: normal; font-size: 12px; color: #dc3545;">Missing</span>'
+    #            }, 
+    #            '</div>'
+    #                                   )), 
+    #            placeholder = "Enter OpenCites Token", 
+    #            width = "100%"
+    #                     ),
+    #            tags$div(class = "api-save-wrap",
+    #                     actionButton("save_opencites", "Save OpenCitations Token", class = "btn-success save-btn-custom")
+    #            )
+    #            )
+    #   ),
+
       footer = modalButton("Close API Key Settings"),
       easyClose = TRUE
     ))
@@ -1768,77 +1808,77 @@ server <- function(input, output, session) {
     }
     # removeModal()
   })
-  observeEvent(input$save_wos, {
-    # req(input$wos_key)
-    if(is.null(input$wos_key) || stringi::stri_isempty(input$wos_key)){
-      if(fs::file_exists(file.path("keys","wos.key")))
-        fs::file_delete(file.path("keys","wos.key"))
-      # removeModal()
-      return()
-    }
-    raw_key <- charToRaw(trimws(input$wos_key))
-    encrypted_wos <- sodium::data_encrypt(raw_key, key=sha256(glens_env$privkey_dec))
-    saveRDS(encrypted_wos, file = file.path("keys","wos.key"))
-    if(is_WASM){
-      session$sendCustomMessage("save_key_to_browser", list(platform = "wos_key", key = raw_key))
-    }
-    showNotification("Web of Science Key Encrypted and Saved.", type = "message")
-    # removeModal()
-  })
-  observeEvent(input$save_semantic, {
-    # fs::dir_create("keys")
-    # req(input$semantic_key)
-    if(is.null(input$semantic_key) || stringi::stri_isempty(input$semantic_key)){
-      if(fs::file_exists(file.path("keys","semantic.key")))
-        fs::file_delete(file.path("keys","semantic.key"))
-      # removeModal()
-      return()
-    }
-    raw_key <- charToRaw(trimws(input$semantic_key))
-    encrypted_semantic <- sodium::data_encrypt(raw_key, key=sha256(glens_env$privkey_dec))
-    saveRDS(encrypted_semantic, file = file.path("keys","semantic.key"))
-    if(is_WASM){
-      session$sendCustomMessage("save_key_to_browser", list(platform = "semantic_key", key = raw_key))
-    }
-    showNotification("Semantic Scholar Key Encrypted and Saved.", type = "message")
-    # removeModal()
-  })
-  observeEvent(input$save_crossref, {
-    # fs::dir_create("keys")
-    # req(input$semantic_key)
-    if(is.null(input$crossref_key) || stringi::stri_isempty(input$crossref_key)){
-      if(fs::file_exists(file.path("keys","crossref.key")))
-        fs::file_delete(file.path("keys","crossref.key"))
-      # removeModal()
-      return()
-    }
-    raw_key <- charToRaw(trimws(input$crossref_key))
-    encrypted_crossref <- sodium::data_encrypt(raw_key, key=sha256(glens_env$privkey_dec))
-    saveRDS(encrypted_crossref, file = file.path("keys","crossref.key"))
-    if(is_WASM){
-      session$sendCustomMessage("save_key_to_browser", list(platform = "crossref_key", key = raw_key))
-    }
-    showNotification("Crossref Key Encrypted and Saved.", type = "message")
-    # removeModal()
-  })
-  observeEvent(input$save_opencites, {
-    # fs::dir_create("keys")
-    # req(input$semantic_key)
-    if(is.null(input$opencites_key) || stringi::stri_isempty(input$opencites_key)){
-      if(fs::file_exists(file.path("keys","opencites.key")))
-        fs::file_delete(file.path("keys","opencites.key"))
-      # removeModal()
-      return()
-    }
-    raw_key <- charToRaw(trimws(input$opencites_key))
-    encrypted_opencites <- sodium::data_encrypt(raw_key, key=sha256(glens_env$privkey_dec))
-    saveRDS(encrypted_opencites, file = file.path("keys","opencites.key"))
-    if(is_WASM){
-      session$sendCustomMessage("save_key_to_browser", list(platform = "opencites_key", key = raw_key))
-    }
-    showNotification("OpenCitations Key Encrypted and Saved.", type = "message")
-    # removeModal()
-  })
+  # observeEvent(input$save_wos, {
+  #   # req(input$wos_key)
+  #   if(is.null(input$wos_key) || stringi::stri_isempty(input$wos_key)){
+  #     if(fs::file_exists(file.path("keys","wos.key")))
+  #       fs::file_delete(file.path("keys","wos.key"))
+  #     # removeModal()
+  #     return()
+  #   }
+  #   raw_key <- charToRaw(trimws(input$wos_key))
+  #   encrypted_wos <- sodium::data_encrypt(raw_key, key=sha256(glens_env$privkey_dec))
+  #   saveRDS(encrypted_wos, file = file.path("keys","wos.key"))
+  #   if(is_WASM){
+  #     session$sendCustomMessage("save_key_to_browser", list(platform = "wos_key", key = raw_key))
+  #   }
+  #   showNotification("Web of Science Key Encrypted and Saved.", type = "message")
+  #   # removeModal()
+  # })
+  # observeEvent(input$save_semantic, {
+  #   # fs::dir_create("keys")
+  #   # req(input$semantic_key)
+  #   if(is.null(input$semantic_key) || stringi::stri_isempty(input$semantic_key)){
+  #     if(fs::file_exists(file.path("keys","semantic.key")))
+  #       fs::file_delete(file.path("keys","semantic.key"))
+  #     # removeModal()
+  #     return()
+  #   }
+  #   raw_key <- charToRaw(trimws(input$semantic_key))
+  #   encrypted_semantic <- sodium::data_encrypt(raw_key, key=sha256(glens_env$privkey_dec))
+  #   saveRDS(encrypted_semantic, file = file.path("keys","semantic.key"))
+  #   if(is_WASM){
+  #     session$sendCustomMessage("save_key_to_browser", list(platform = "semantic_key", key = raw_key))
+  #   }
+  #   showNotification("Semantic Scholar Key Encrypted and Saved.", type = "message")
+  #   # removeModal()
+  # })
+  # observeEvent(input$save_crossref, {
+  #   # fs::dir_create("keys")
+  #   # req(input$semantic_key)
+  #   if(is.null(input$crossref_key) || stringi::stri_isempty(input$crossref_key)){
+  #     if(fs::file_exists(file.path("keys","crossref.key")))
+  #       fs::file_delete(file.path("keys","crossref.key"))
+  #     # removeModal()
+  #     return()
+  #   }
+  #   raw_key <- charToRaw(trimws(input$crossref_key))
+  #   encrypted_crossref <- sodium::data_encrypt(raw_key, key=sha256(glens_env$privkey_dec))
+  #   saveRDS(encrypted_crossref, file = file.path("keys","crossref.key"))
+  #   if(is_WASM){
+  #     session$sendCustomMessage("save_key_to_browser", list(platform = "crossref_key", key = raw_key))
+  #   }
+  #   showNotification("Crossref Key Encrypted and Saved.", type = "message")
+  #   # removeModal()
+  # })
+  # observeEvent(input$save_opencites, {
+  #   # fs::dir_create("keys")
+  #   # req(input$semantic_key)
+  #   if(is.null(input$opencites_key) || stringi::stri_isempty(input$opencites_key)){
+  #     if(fs::file_exists(file.path("keys","opencites.key")))
+  #       fs::file_delete(file.path("keys","opencites.key"))
+  #     # removeModal()
+  #     return()
+  #   }
+  #   raw_key <- charToRaw(trimws(input$opencites_key))
+  #   encrypted_opencites <- sodium::data_encrypt(raw_key, key=sha256(glens_env$privkey_dec))
+  #   saveRDS(encrypted_opencites, file = file.path("keys","opencites.key"))
+  #   if(is_WASM){
+  #     session$sendCustomMessage("save_key_to_browser", list(platform = "opencites_key", key = raw_key))
+  #   }
+  #   showNotification("OpenCitations Key Encrypted and Saved.", type = "message")
+  #   # removeModal()
+  # })
   
   observeEvent(input$cancel_button,{
       message("Cancel signal received.")
@@ -1854,7 +1894,7 @@ server <- function(input, output, session) {
       shinyjs::hide("cdist_plot")
       shinyjs::hide("aperc_plot")
       shinyjs::hide("cperc_plot")
-      shinyjs::hide("network_filtered")
+      # shinyjs::hide("network_filtered")
       # shinyjs::hide("network_full")
       # shinyjs::hide("extended_table")
       shinyjs::hide(id="year_slider")
@@ -1865,311 +1905,6 @@ server <- function(input, output, session) {
       
       removeModal()
   })
-  
-  # observeEvent(rv$glens_year_filtered, {
-  #   filters <- debounced_inputs()
-  #   # print(paste("length(filters$authors):",length(filters$authors)))
-  #   
-  #   if("SCOPUS_ID" %in% colnames(rv$glens_year_filtered)){
-  #     # req("SCOPUS_ID" %in% colnames(rv$glens_year_filtered))
-  #     # 1. Safely extract the column (handles NULL if the table isn't ready)
-  #     scopus_col <- rv$glens_year_filtered$SCOPUS_ID
-  #     
-  #     if (is.null(scopus_col) || length(scopus_col) == 0) {
-  #       # Safe fallback if data isn't loaded yet
-  #       available_scoupusids <- character(0) 
-  #       
-  #     } else {
-  #       # 2. Split by comma, semicolon, or literal double-quote
-  #       raw_splits <- unlist(strsplit(as.character(scopus_col), split = "[,;\"]", perl = TRUE))
-  #       
-  #       # 3. Trim whitespace
-  #       trimmed_splits <- trimws(raw_splits)
-  #       
-  #       # 4. Remove empty strings and get unique values directly
-  #       available_scoupusids <- unique(trimmed_splits[trimmed_splits != ""])
-  #     }
-  #     # print(available_scoupusids)
-  #     req(length(na.omit(available_scoupusids)) > 0)
-  #     if (isTRUE(input$autofill_scopusid_input)) {
-  #       updateTextAreaInput(session, "scopusid_text", value=paste(available_scoupusids, collapse="\n"))
-  #     } else {
-  #       updateTextAreaInput(session, "scopusid_text", value=NULL)
-  #     }
-  #   }
-  #   print(paste("length(filters$authors):",length(filters$authors)))
-  #   print(paste("colnames(rv$glens_year_filtered):",paste(colnames(rv$glens_year_filtered),collapse=",")))
-  #   req(length(filters$authors) > 0)
-  #   
-  #   req(all(c("First_Author","Second_Author","Co_Author","Corresponding_Author", "Adjusted_Citations", "Qscore") %in% colnames(rv$glens_year_filtered)))
-  #   
-  #   rv$glens_year_filtered <- extend_input_table(rv, rv$glens_year_filtered)
-  #   compute_indices(rv, rv$glens_year_filtered)
-  #   plot_glens_table(rv, session)
-  # })
-  # # #source selection, slider, author_list ,Slider Events
-  # # observeEvent(c(rv$glens_etable_final, input$selected_source, input$year_slider, input$author_list, input$author_logic_gate), {
-  # # 3. Execute the logic when the debounced inputs finally settle
-  # observeEvent(debounced_inputs(), {
-  # # observe({
-  #     filters <- debounced_inputs()
-  #     req(filters$source,filters$year)
-  #     req(rv$glens_etable_final, input$selected_source, input$year_slider) #input$author_list
-  #     # message(paste("(post)nrow(rv$glens_etable_final):",nrow(rv$glens_etable_final)))
-  #     # message(paste("(post)colnames(rv$glens_etable_final):",colnames(rv$glens_etable_final)))
-  #     # req("Source" %in% names(rv$glens_etable_final))
-  #     # req("Qscore" %in% names(rv$glens_etable_final))
-  #   
-  #     if(isTRUE(is.null(filters$logic_gate))){
-  #       author_logic_gate <- "OR"
-  #     }else{
-  #       author_logic_gate <- filters$logic_gate
-  #     }
-  #     if(nrow(rv$glens_etable_final)<=0){
-  #       return()
-  #     }
-  #     if(is.na(filters$year[1]) || is.na(filters$year[2])){
-  #       return()
-  #     }
-  #     if(rv$is_glens_exec){
-  #       warning("ColabNET is Executing...")
-  #       return()
-  #     }
-  #     # shinyjs::disable(id="year_slider")
-  #   
-  #     # print("Changed range...")
-  #     # output$log <- renderText("Changed range...")
-  #     # extend_input_table(rv)
-  #     # rv$glens_year_filtered <- rv$glens_etable_final %>%
-  #     #   filter(Year >= input$year_slider[1]) %>%
-  #     #   filter(Year <= input$year_slider[2])
-  #     #   # filter(dplyr::between(
-  #     #   #   Year,
-  #     #   #   input$year_slider[1],
-  #     #   #   input$year_slider[2]
-  #     #   # ))
-  #     
-  #     yeardata_tmp <- data.frame()
-  #     if("Year" %in% colnames(rv$glens_etable_final) && "Source" %in% colnames(rv$glens_etable_final)){
-  #         year_levels <- levels(factor(rv$glens_etable_final[["Year"]]))
-  #         if(length(year_levels) > 1){
-  #           yeardata_tmp <- rv$glens_etable_final %>%
-  #             filter(
-  #               Year >= filters$year[1],
-  #               Year <= filters$year[2],
-  #               Source == filters$source # The new source-based filter logic
-  #             )
-  #           
-  #           # print("rv$glens_etable_final===>")
-  #           # print(rv$glens_etable_final %>%
-  #           #         filter(Year >= input$year_slider[1],
-  #           #                Year <= input$year_slider[2]))
-  #           if(nrow(yeardata_tmp) <= 0){
-  #             # output$log <- renderText({paste("input$year_slider - Warning: No data found for this year range.")})
-  #             rv$log_text <- paste(rv$log_text, paste("input$year_slider - Warning: No data found for this year range."), sep="<br>")
-  #             warning("input$year_slider - Warning: No data found for this year range.")
-  #             # shinyjs::hide("sh_index")
-  #             shinyjs::hide("summary_table")
-  #             shinyjs::hide("acounts_plot")
-  #             shinyjs::hide("ccounts_plot")
-  #             shinyjs::hide("cdist_plot")
-  #             shinyjs::hide("aperc_plot")
-  #             shinyjs::hide("cperc_plot")
-  #             shinyjs::hide("network_filtered")
-  #             # shinyjs::hide("extended_table")
-  #             shinyjs::enable(id="year_slider")
-  #             return()
-  #           }
-  #           
-  #           rv$log_text <- paste(rv$log_text,paste("(Slider:", input$year_slider[1], "-", input$year_slider[2],")","Filtered years to range...", min(yeardata_tmp$Year), "and",max(yeardata_tmp$Year)
-  #           ),paste("Source:", input$selected_source), sep="<br>")
-  #         }else if(length(year_levels) == 1){
-  #           yeardata_tmp <- rv$glens_etable_final %>%
-  #             filter(
-  #               Year >= year_levels,
-  #               Year <= year_levels,
-  #               Source == filters$source 
-  #             )
-  #         }else{
-  #           yeardata_tmp <- rv$glens_etable_final  
-  #         }
-  #     }else{
-  #       rv$log_text <- paste(rv$log_text,"'Year' & 'Source' columns are missing. Skipping filters", sep="<br>")  
-  #       yeardata_tmp <- rv$glens_etable_final  
-  #       }
-  #     # output$log <- renderText({ rv$log_text })
-  #     # print(paste("(Slider:", input$year_slider[1], "-", input$year_slider[2],")","Filtered years to range...", min(rv$glens_year_filtered$Year), "and",max(rv$glens_year_filtered$Year)))
-  #     # print(str(rv$glens_year_filtered$Year))
-  #     #Fetch author info only when auto_refresh_lookup is enabled
-  #     yeardata_tmp[["matched_token"]] <- NULL  
-  #   req(input$auto_refresh_lookup)
-  #     # if (isTRUE(input$auto_refresh_lookup)) {   
-  #     # raw_text <- filters$authors
-  #     print(paste("HERE2:RT:", filters$authors))
-  #     # Only apply the logic gate if the user has actually typed something
-  #     if (!is.null(filters$authors) && length(filters$authors) > 0){ #&& trimws(raw_text) != "") {
-  #       author_list <- filters$authors #unlist(strsplit(filters$authors, "[\n,]"))
-  #       author_list <- stringr::str_squish(author_list)
-  #       author_list <- stringr::str_to_title(author_list)
-  #       author_list <- author_list[author_list != ""]
-  #       
-  #       rv$author_list <- unique(author_list)
-  #       # Apply the logic gate function we built earlier
-  #       if (length(author_list) > 0) {
-  #         
-  #         # 1. Grab current toggle states (fallback to TRUE if NULL)
-  #         ext_match_flag <- if (!is.null(input$ext_match)) input$ext_match else TRUE
-  #         ignore_case_flag <- if (!is.null(input$ignore_case)) input$ignore_case else TRUE
-  #         
-  #         # 2. Identify which columns the user selected in the Lookup Controls
-  #         search_cols <- names(rv$detected_mv_cols)
-  #         if (is.null(search_cols) || length(search_cols) == 0) search_cols <- "Authors"
-  #         valid_search_cols <- intersect(search_cols, colnames(yeardata_tmp))
-  #         if (length(valid_search_cols) == 0) valid_search_cols <- "Authors"
-  #         
-  #         # 3. Apply the logic filter
-  #         filtered_df <- apply_author_logic(
-  #           pubs_df          = yeardata_tmp,
-  #           selected_authors = author_list, 
-  #           gate             = author_logic_gate,
-  #           ext_match        = ext_match_flag,
-  #           ignore_case      = ignore_case_flag,
-  #           search_cols      = valid_search_cols
-  #         )
-  #         print(paste("colnames(filtered_df):", paste(colnames(filtered_df), collapse=",")))
-  #         # 4. Save the newly filtered data to your reactive variable
-  #         yeardata_tmp <- filtered_df
-  #         
-  #         shinyjs::show("summary_table")
-  #         shinyjs::show("acounts_plot")
-  #         shinyjs::show("ccounts_plot")
-  #         shinyjs::show("cdist_plot")
-  #         shinyjs::show("aperc_plot")
-  #         shinyjs::show("cperc_plot")
-  #         shinyjs::show("network_filtered")
-  #       }
-  #     } else{
-  #       # hide plots because no keywords were given
-  #       # shinyjs::hide("sh_index")
-  #       # shinyjs::hide("summary_table")
-  #       print(paste("HERE2.1!!!!:", length(filters$authors)))
-  #       shinyjs::hide("acounts_plot")
-  #       shinyjs::hide("ccounts_plot")
-  #       shinyjs::hide("cdist_plot")
-  #       shinyjs::hide("aperc_plot")
-  #       shinyjs::hide("cperc_plot")
-  #       shinyjs::hide("network_filtered")
-  #       shinyjs::enable(id="year_slider")
-  #       return()
-  #     }
-  #     # }
-  #     
-  #     # output$extended_table <- renderTable(rv$glens_year_filtered, striped = TRUE)
-  #     # output$summary_table <- renderTable(rv$summary_table, striped = TRUE)
-  #     # output$extended_table <- DT::renderDataTable({
-  #     #   datatable(
-  #     #     rv$glens_year_filtered,
-  #     #     options = list(
-  #     #       scrollY = "600px",
-  #     #       scrollX = TRUE,
-  #     #       paging = TRUE
-  #     #     )
-  #     #   )
-  #     # })
-  #     
-  #     # output$extended_table <- DT::renderDataTable({
-  #     #   datatable(
-  #     #     rv$glens_year_filtered,
-  #     #     extensions = 'Buttons', # 1. Load the extension
-  #     #     options = list(
-  #     #       scrollY = "600px",
-  #     #       scrollX = TRUE,
-  #     #       paging = TRUE,
-  #     #       dom = 'Blfrtip',       # 2. Add 'B' to the layout (B = Buttons)
-  #     #       lengthMenu = list(c(10, 25, 50, 100, -1), c('10', '25', '50', '100', 'All')),
-  #     #       buttons = c('copy', 'csv', 'excel', 'pdf', 'print') # 3. Define buttons
-  #     #     )
-  #     #   )
-  #     # })
-  #     
-  #     req(rv$author_match_regex)
-  #     print("observeEvent(): rv$author_match_regex:")
-  #     print(str(rv$author_match_regex))
-  #     rv$glens_year_filtered <- extend_input_table(rv, yeardata_tmp)
-  #     # rv$glens_year_filtered <- rv$glens_etable_final
-  #     if (nrow(rv$glens_year_filtered) <= 0) {
-  #       rv$log_text <- paste(rv$log_text, "No keywords were matched.",sep="<br>")
-  #       # shinyjs::enable("submit_button")
-  #       # shinyjs::hide("progress_overlay")
-  #       # # req(nrow(rv$glens_year_filtered) > 0)
-  #     } else {
-  #       compute_indices(rv, yeardata_tmp)
-  #       
-  #       rv$glens_year_filtered <- yeardata_tmp
-  #       # shinyjs::show("extended_table")
-  #     }
-  #     
-  #     # plot_glens_table(rv, session)
-  #     # plot_glens_table(rv, output, session)
-  #     # plot_glens_table()
-  #     
-  #     shinyjs::enable(id="year_slider")
-  # 
-  # })
-  
-  
-  # ==============================================================================
-  # AUTOMATIC DATA PIPELINE (Replaces manual observers)
-  # ==============================================================================
-  
-  # # 1. Base Extended Table (Runs ONCE when new data is imported via submit/merge)
-  # glens_extended_rx <- reactive({
-  #   req(rv$glens_input_table, rv$author_match_regex)
-  #   print("reactive():glens_extended_rx")
-  #   return(extend_input_table(rv, rv$glens_input_table, rv$author_match_regex, rv$target_variants_norm))
-  # })
-  # 
-  # # 2. MATCH JOURNALS (Runs ONCE on the full extended table)
-  # # This becomes your "glens_full_table" equivalent.
-  # glens_full_table_rx <- reactive({
-  #   req(glens_extended_rx())
-  #   print("reactive():glens_full_table_rx")
-  #   return(match_journals(rv, glens_extended_rx()))
-  # })
-  # 
-  # # ---------------------------------------------------------
-  # # MANAGER OBSERVER: Sets up the UI when data is ready
-  # # ---------------------------------------------------------
-  # observeEvent(glens_full_table_rx(), {
-  #   df <- glens_full_table_rx()
-  #   req(nrow(df) > 0)
-  #   
-  #   # 1. Register the skeletons (This queues the JS creation)
-  #   render_skeleton_plots(rv, df, output)
-  #   
-  #   # 2. Calculate years
-  #   years <- as.numeric(df$Year)
-  #   min_yr <- min(years, na.rm = TRUE)
-  #   max_yr <- max(years, na.rm = TRUE)
-  #   
-  #   # 3. SHOW the UI elements FIRST
-  #   shinyjs::show("year_slider")
-  #   shinyjs::show("sh_index")
-  #   shinyjs::show("summary_table")
-  #   shinyjs::show("lookup_controls_panel")
-  #   
-  #   # 4. Update the slider
-  #   updateSliderInput(session, "year_slider",
-  #                     min = min_yr,
-  #                     max = max_yr,
-  #                     value = c(min_yr, max_yr))
-  #   
-  #   rv$log_text <- paste(rv$log_text, "Journal matching complete. UI updated.", sep="<br>")
-  # })
-  
-  # ---------------------------------------------------------
-  # PLOT PROXY OBSERVER: Pushes data only after UI exists
-  # ---------------------------------------------------------
   
   raw_lookup_inputs <- reactive({
     req(rv$glens_full_table)
@@ -2226,7 +1961,7 @@ server <- function(input, output, session) {
   })
   
   # 2. Add a delay (debounce). 
-  debounced_inputs <- raw_lookup_inputs %>% debounce(800)
+  debounced_inputs <- raw_lookup_inputs %>% debounce(1000)
   
   active_filters <- reactive({
     if (isTRUE(input$auto_refresh_lookup)) {
@@ -2348,6 +2083,7 @@ server <- function(input, output, session) {
     #       "position_rank"
     #     )))
     # }
+    
     return(df)
   })
   
@@ -2372,6 +2108,15 @@ server <- function(input, output, session) {
     
     shinyjs::show("summary_table")
     
+    if ("token_count" %in% colnames(df)) {
+      updateSliderInput(
+        session, 
+        "custom_max_keywords", 
+        min = min(df$token_count, na.rm = TRUE), 
+        max = max(df$token_count, na.rm = TRUE)
+      )
+    }
+    
     # 3. UPDATE THE PLOTS
     # We use try() because if the skeleton isn't fully rendered in the UI yet, 
     # the proxy might throw a temporary error.
@@ -2384,6 +2129,119 @@ server <- function(input, output, session) {
       #   render_skeleton_plots(rv, df, output)
       # }
     }, silent = TRUE)
+  })
+  
+  
+  # =============================================================================
+  # Venn diagram updates
+  # =============================================================================
+  observeEvent(list(
+    input$venn_col_filtered, 
+    glens_year_filtered_rx()
+  ), {
+    req(input$enable_venn)
+    
+    df <- glens_year_filtered_rx()
+    col <- input$venn_col_filtered
+    delims <- rv$detected_mv_cols
+    
+    req(df, nrow(df) > 0, col, delims[[col]])
+    target_delim <- delims[[col]]
+    
+    # Standardize and split the column just like the Network Graph
+    temp_df <- df %>%
+      select(Entity = !!sym(col)) %>%
+      filter(!is.na(Entity), trimws(Entity) != "") %>%
+      mutate(Entity = as.character(Entity))
+    
+    if (!is.null(target_delim) && nchar(trimws(target_delim)) > 0) {
+      temp_df <- temp_df %>%
+        mutate(Entity = stringr::str_split(Entity, stringr::fixed(target_delim))) %>%
+        tidyr::unnest(Entity)
+    }
+    
+    # Extract unique, cleaned entities to populate the dropdown
+    unique_entities <- temp_df %>%
+      mutate(Entity = stringr::str_squish(Entity)) %>%
+      filter(Entity != "") %>%
+      pull(Entity) %>%
+      unique() %>%
+      sort()
+    
+    # Preserve current selection if the user changes other filters
+    current_selection <- input$custom_venn_selector
+    valid_selection <- intersect(current_selection, unique_entities)
+    
+    updateSelectizeInput(
+      session, "custom_venn_selector", 
+      choices = unique_entities, 
+      selected = valid_selection,
+      server = TRUE
+    )
+  })
+  
+  
+  # =========================================================================
+  # 1. FIXED: DYNAMIC SLIDER BOUND UPDATER WITH REACTIVE FREEZING
+  # =========================================================================
+  observeEvent(list(
+    input$net_col_filtered, 
+    glens_year_filtered_rx(), 
+    input$custom_max_keywords
+  ), {
+    req(input$enable_network)
+    df <- glens_year_filtered_rx()
+    col <- input$net_col_filtered
+    delims <- rv$detected_mv_cols
+    
+    req(df, nrow(df) > 0, col, delims[[col]])
+    target_delim <- delims[[col]]
+    
+    temp_df <- df %>%
+      mutate(paper_id = row_number()) %>% 
+      select(paper_id, Entity = !!sym(col)) %>%
+      filter(!is.na(Entity), trimws(Entity) != "") %>%
+      mutate(Entity = as.character(Entity))
+    
+    if (!is.null(target_delim) && nchar(trimws(target_delim)) > 0) {
+      temp_df <- temp_df %>%
+        mutate(Entity = stringr::str_split(Entity, stringr::fixed(target_delim))) %>%
+        tidyr::unnest(Entity)
+    }
+    
+    temp_df <- temp_df %>%
+      mutate(Entity = stringr::str_squish(Entity)) %>%
+      filter(Entity != "")
+    
+    # Calculate boundaries
+    max_node_occurrences <- temp_df %>% count(Entity) %>% pull(n) %>% max(na.rm = TRUE)
+    if (is.infinite(max_node_occurrences) || max_node_occurrences < 1) max_node_occurrences <- 1
+    
+    temp_edges <- temp_df %>%
+      distinct(paper_id, Entity) %>%
+      inner_join(temp_df %>% distinct(paper_id, Entity), by = "paper_id", relationship = "many-to-many") %>%
+      filter(Entity.x < Entity.y)
+    
+    max_edge_frequency <- temp_edges %>% count(Entity.x, Entity.y) %>% pull(n) %>% max(na.rm = TRUE)
+    if (is.infinite(max_edge_frequency) || max_edge_frequency < 1) max_edge_frequency <- 1
+    
+    if (nrow(temp_edges) > 0) {
+      g_temp <- igraph::graph_from_data_frame(temp_edges[, c("Entity.x", "Entity.y")], directed = FALSE)
+      max_cluster_size <- max(igraph::components(g_temp)$csize, na.rm = TRUE)
+    } else {
+      max_cluster_size <- 2
+    }
+    if (is.infinite(max_cluster_size) || max_cluster_size < 2) max_cluster_size <- 2
+    
+    # CRITICAL FIX: Freeze inputs so downstream data generation waits for updates to settle
+    shiny::freezeReactiveValue(input, "node_freq_range")
+    shiny::freezeReactiveValue(input, "edge_freq_range")
+    shiny::freezeReactiveValue(input, "cluster_size_range")
+    
+    # Update inputs with fixed defaults
+    updateSliderInput(session, "node_freq_range", min = 1, max = max_node_occurrences, value = c(1, max_node_occurrences))
+    updateSliderInput(session, "edge_freq_range", min = 0, max = max_edge_frequency, value = c(1, 1)) 
+    updateSliderInput(session, "cluster_size_range", min = 1, max = max_cluster_size, value = c(1, dplyr::if_else(max_cluster_size < 500, max_cluster_size, 500)))
   })
   
   # 4. Indices Computation (Calculates based on what is currently visible/filtered)
@@ -2552,6 +2410,10 @@ server <- function(input, output, session) {
     sel_filt <- if (isTruthy(curr_filt) && curr_filt %in% active_cols) curr_filt else active_cols[1]
     updateSelectInput(session, "net_col_filtered", choices = active_cols, selected = sel_filt)
     
+    curr_venn <- input$venn_col_filtered
+    sel_venn <- if (isTruthy(curr_venn) && curr_venn %in% active_cols) curr_venn else active_cols[1]
+    updateSelectInput(session, "venn_col_filtered", choices = active_cols, selected = sel_venn)
+    
     # # Update Full Network dropdown
     # curr_full <- input$net_col_full
     # sel_full <- if (isTruthy(curr_full) && curr_full %in% active_cols) curr_full else active_cols[1]
@@ -2570,136 +2432,85 @@ server <- function(input, output, session) {
   # net_data_full_debounced <- net_data_full_raw %>% debounce(800)
 
   # Calculate Filtered Network Data (Debounced)
-  # 1. Initialize a reactiveVal outside your reactive to act as your state cache
+  # 1. Initialize Network Cache (Updated for Range inputs)
   network_cache <- reactiveVal(list(
     col = NULL,
     delim = NULL,
     result = NULL,
-    author_list=c(),
-    custom_edge_count = 1500,
-    custom_conn_count = 1
+    author_list = c(),
+    edge_freq_range = c(1, 1), # NEW double-valued edge range
+    node_freq_range = c(1, 2),  # NEW double-valued node range
+    custom_max_keywords = c(1, 500),
+    cluster_size_range = c(1, 500),
+    prune_leaves = FALSE
   ))
   
-  # Calculate Filtered Network Data (Debounced)
+  # =========================================================================
+  # 2. Calculate Filtered Network Data (Debounced) (PURE reactive without UI side-effects)
+  # =========================================================================
   net_data_filtered_raw <- reactive({
     if(!input$enable_network){
       return(list(nodes = data.frame(), edges = data.frame()))
     }
-    req(input$custom_conn_count, input$custom_edge_count)
-    # req(rv$detected_mv_cols)
+    
+    req(input$edge_freq_range, input$node_freq_range, input$custom_max_keywords, input$cluster_size_range)
     
     col <- input$net_col_filtered
     delims <- rv$detected_mv_cols
     df <- glens_year_filtered_rx()
     
-    req(input$custom_edge_count)
-    req(col, df, nrow(df) > 0)
-    
-    req(delims[[col]])
+    # req(col, df, nrow(df) > 0, delims[[col]])
+    req(col, df, delims[[col]])
     target_delim <- delims[[col]]
+    req(!stringi::stri_isempty(target_delim))
     
-    # 2. CACHE CHECK LOGIC
     cache <- network_cache()
-    
-    # If the column and delim match the previous run, return the saved graph data instantly!
-    if (!is.null(cache$col) && cache$col == col && cache$delim == target_delim && cache$custom_edge_count == input$custom_edge_count && cache$custom_conn_count == input$custom_conn_count) {
-      if(length(cache$author_list) == length(rv$author_list)){
-        # print(paste("cache$author_list[order(cache$author_list)]:",cache$author_list[order(cache$author_list)]))
-        # print(paste("rv$author_list[order(rv$author_list)]:",rv$author_list[order(rv$author_list)]))
-        # print(paste("all(match(cache$author_list[order(cache$author_list)], rv$author_list[order(rv$author_list)])):",all(match(cache$author_list[order(cache$author_list)], rv$author_list[order(rv$author_list)]))))
-        if(isTRUE(all(match(cache$author_list[order(cache$author_list)], rv$author_list[order(rv$author_list)]))) ){
-          # message("Column unchanged. Returning cached network...")
-          return(cache$result)
-        }
+    if (!is.null(cache$col) && 
+        cache$col == col && 
+        cache$delim == target_delim && 
+        identical(cache$edge_freq_range, input$edge_freq_range) && 
+        identical(cache$node_freq_range, input$node_freq_range) && 
+        identical(cache$custom_max_keywords, input$custom_max_keywords) &&
+        identical(cache$cluster_size_range, input$cluster_size_range) && 
+        isTRUE(cache$prune_leaves) == isTRUE(input$prune_leaves)) {
+      
+      if (setequal(cache$author_list, rv$author_list)) {
+        return(cache$result)
       }
     }
     
-    # 3. IF DIFFERENT, RUN THE MATH...
-    message(paste("Generating network for:", col, "with delim:", target_delim))
+    message(paste("Generating network for:", col))
     
-    raw_net <- build_collaboration_network(df, input$custom_conn_count, input$custom_edge_count, rv$author_list, col, target_delim)
+    raw_net <- build_collaboration_network(
+      df = df, 
+      authors_per_pub = input$custom_max_keywords, 
+      node_freq_range = input$node_freq_range,   
+      edge_freq_range = input$edge_freq_range,   
+      main_authors_list = rv$author_list, 
+      target_col = col, 
+      target_delim = target_delim,
+      fr_iterations = input$fr_iterations,        
+      prune_leaves = input$prune_leaves,
+      cluster_size_range = input$cluster_size_range
+    )
     
-    req(nrow(raw_net$nodes) > 0)
+    # req(nrow(raw_net$nodes) > 0)
+    if (is.null(raw_net) || nrow(raw_net$nodes) == 0) {
+      return(list(nodes = data.frame(), edges = data.frame()))
+    }
     
-    # Precompute the layout
-    g <- igraph::graph_from_data_frame(d = raw_net$edges, vertices = raw_net$nodes, directed = FALSE)
-    coords <- igraph::layout_with_fr(g)
-    
-    raw_net$nodes$x <- coords[, 1] * 500
-    raw_net$nodes$y <- coords[, 2] * 500
-    
-    # 4. SAVE THE NEW RESULT TO THE CACHE
     network_cache(list(
-      col = col, 
-      delim = target_delim, 
-      result = raw_net,
-      custom_edge_count = input$custom_edge_count,
-      custom_conn_count = input$custom_conn_count,
-      author_list = rv$author_list
+      col = col, delim = target_delim, result = raw_net,
+      edge_freq_range = input$edge_freq_range, node_freq_range = input$node_freq_range,
+      author_list = rv$author_list, custom_max_keywords = input$custom_max_keywords,
+      cluster_size_range = input$cluster_size_range, prune_leaves = input$prune_leaves
     ))
     
     return(raw_net)
   })
+  
   net_data_filtered_debounced <- net_data_filtered_raw %>% debounce(1000)
   
-  # # Render Full Data Network
-  # output$network_full <- renderVisNetwork({
-  #   net_data <- net_data_full_debounced()
-  #   req(net_data, nrow(net_data$edges) > 0)
-  #   
-  #   visNetwork(net_data$nodes, net_data$edges, width = "100%", height = "500px") %>%
-  #     visNodes(font = list(size = 14)) %>%
-  #     # smooth = FALSE is critical for large graph rendering performance
-  #     visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = FALSE) %>%
-  #     
-  #     # REMOVED: visIgraphLayout() 
-  #     # ADDED: Browser-side physics calculation (frees up the R thread)
-  #     visPhysics(solver = "forceAtlas2Based", 
-  #                forceAtlas2Based = list(gravitationalConstant = -50),
-  #                stabilization = list(iterations = 150)) %>%
-  #     
-  #     visOptions(highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE), nodesIdSelection = TRUE, autoResize = TRUE) %>%
-  #     addFontAwesome()
-  # })
-
-  # # Render Filtered Subset Network (Apply the exact same changes here)
-  # output$network_filtered <- renderVisNetwork({
-  #   net_data <- net_data_filtered_debounced()
-  #   # req(net_data, nrow(net_data$edges) > 0)
-  # 
-  #   # req(net_data, nrow(net_data$nodes) > 0)
-  #   # If the network is empty, draw a single placeholder node
-  #   if (is.null(net_data) || nrow(net_data$nodes) == 0) {
-  #     empty_nodes <- data.frame(
-  #       id = 1,
-  #       label = "No collaborative links\nfound for this selection",
-  #       shape = "text",
-  #       font.size = 20,
-  #       font.color = "red"
-  #     )
-  #     empty_edges <- data.frame(from = integer(0), to = integer(0))
-  # 
-  #     return(visNetwork(empty_nodes, empty_edges, width = "100%", height = "500px"))
-  #   }
-  # 
-  #   # visNetwork(net_data$nodes, net_data$edges, width = "100%", height = "500px") %>%
-  #   #   visNodes(font = list(size = 14)) %>%
-  #   #   visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = FALSE) %>%
-  #   #   visPhysics(solver = "forceAtlas2Based",
-  #   #              forceAtlas2Based = list(gravitationalConstant = -50),
-  #   #              stabilization = list(iterations = 150)) %>%
-  #   #   visOptions(highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE), nodesIdSelection = TRUE, autoResize = TRUE) %>%
-  #   #   addFontAwesome()
-  # 
-  #   # rv$is_submitted <- F #FINISH THE SUBMISSION FLOW before the last graph/plot
-  # 
-  #   visNetwork(net_data$nodes, net_data$edges, width = "100%", height = "500px") %>%
-  #         visNodes(font = list(size = 14)) %>%
-  #         visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = TRUE) %>%
-  #         visIgraphLayout(layout = "layout_with_fr") %>%
-  #         visOptions(highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE), nodesIdSelection = TRUE, autoResize= TRUE) %>%
-  #         addFontAwesome()
-  # })
   
   output$network_filtered <- renderVisNetwork({
     init_nodes <- data.frame(id = "init_node", hidden = TRUE)
@@ -2711,7 +2522,7 @@ server <- function(input, output, session) {
         font = list(size = 14),
         color = list(highlight = list(background = "red", border = "darkred"))
       ) %>%
-      visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = TRUE) %>%
+      visEdges(color = list(color = "#cccccc", highlight = "#2c3e50"), smooth = FALSE) %>%
       # visPhysics(
       #   solver = "forceAtlas2Based",
       #   forceAtlas2Based = list(
@@ -2732,23 +2543,33 @@ server <- function(input, output, session) {
       visNetwork::visNodes(physics = FALSE) %>% # Physics must be off if passing custom x,y
       visNetwork::visEvents(beforeDrawing = htmlwidgets::JS("
         function(ctx) {
-          if (window.attentionCircles && window.attentionCircles.length > 0) {
-            window.attentionCircles.forEach(function(circle) {
-              if (circle.r > 0) {
-                ctx.beginPath();
-                ctx.arc(circle.x, circle.y, circle.r, 0, 2 * Math.PI, false);
-                ctx.fillStyle = 'rgba(201, 100, 128, 0.15)'; 
-                ctx.fill();
-                ctx.lineWidth = 2;
-                ctx.strokeStyle = '#C96480';
-                ctx.stroke();
+          if (window.neighbourhoodCircles && window.neighbourhoodCircles.length > 0) {
+            // 'this' refers to the vis.js network instance
+            var network = this; 
+            
+            window.neighbourhoodCircles.forEach(function(circle) {
+              if (circle.r > 0 && circle.nodeId) {
+                
+                // Ask the network for the LIVE coordinates of this specific node
+                var positions = network.getPositions([circle.nodeId]);
+                var pos = positions[circle.nodeId];
+                
+                if (pos) {
+                  ctx.beginPath();
+                  ctx.arc(pos.x, pos.y, circle.r, 0, 2 * Math.PI, false);
+                  ctx.fillStyle = 'rgba(201, 100, 128, 0.15)'; 
+                  ctx.fill();
+                  ctx.lineWidth = 2;
+                  ctx.strokeStyle = '#C96480';
+                  ctx.stroke();
+                }
               }
             });
           }
         }
       ")) %>%
       # ADDED: multiselect = TRUE allows Ctrl+Click on the canvas
-      visInteraction(hover = TRUE, multiselect = TRUE) %>% 
+      visInteraction(hover = TRUE, multiselect = TRUE, hideEdgesOnDrag = TRUE, hideNodesOnDrag = FALSE) %>% 
       visOptions(
         highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE),
         autoResize = TRUE
@@ -2767,71 +2588,555 @@ server <- function(input, output, session) {
     
   })
   
-  # 1. Trigger on BOTH inputs so changing the keyword draws the circle instantly
-  observeEvent(list(input$attention_slider, input$custom_node_selector), {
+  output$network_summary_table <- renderUI({
     req(input$enable_network)
-    # 2. Use the live debounced data, NOT rv$nodes
+    
+    # Read the live computed network data frame list
     net_data <- net_data_filtered_debounced()
-    req(net_data, nrow(net_data$nodes) > 0)
-    req(length(input$custom_node_selector) > 0)
+    req(net_data)
     
-    # Extract the nodes dataframe
-    current_nodes <- net_data$nodes
+    total_nodes <- nrow(net_data$nodes)
+    total_edges <- nrow(net_data$edges)
     
-    # Safety check: Ensure X and Y actually exist
-    if (!("x" %in% colnames(current_nodes)) || !("y" %in% colnames(current_nodes))) {
+    # Render a clean, stylized dark table to match analytics dashboards
+    tags$div(style = "margin-top: 20px; padding: 10px; background: #2c3e50; border-radius: 6px; box-shadow: inset 0 1px 3px rgba(0,0,0,0.2);",
+             tags$table(class = "table table-condensed",
+                        style = "margin-bottom: 0px; color: #ecf0f1; font-size: 13px; width: 100%;",
+                        tags$thead(
+                          tags$tr(style = "border-bottom: 2px solid #34495e;",
+                                  tags$th(style = "padding: 6px; border: none;", "Network Object"),
+                                  tags$th(style = "padding: 6px; border: none; text-align: right;", "Active Render Count")
+                          )
+                        ),
+                        tags$tbody(
+                          tags$tr(style = "border-bottom: 1px solid #34495e;",
+                                  tags$td(style = "padding: 8px 6px; border: none;", tags$span(style="color: #3498db; margin-right: 6px;", "●"), "Nodes (Unique Entities)"),
+                                  tags$td(style = "padding: 8px 6px; border: none; text-align: right; font-weight: bold;", total_nodes)
+                          ),
+                          tags$tr(style = "border: none;",
+                                  tags$td(style = "padding: 8px 6px; border: none;", tags$span(style="color: #2ecc71; margin-right: 6px;", "▬"), "Edges (Co-occurrences)"),
+                                  tags$td(style = "padding: 8px 6px; border: none; text-align: right; font-weight: bold;", total_edges)
+                          )
+                        )
+             )
+    )
+  })
+  
+  # 1. Trigger on BOTH inputs so changing the keyword draws the circle instantly
+  observeEvent(list(input$neighbourhood_slider, input$custom_node_selector), {
+    req(input$enable_network)
+    proxy <- visNetworkProxy("network_filtered")
+    
+    # Scenario A: Wiped or empty selector state
+    if (is.null(input$custom_node_selector) || length(input$custom_node_selector) == 0 || all(input$custom_node_selector == "")) {
+      proxy %>% visUnselectAll() 
+      updateSelectizeInput(session, "neighbourhood_nodes", choices = character(0), server = TRUE)
+      shinyjs::disable("neighbourhood_slider")
       return()
     }
     
-    centroid_ids <- input$custom_node_selector
+    # Scenario B: Target Keyword exists
+    shinyjs::enable("neighbourhood_slider")
+    proxy %>% visSelectNodes(id = input$custom_node_selector)
     
-    # Ensure the centroids actually exist in the data
+    net_data <- net_data_filtered_debounced()
+    req(net_data, nrow(net_data$nodes) > 0)
+    
+    current_nodes <- net_data$nodes
+    if (!("x" %in% colnames(current_nodes)) || !("y" %in% colnames(current_nodes))) return()
+    
+    centroid_ids <- input$custom_node_selector
     valid_centroids <- current_nodes[current_nodes$id %in% centroid_ids, ]
     if (nrow(valid_centroids) == 0) return()
     
-    # Calculate Distance Matrix using current_nodes
     dist_matrix <- sapply(1:nrow(valid_centroids), function(i) {
       sqrt((current_nodes$x - valid_centroids$x[i])^2 + (current_nodes$y - valid_centroids$y[i])^2)
     })
     
-    # Calculate R_max (Handling single vs multiple rows safely)
+    r_max <- max(dist_matrix, na.rm = TRUE)
+    neighbourhood_val <- abs((1 - (input$neighbourhood_slider / 100)) * 100)
+    current_radius <- r_max * (1 - (neighbourhood_val / 100))
+    
     if (is.vector(dist_matrix)) {
-      r_max <- max(dist_matrix, na.rm = TRUE)
       in_any_circle <- dist_matrix <= current_radius
     } else {
-      r_max <- max(dist_matrix, na.rm = TRUE)
-      attention_val <- input$attention_slider
-      current_radius <- r_max * (1 - (attention_val / 100))
       in_any_circle <- rowSums(dist_matrix <= current_radius) > 0
     }
     
-    current_radius <- r_max * (1 - (input$attention_slider / 100))
     nodes_in_circle <- current_nodes$id[in_any_circle]
     
-    # Update the Attention Nodes selector
     updateSelectizeInput(
       session, 
-      "attention_nodes", 
+      "neighbourhood_nodes", 
       selected = nodes_in_circle,
-      choices = current_nodes$id # Ensure choices are populated so it displays correctly
+      choices = current_nodes$id ,
+      server = TRUE
     )
     
-    # Prepare multiple circles for JavaScript
     circles_js <- lapply(1:nrow(valid_centroids), function(i) {
-      list(
-        x = valid_centroids$x[i],
-        y = valid_centroids$y[i],
-        r = current_radius
-      )
+      list(nodeId = valid_centroids$id[i], r = current_radius)
     })
     
-    # Send the array of circles to JS
-    session$sendCustomMessage("draw_attention_circle", circles_js)
+    session$sendCustomMessage("draw_neighbourhood_circle", circles_js)
     
-    # Force redraw to show the newly painted canvas
-    visNetwork::visNetworkProxy("network_filtered") %>% 
-      visNetwork::visRedraw()
+  }, ignoreInit = TRUE, ignoreNULL = FALSE)
+  
+  
+  
+  debounced_venn_selector <- shiny::debounce(reactive({
+    input$custom_venn_selector
+  }), millis = 1000) # Delays plot rendering for 500ms while user selects items
+  
+  debounced_venn_col <- shiny::debounce(reactive({
+    input$venn_col_filtered
+  }), millis = 1000)
+
+  output$venn_upset_plot <- renderPlot({
+    req(input$enable_venn)
+    
+    # Read from the debounced intermediate reactives
+    selected_targets <- debounced_venn_selector()
+    col <- debounced_venn_col()
+    
+    # PERFORMANCE GUARDRAILS: UpSet will only render if there are matching selections
+    if (is.null(selected_targets) || length(selected_targets) < 2) {
+      plot(c(0, 1), c(0, 1), ann = F, bty = 'n', type = 'n', xaxt = 'n', yaxt = 'n')
+      text(x = 0.5, y = 0.5, "Please select at least 2 keywords to view the UpSet overlap graph.", 
+           cex = 1.1, col = "#391463", font = 2)
+      return()
+    }
+    
+    df <- glens_year_filtered_rx()
+    delims <- rv$detected_mv_cols
+    
+    req(df, nrow(df) > 0, col, delims[[col]])
+    target_delim <- delims[[col]]
+    
+    # Parse and clean the column
+    temp_df <- df %>%
+      mutate(paper_id = row_number()) %>% 
+      select(paper_id, Entity = !!sym(col)) %>%
+      filter(!is.na(Entity), trimws(Entity) != "") %>%
+      mutate(Entity = as.character(Entity))
+    
+    if (!is.null(target_delim) && nchar(trimws(target_delim)) > 0) {
+      temp_df <- temp_df %>%
+        mutate(Entity = stringr::str_split(Entity, stringr::fixed(target_delim))) %>%
+        tidyr::unnest(Entity)
+    }
+    
+    # PERFORMANCE FIX: Strict filtration down to ONLY explicitly selected targets
+    temp_df <- temp_df %>%
+      mutate(Entity = stringr::str_squish(Entity)) %>%
+      filter(Entity %in% selected_targets)
+    
+    # Safety checkpoint in case selected keywords don't match data points
+    if (length(unique(temp_df$Entity)) < 2) {
+      plot(c(0, 1), c(0, 1), ann = F, bty = 'n', type = 'n', xaxt = 'n', yaxt = 'n')
+      text(x = 0.5, y = 0.5, "Selected items do not intersect or co-occur in any records.", 
+           cex = 1.1, col = "#391463", font = 2)
+      return()
+    }
+    
+    # UpSetR requires a wide presence/absence matrix (1s and 0s)
+    upset_data <- temp_df %>%
+      mutate(value = 1) %>%
+      distinct(paper_id, Entity, .keep_all = TRUE) %>%
+      tidyr::pivot_wider(names_from = Entity, values_from = value, values_fill = 0) %>%
+      as.data.frame()
+    
+    # Matching Dynamic Theme Engine
+    base_theme_color <- if (!is.null(input$venn_theme_color)) input$venn_theme_color else "#391463"
+    base_rgb <- col2rgb(base_theme_color)
+    base_hsv <- rgb2hsv(base_rgb[1], base_rgb[2], base_rgb[3])
+    set_bar_color <- hsv(base_hsv[1], max(0.4, base_hsv[2] * 0.7), min(0.9, base_hsv[3] * 1.0))
+    
+    # Render UpSet Plot and suppress internal package deprecation warnings
+    UpSetR::upset(
+      upset_data, 
+      nsets = ncol(upset_data) - 1, # Safe evaluation because of strict target-filtering
+      nintersects = 20, 
+      order.by = "freq", 
+      mainbar.y.label = "Entries in Overlap", 
+      sets.x.label = "Total Entries per Keyword",
+      text.scale = 1.2,
+      matrix.color = base_theme_color,     
+      main.bar.color = base_theme_color,   
+      sets.bar.color = set_bar_color       
+    )
   })
+  
+  output$venn_plot <- renderPlot({
+    req(input$enable_venn)
+    
+    # Read from the debounced intermediate reactives
+    selected_targets <- debounced_venn_selector()
+    col <- debounced_venn_col()
+    
+    if (is.null(selected_targets) || length(selected_targets) < 2) {
+      plot(c(0, 1), c(0, 1), ann = F, bty = 'n', type = 'n', xaxt = 'n', yaxt = 'n')
+      text(x = 0.5, y = 0.5, "Please select at least 2 keywords to view overlap.",
+           cex = 1.2, col = "#391463", font = 2)
+      return()
+    }
+    
+    if (length(selected_targets) > 7) {
+      plot(c(0, 1), c(0, 1), ann = F, bty = 'n', type = 'n', xaxt = 'n', yaxt = 'n')
+      text(x = 0.5, y = 0.5, "Venn Diagram supports a maximum of 7 keywords.",
+           cex = 1.2, col = "#ff0000", font = 2)
+      return()
+    }
+    
+    df <- glens_year_filtered_rx()
+    delims <- rv$detected_mv_cols
+    req(df, nrow(df) > 0, col, delims[[col]])
+    target_delim <- delims[[col]]
+    
+    # Extract the paper IDs and their associated entities
+    temp_df <- df %>%
+      mutate(paper_id = row_number()) %>%
+      select(paper_id, Entity = !!sym(col)) %>%
+      filter(!is.na(Entity), trimws(Entity) != "") %>%
+      mutate(Entity = as.character(Entity))
+    
+    if (!is.null(target_delim) && nchar(trimws(target_delim)) > 0) {
+      temp_df <- temp_df %>%
+        mutate(Entity = stringr::str_split(Entity, stringr::fixed(target_delim))) %>%
+        tidyr::unnest(Entity)
+    }
+    
+    # Filter down to ONLY the targets the user selected in the dropdown
+    filtered_df <- temp_df %>%
+      mutate(Entity = stringr::str_squish(Entity)) %>%
+      filter(Entity %in% selected_targets)
+    
+    venn_data <- split(filtered_df$paper_id, filtered_df$Entity)
+    
+    if (length(venn_data) < 2) return(NULL)
+    
+    # Dynamic Theme Palette Engine
+    base_theme_color <- if (!is.null(input$venn_theme_color)) input$venn_theme_color else "#391463"
+    base_rgb <- col2rgb(base_theme_color)
+    base_hsv <- rgb2hsv(base_rgb[1], base_rgb[2], base_rgb[3])
+    
+    low_gradient  <- hsv(base_hsv[1], 0.03, 0.98) 
+    high_gradient <- base_theme_color            
+    
+    theme_palette <- sapply(seq(0, 6), function(i) {
+      new_h <- (base_hsv[1] + (i * 0.08)) %% 1 
+      new_s <- max(0.4, min(1, base_hsv[2] * (1 - (i * 0.04)))) 
+      new_v <- max(0.5, min(0.95, base_hsv[3] * (1 + (i * 0.03)))) 
+      hsv(new_h, new_s, new_v)
+    })
+    
+    # Render Venn Plot
+    ggVennDiagram::ggVennDiagram(
+      x = venn_data,
+      category.names = names(venn_data),
+      label_alpha = 0,
+      set_color = rep_len(theme_palette, length(venn_data))
+    ) +
+      ggplot2::scale_fill_gradient(low = low_gradient, high = high_gradient) +
+      ggplot2::theme_void() +
+      ggplot2::theme(
+        legend.position = "none",
+        plot.margin = ggplot2::margin(30, 30, 30, 30, "pt")
+      ) +
+      ggplot2::scale_x_continuous(expand = ggplot2::expansion(mult = 0.25)) +
+      ggplot2::scale_y_continuous(expand = ggplot2::expansion(mult = 0.25))
+  })
+    
+  # output$venn_upset_plot <- renderPlot({
+  #   req(input$enable_venn)
+  #   
+  #   df <- glens_year_filtered_rx()
+  #   col <- input$venn_col_filtered
+  #   delims <- rv$detected_mv_cols
+  #   
+  #   req(df, nrow(df) > 0, col, delims[[col]])
+  #   target_delim <- delims[[col]]
+  #   
+  #   # Parse and clean the column
+  #   temp_df <- df %>%
+  #     mutate(paper_id = row_number()) %>% 
+  #     select(paper_id, Entity = !!sym(col)) %>%
+  #     filter(!is.na(Entity), trimws(Entity) != "") %>%
+  #     mutate(Entity = as.character(Entity))
+  #   
+  #   if (!is.null(target_delim) && nchar(trimws(target_delim)) > 0) {
+  #     temp_df <- temp_df %>%
+  #       mutate(Entity = stringr::str_split(Entity, stringr::fixed(target_delim))) %>%
+  #       tidyr::unnest(Entity)
+  #   }
+  #   
+  #   temp_df <- temp_df %>%
+  #     mutate(Entity = stringr::str_squish(Entity)) %>%
+  #     filter(Entity != "")
+  #   
+  #   selected_targets <- input$custom_venn_selector
+  #   
+  #   # If the user selects specific keywords, filter to them. 
+  #   # If left blank, it keeps ALL keywords in the dataset (No omission!)
+  #   if (!is.null(selected_targets) && length(selected_targets) > 0 && any(selected_targets != "")) {
+  #     temp_df <- temp_df %>% filter(Entity %in% selected_targets)
+  #   }
+  #   
+  #   # Check if we have enough data to compute overlaps
+  #   if (length(unique(temp_df$Entity)) < 2) {
+  #     plot(c(0, 1), c(0, 1), ann = F, bty = 'n', type = 'n', xaxt = 'n', yaxt = 'n')
+  #     text(x = 0.5, y = 0.5, "Not enough unique values to compute overlap.", 
+  #          cex = 1.1, col = "#391463", font = 2)
+  #     return()
+  #   }
+  #   
+  #   # UpSetR requires a wide presence/absence matrix (1s and 0s)
+  #   upset_data <- temp_df %>%
+  #     mutate(value = 1) %>%
+  #     distinct(paper_id, Entity, .keep_all = TRUE) %>%
+  #     tidyr::pivot_wider(names_from = Entity, values_from = value, values_fill = 0) %>%
+  #     as.data.frame()
+  #   
+  #   # # Render the UpSet Plot
+  #   # # nsets = number of sets to display (can be high!)
+  #   # # nintersects = number of top overlap combinations to show
+  #   # UpSetR::upset(
+  #   #   upset_data, 
+  #   #   nsets = min(30, ncol(upset_data) - 1), # Safely plots up to 30 sets at once
+  #   #   nintersects = 20, # Shows the top 20 most frequent overlapping combinations
+  #   #   order.by = "freq", 
+  #   #   mainbar.y.label = "Documents in Overlap", 
+  #   #   sets.x.label = "Total Documents per Item",
+  #   #   text.scale = 1.2,
+  #   #   matrix.color = "#391463",
+  #   #   main.bar.color = "#4B8BBE"
+  #   # )
+  #   
+  #   # =========================================================================
+  #   # MATCHING DYNAMIC COLOR ENGINE 
+  #   # =========================================================================
+  #   base_theme_color <- if (!is.null(input$venn_theme_color)) input$venn_theme_color else "#391463"
+  #   
+  #   # Deconstruct the active color into Hue, Saturation, and Value components
+  #   base_rgb <- col2rgb(base_theme_color)
+  #   base_hsv <- rgb2hsv(base_rgb[1], base_rgb[2], base_rgb[3])
+  #   
+  #   # Generate a matching dynamic variant for the horizontal set size bars
+  #   # Maintains the same structural hue family but provides a clean visual contrast
+  #   set_bar_color <- hsv(base_hsv[1], max(0.4, base_hsv[2] * 0.7), min(0.9, base_hsv[3] * 1.0))
+  #   # =========================================================================
+  #   
+  #   # Render the dynamic UpSet Plot
+  #   UpSetR::upset(
+  #     upset_data, 
+  #     nsets = min(30, ncol(upset_data) - 1), # Safely plots up to 30 sets at once
+  #     nintersects = 20, # Shows the top 20 most frequent overlapping combinations
+  #     order.by = "freq", 
+  #     mainbar.y.label = "Keywords in Overlap", 
+  #     sets.x.label = "Total Entries per Keyword",
+  #     text.scale = 1.2,
+  #     # Completely Dynamic UI Color Applications:
+  #     matrix.color = base_theme_color,     # Matches your dynamic matrix intersections
+  #     main.bar.color = base_theme_color,   # Main vertical intersection bar color
+  #     sets.bar.color = set_bar_color       # Matching horizontal group bar color
+  #   )
+  # })
+  # 
+  # output$venn_plot <- renderPlot({
+  #   req(input$enable_venn)
+  #   
+  #   selected_targets <- input$custom_venn_selector
+  #   
+  #   # Venn diagrams need at least 2 sets. If empty or 1, show a helpful message.
+  #   if (is.null(selected_targets) || length(selected_targets) < 2) {
+  #     plot(c(0, 1), c(0, 1), ann = F, bty = 'n', type = 'n', xaxt = 'n', yaxt = 'n')
+  #     text(x = 0.5, y = 0.5, "Please select at least 2 keywords to view overlap.",
+  #          cex = 1.2, col = "#391463", font = 2)
+  #     return()
+  #   }
+  #   
+  #   if (length(selected_targets) > 7) {
+  #     plot(c(0, 1), c(0, 1), ann = F, bty = 'n', type = 'n', xaxt = 'n', yaxt = 'n')
+  #     text(x = 0.5, y = 0.5, "Venn Diagram supports a maximum of 7 keywords.",
+  #          cex = 1.2, col = "#ff0000", font = 2)
+  #     return()
+  #   }
+  #   
+  #   df <- glens_year_filtered_rx()
+  #   col <- input$venn_col_filtered
+  #   delims <- rv$detected_mv_cols
+  #   target_delim <- delims[[col]]
+  #   
+  #   # Extract the paper IDs and their associated entities
+  #   temp_df <- df %>%
+  #     mutate(paper_id = row_number()) %>%
+  #     select(paper_id, Entity = !!sym(col)) %>%
+  #     filter(!is.na(Entity), trimws(Entity) != "") %>%
+  #     mutate(Entity = as.character(Entity))
+  #   
+  #   if (!is.null(target_delim) && nchar(trimws(target_delim)) > 0) {
+  #     temp_df <- temp_df %>%
+  #       mutate(Entity = stringr::str_split(Entity, stringr::fixed(target_delim))) %>%
+  #       tidyr::unnest(Entity)
+  #   }
+  #   
+  #   # Filter down to ONLY the targets the user selected in the dropdown
+  #   filtered_df <- temp_df %>%
+  #     mutate(Entity = stringr::str_squish(Entity)) %>%
+  #     filter(Entity %in% selected_targets)
+  #   
+  #   venn_data <- split(filtered_df$paper_id, filtered_df$Entity)
+  #   
+  #   if (length(venn_data) < 2) return(NULL)
+  #   
+  #   # # Dynamic Theme Palette (built systematically outward from your #391463)
+  #   # theme_palette <- c(
+  #   #   "#391463", # Deep Theme Purple
+  #   #   "#5B2E85", # Mid Purple
+  #   #   "#8249A8", # Amethyst
+  #   #   "#A966CB", # Orchid
+  #   #   "#D284ED", # Soft Lavender
+  #   #   "#E26D9B", # Muted Rose
+  #   #   "#C96480"  # Darker Pink Accent (from your network graph)
+  #   # )
+  #   # 
+  #   # # Render the dynamic Venn Diagram
+  #   # ggVennDiagram::ggVennDiagram(
+  #   #   x = venn_data,
+  #   #   category.names = names(venn_data),
+  #   #   label_alpha = 0,
+  #   #   set_color = rep_len(theme_palette, length(venn_data))
+  #   # ) +
+  #   #   ggplot2::scale_fill_gradient(low = "#F4F6F6", high = "#391463") +
+  #   #   ggplot2::theme_void() +
+  #   #   ggplot2::theme(
+  #   #     legend.position = "none",
+  #   #     # FIX: Force a safe margin buffer around the edges of the plot
+  #   #     plot.margin = ggplot2::margin(30, 30, 30, 30, "pt")
+  #   #   ) +
+  #   #   # FIX: Explicitly expand coordinate scales so labels outside the shapes have room
+  #   #   ggplot2::scale_x_continuous(expand = ggplot2::expansion(mult = 0.25)) +
+  #   #   ggplot2::scale_y_continuous(expand = ggplot2::expansion(mult = 0.25))
+  #   
+  #   # =========================================================================
+  #   # DYNAMIC COLOR ENGINE 
+  #   # =========================================================================
+  #   # Hook this directly into your dynamic theme provider. Examples:
+  #   # base_theme_color <- input$theme_color_picker 
+  #   # base_theme_color <- rv$primary_theme_color
+  #   # (Falling back to your deep purple if nothing is active)
+  #   base_theme_color <- if (!is.null(input$venn_theme_color)) input$venn_theme_color else "#391463"
+  #   
+  #   # Deconstruct the active color into Hue, Saturation, and Value components
+  #   base_rgb <- col2rgb(base_theme_color)
+  #   base_hsv <- rgb2hsv(base_rgb[1], base_rgb[2], base_rgb[3])
+  #   
+  #   # 1. Calculate a dynamic soft background gradient color
+  #   # Keeps the exact same hue, but drops saturation to 3% and boosts brightness to 98%
+  #   low_gradient  <- hsv(base_hsv[1], 0.03, 0.98) 
+  #   high_gradient <- base_theme_color            
+  #   
+  #   # 2. Programmatically generate 7 distinct border colors branching across the color wheel
+  #   theme_palette <- sapply(seq(0, 6), function(i) {
+  #     new_h <- (base_hsv[1] + (i * 0.08)) %% 1 # Evenly steps hue variations out from your base color
+  #     new_s <- max(0.4, min(1, base_hsv[2] * (1 - (i * 0.04)))) # Controls color depth cleanly
+  #     new_v <- max(0.5, min(0.95, base_hsv[3] * (1 + (i * 0.03)))) # Balances vibrancy
+  #     hsv(new_h, new_s, new_v)
+  #   })
+  #   # =========================================================================
+  #   
+  #   # Render the dynamic Venn Diagram
+  #   ggVennDiagram::ggVennDiagram(
+  #     x = venn_data,
+  #     category.names = names(venn_data),
+  #     label_alpha = 0,
+  #     set_color = rep_len(theme_palette, length(venn_data))
+  #   ) +
+  #     # Uses your completely dynamic background fill gradient variables
+  #     ggplot2::scale_fill_gradient(low = low_gradient, high = high_gradient) +
+  #     ggplot2::theme_void() +
+  #     ggplot2::theme(
+  #       legend.position = "none",
+  #       # Keeps your safe text margin buffers intact
+  #       plot.margin = ggplot2::margin(30, 30, 30, 30, "pt")
+  #     ) +
+  #     # Keeps your scale coordinate expansions intact to prevent text cutoff
+  #     ggplot2::scale_x_continuous(expand = ggplot2::expansion(mult = 0.25)) +
+  #     ggplot2::scale_y_continuous(expand = ggplot2::expansion(mult = 0.25))
+  # })
+  
+  # # Column mapping population initialization
+  # observeEvent(rv$detected_mv_cols, {
+  #   active_cols <- names(rv$detected_mv_cols)
+  #   if (length(active_cols) == 0) active_cols <- "Authors"
+  #   curr_filt <- input$net_col_filtered
+  #   sel_filt <- if (isTruthy(curr_filt) && curr_filt %in% active_cols) curr_filt else active_cols[1]
+  #   updateSelectInput(session, "net_col_filtered", choices = active_cols, selected = sel_filt)
+  # }, ignoreNULL = FALSE)
+  
+  # observeEvent(list(input$neighbourhood_slider, input$custom_node_selector), {
+  #   req(input$enable_network)
+  #   # 2. Use the live debounced data, NOT rv$nodes
+  #   net_data <- net_data_filtered_debounced()
+  #   req(net_data, nrow(net_data$nodes) > 0)
+  #   req(length(input$custom_node_selector) > 0)
+  #   # Extract the nodes dataframe
+  #   current_nodes <- net_data$nodes
+  #   
+  #   # Safety check: Ensure X and Y actually exist
+  #   if (!("x" %in% colnames(current_nodes)) || !("y" %in% colnames(current_nodes))) {
+  #     return()
+  #   }
+  #   
+  #   centroid_ids <- input$custom_node_selector
+  #   
+  #   # Ensure the centroids actually exist in the data
+  #   valid_centroids <- current_nodes[current_nodes$id %in% centroid_ids, ]
+  #   if (nrow(valid_centroids) == 0) return()
+  #   
+  #   # Calculate Distance Matrix using current_nodes
+  #   dist_matrix <- sapply(1:nrow(valid_centroids), function(i) {
+  #     sqrt((current_nodes$x - valid_centroids$x[i])^2 + (current_nodes$y - valid_centroids$y[i])^2)
+  #   })
+  #   
+  #   # Calculate R_max (Handling single vs multiple rows safely)
+  #   r_max <- max(dist_matrix, na.rm = TRUE)
+  #   neighbourhood_val <- abs((1 - (input$neighbourhood_slider / 100)) * 100)
+  #   current_radius <- r_max * (1 - (neighbourhood_val / 100))
+  #   
+  #   # Calculate which nodes are engulfed by the layout thresholds
+  #   if (is.vector(dist_matrix)) {
+  #     in_any_circle <- dist_matrix <= current_radius
+  #   } else {
+  #     in_any_circle <- rowSums(dist_matrix <= current_radius) > 0
+  #   }
+  #   
+  #   nodes_in_circle <- current_nodes$id[in_any_circle]
+  #   
+  #   # Update the Neighbourhood Nodes selector
+  #   updateSelectizeInput(
+  #     session, 
+  #     "neighbourhood_nodes", 
+  #     selected = nodes_in_circle,
+  #     choices = current_nodes$id # Ensure choices are populated so it displays correctly
+  #   )
+  #   
+  #   # Prepare multiple circles for JavaScript
+  #   circles_js <- lapply(1:nrow(valid_centroids), function(i) {
+  #     # list(
+  #     #   x = valid_centroids$x[i],
+  #     #   y = valid_centroids$y[i],
+  #     #   r = current_radius
+  #     # )
+  #     list(nodeId = valid_centroids$id[i], r = current_radius)
+  #   })
+  #   
+  #   # Send the array of circles to JS
+  #   session$sendCustomMessage("draw_neighbourhood_circle", circles_js)
+  #   
+  #   # Force redraw to show the newly painted canvas
+  #   visNetwork::visNetworkProxy("network_filtered") %>% 
+  #     visNetwork::visRedraw()
+  # })
   
   observeEvent(net_data_filtered_debounced(), {
     net_data <- net_data_filtered_debounced()
@@ -2846,9 +3151,18 @@ server <- function(input, output, session) {
       empty_edges <- data.frame(from = character(0), to = character(0))
       proxy %>% visSetData(nodes = empty_nodes, edges = empty_edges)
       updateSelectizeInput(session, "custom_node_selector", choices = character(0))
-      updateSelectizeInput(session, "attention_nodes", choices = character(0))
+      updateSelectizeInput(session, "neighbourhood_nodes", choices = character(0))
       return()
     }
+    
+    # Securely clean the user's hex input
+    icon_hex_raw <- if(!is.null(input$custom_icon_code)) {
+      gsub("[\\\\u&#x;]", "", trimws(input$custom_icon_code))
+    } else {
+      "f007"
+    }
+    
+    if (icon_hex_raw == "") icon_hex_raw <- "f007"
     
     # --- ADDED: Force all IDs to be strings to match the Shiny dropdown! ---
     net_data$nodes$id <- as.character(net_data$nodes$id)
@@ -2859,49 +3173,71 @@ server <- function(input, output, session) {
     
     proxy %>% visPhysics(enabled = FALSE)
     
-    if (input$net_col_filtered == "Authors") {
-      proxy %>%
-        visGroups(groupname = "Queried Target", shape = "icon", 
-                  icon = list(face = "FontAwesome", code = "f007", color = "#E74C3C")) %>%
-        visGroups(groupname = "Associated Entity", shape = "icon", 
-                  icon = list(face = "FontAwesome", code = "f007", color = "#3498DB"))
-    } else {
-      # If rendering Keywords or other shapes, fall back to native dots
-      proxy %>%
-        visGroups(groupname = "Queried Target", shape = "dot", 
-                  color = list(background = "#E74C3C", border = "#2c3e50")) %>%
-        visGroups(groupname = "Associated Entity", shape = "dot", 
-                  color = list(background = "#3498DB", border = "#2c3e50"))
-    }
+    # if (input$net_col_filtered == "Authors") {
+    #   proxy %>%
+    #     visGroups(groupname = "Queried Target", shape = "icon", 
+    #               icon = list(face = "FontAwesome", code = "f007", color = "#E74C3C")) %>%
+    #     visGroups(groupname = "Associated Entity", shape = "icon", 
+    #               icon = list(face = "FontAwesome", code = "f007", color = "#3498DB"))
+    # } else {
+    #   # If rendering Keywords or other shapes, fall back to native dots
+    #   proxy %>%
+    #     visGroups(groupname = "Queried Target", shape = "dot", 
+    #               color = list(background = "#E74C3C", border = "#2c3e50")) %>%
+    #     visGroups(groupname = "Associated Entity", shape = "dot", 
+    #               color = list(background = "#3498DB", border = "#2c3e50"))
+    # }
+    
+    proxy %>%
+      visGroups(groupname = "Queried Target", shape = "icon", 
+                icon = list(face = "FontAwesome", code = icon_hex_raw, color = "#E74C3C")) %>%
+      visGroups(groupname = "Associated Entity", shape = "icon", 
+                icon = list(face = "FontAwesome", code = icon_hex_raw, color = "#3498DB"))
     
     proxy %>% visOptions(
       highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE),
       autoResize = TRUE
     )
     
+    proxy %>% 
+      visFit(animation = list(duration = 500)) %>%  # Pans the camera back to center
+      visRedraw()
+    
+    # Safe preservation of selections across transformations
     dropdown_choices <- setNames(net_data$nodes$id, net_data$nodes$label)
+    current_selection <- input$custom_node_selector
+    
+    if (is.null(current_selection) || length(current_selection) == 0 || all(current_selection == "")) {
+      if (!is.null(rv$author_list)) current_selection <- intersect(rv$author_list, net_data$nodes$id)
+    } else {
+      current_selection <- intersect(current_selection, net_data$nodes$id)
+    }
+    
     updateSelectizeInput(session, "custom_node_selector", 
-                         choices = c("Select keyword(s)..." = "", dropdown_choices))
+                         choices = c("Select keyword(s)..." = "", dropdown_choices),
+                         selected = current_selection, server = TRUE)
     
   }, ignoreNULL = FALSE)
   
-  # 1. Dropdown -> Canvas (Highlights nodes when you type in the dropdown)
-  observeEvent(input$custom_node_selector, {
-    req(input$enable_network)
-    proxy <- visNetworkProxy("network_filtered")
-    if (is.null(input$custom_node_selector) || length(input$custom_node_selector) == 0 || all(input$custom_node_selector == "")) {
-      proxy %>% visUnselectAll() 
-      updateSelectizeInput(session,  "attention_nodes", choices = character(0))
-    } else {
-      proxy %>% visSelectNodes(id = input$custom_node_selector)
-    }
-  }, ignoreInit = TRUE, ignoreNULL = FALSE)
+  # # 1. Dropdown -> Canvas (Highlights nodes when you type in the dropdown)
+  # observeEvent(input$custom_node_selector, {
+  #   req(input$enable_network)
+  #   proxy <- visNetworkProxy("network_filtered")
+  #   if (is.null(input$custom_node_selector) || length(input$custom_node_selector) == 0 || all(input$custom_node_selector == "")) {
+  #     proxy %>% visUnselectAll() 
+  #     updateSelectizeInput(session,  "neighbourhood_nodes", choices = character(0))
+  #     shinyjs::disable("neighbourhood_slider")
+  #   } else {
+  #     proxy %>% visSelectNodes(id = input$custom_node_selector)
+  #     shinyjs::enable("neighbourhood_slider")
+  #   }
+  # }, ignoreInit = TRUE, ignoreNULL = FALSE)
   
   # 2. Canvas -> Dropdown (Updates the dropdown when you click the graph)
   observeEvent(input$network_filtered_clicked, {
     req(input$enable_network)
     # This captures the array of IDs sent from Javascript
-    updateSelectizeInput(session, "custom_node_selector", selected = input$network_filtered_clicked)
+    updateSelectizeInput(session, "custom_node_selector", selected = input$network_filtered_clicked, server = TRUE)
   }, ignoreNULL = FALSE, ignoreInit = TRUE)
   
   
@@ -3021,34 +3357,43 @@ server <- function(input, output, session) {
     }
   })
   
-  #observe for extended panel columns with delimiters
+  # Safe observer for extended panel columns with delimiters
   observe({
-    req(rv$glens_full_table)
-    df <- rv$glens_full_table
+    # CRITICAL: Isolate the table. This observer must ONLY trigger when inputs change!
+    df <- isolate(rv$glens_full_table)
+    req(df)
     
     current_cols <- names(df)
     req(length(current_cols) > 0)
     
     new_mv_cols <- list()
+    any_input_exists <- FALSE
     
     for(col_name in current_cols) {
-      # USE THE SAME HEX ENCODING AS renderUI
       hex_str <- paste(as.character(charToRaw(col_name)), collapse = "")
       
-      is_checked <- input[[paste0("lookup_chk_", hex_str)]]
+      # Reading these inputs creates the reactive trigger for this observer
+      chk_val <- input[[paste0("lookup_chk_", hex_str)]]
+      delim_val <- input[[paste0("lookup_delim_", hex_str)]]
       
-      if (isTRUE(is_checked)) {
-        delim <- input[[paste0("lookup_delim_", hex_str)]]
-        # if (is.null(delim) || trimws(delim) == "") delim <- "," 
-        if (is.null(delim) || trimws(delim) == "") delim <- "" 
-        new_mv_cols[[col_name]] <- delim
+      if (!is.null(chk_val)) any_input_exists <- TRUE
+      
+      if (isTRUE(chk_val)) {
+        if (is.null(delim_val) || trimws(delim_val) == "") delim_val <- "" 
+        new_mv_cols[[col_name]] <- delim_val
       }
     }
     
-    rv$detected_mv_cols <- new_mv_cols
+    # Abort if the UI hasn't actually rendered these inputs yet
+    req(any_input_exists)
     
-    print("new_mv_cols updated to:")
-    print(new_mv_cols)
+    # Only update rv state if the user ACTUALLY changed something
+    # This prevents infinite reactive loops
+    if (!identical(isolate(rv$detected_mv_cols), new_mv_cols)) {
+      rv$detected_mv_cols <- new_mv_cols
+      print("User updated delimiters via Lookup Panel:")
+      print(new_mv_cols)
+    }
   })
   
   output$lookup_controls_panel <- renderUI({
@@ -3076,14 +3421,19 @@ server <- function(input, output, session) {
       is_checked <- FALSE
       delim_val <- ""
       
-      if (!is.null(existing_chk)) {
-        is_checked <- existing_chk
-        delim_val <- if(!is.null(existing_delim)) existing_delim else ""
-      } else if (!is.null(isolate(rv$detected_mv_cols)) && (col %in% names(isolate(rv$detected_mv_cols)))) {
+      # PRIORITY 1: Values explicitly saved from the Import Modal (or user UI edits)
+      if (!is.null(isolate(rv$detected_mv_cols)) && (col %in% names(isolate(rv$detected_mv_cols)))) {
         is_checked <- TRUE
         delim_val <- isolate(rv$detected_mv_cols)[[col]]
+        
+        # PRIORITY 2: Fallback to existing UI state (e.g., if a user unchecked a box)
+      } else if (!is.null(existing_chk)) {
+        is_checked <- existing_chk
+        delim_val <- if(!is.null(existing_delim)) existing_delim else ""
+        
+        # PRIORITY 3: Hardcoded defaults for the very first initialization #|DOI|ORCID
       } else {
-        if (grepl("^(Authors|DOI|ORCID|Author\\(s\\) ID)$", col, ignore.case = TRUE)) {
+        if (grepl("^(Authors|Author\\(s\\) ID)$", col, ignore.case = TRUE)) {
           is_checked <- TRUE
           delim_val <- ","
         }
@@ -3181,124 +3531,23 @@ server <- function(input, output, session) {
     )
   })
   
-  # output$lookup_controls_panel <- renderUI({
-  #   # Abort rendering if table isn't ready
-  #   req(rv$glens_full_table)
-  #   df <- rv$glens_full_table
-  #   
-  #   cols_to_show <- if (ncol(df) > 0) names(df) else collabnet_required_cols
-  #   
-  #   control_rows <- lapply(cols_to_show, function(col) {
-  #     hex_str <- paste(as.character(charToRaw(col)), collapse = "")
-  #     chk_id <- paste0("lookup_chk_", hex_str)
-  #     delim_id <- paste0("lookup_delim_", hex_str)
-  #     
-  #     existing_chk <- isolate(input[[chk_id]])
-  #     existing_delim <- isolate(input[[delim_id]])
-  #     
-  #     is_checked <- FALSE
-  #     delim_val <- ""
-  #     
-  #     if (!is.null(existing_chk)) {
-  #       is_checked <- existing_chk
-  #       delim_val <- if(!is.null(existing_delim)) existing_delim else ""
-  #     } else if (!is.null(isolate(rv$detected_mv_cols)) && (col %in% names(isolate(rv$detected_mv_cols)))) {
-  #       is_checked <- TRUE
-  #       delim_val <- isolate(rv$detected_mv_cols)[[col]]
-  #     } else {
-  #       if (grepl("^(Authors|DOI|ORCID|Author\\(s\\) ID)$", col, ignore.case = TRUE)) {
-  #         is_checked <- TRUE
-  #         delim_val <- ","
-  #       }
-  #     }
-  #     
-  #     fluidRow(
-  #       style = "margin-bottom: 5px; align-items: center; display: flex;",
-  #       column(6, checkboxInput(chk_id, col, value = is_checked)),
-  #       column(6, textInput(delim_id, label = NULL, value = delim_val, placeholder = "Delimiters (e.g., ; , |)", width = "100%"))
-  #     )
-  #   })
-  #   
-  #   tags$div(
-  #     style = "background-color: #fff3e0; border: 2px solid #ff9800; border-radius: 8px; padding: 15px; margin-top: 15px;",
-  #     
-  #     tags$div(style = "display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;",
-  #              tags$h4(icon("cogs"), " Lookup Controls", style = "color: #e65100; margin-top: 0; margin-bottom: 0;"),
-  #              actionButton("reset_ext_controls", "Reset Defaults", icon = icon("undo"), class = "btn-danger", style = "white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 2px 8px; font-size: 0.8em;")
-  #     ),
-  #     
-  #     tags$p(style = "font-size: 0.9em; color: #555;", "Select columns for look-up and their delimiters (if any)."),
-  #     checkboxInput("auto_refresh_lookup", "Auto-Refresh Lookup", value = TRUE),
-  #     
-  #     if (isTRUE(rv$has_scopus_key) || !is.null(glens_env$scopus_key)) {
-  #       tagList(
-  #         checkboxInput(
-  #           inputId = "map_orcid2scopusid", 
-  #           label = tagList(
-  #             "Map ORCiD -> SCOPUS ID ",
-  #             tags$span(
-  #               icon("circle-question"),
-  #               "data-toggle" = "tooltip",
-  #               title = "Map ORCiD(s) to SCOPUS ID(s) one-way for faster retrieval. Auto-refresh does NOT apply to ORCiD -> SCOPUS ID Mapping. Run CollabNET.",
-  #               style = "color: #007bc2; cursor: help; margin-left: 5px; display: inline-block;"
-  #             )
-  #           ),
-  #           value = TRUE
-  #         ),
-  #         checkboxInput(
-  #           inputId = "autofill_scopusid_input", 
-  #           label = tagList(
-  #             "Autofill SCOPUS ID Input ",
-  #             tags$span(
-  #               icon("circle-question"),
-  #               "data-toggle" = "tooltip",
-  #               title = "Automatically append the discovered SCOPUS IDs into the SCOPUS ID input text box above.",
-  #               style = "color: #007bc2; cursor: help; margin-left: 5px; display: inline-block;"
-  #             )
-  #           ),
-  #           value = FALSE
-  #         )
-  #       )
-  #     } else {
-  #       tagList(
-  #         shinyjs::disabled(checkboxInput(
-  #           inputId = "map_orcid2scopusid", 
-  #           label = tagList(
-  #             "Map ORCiD -> SCOPUS ID ",
-  #             tags$span(
-  #               icon("circle-question"),
-  #               "data-toggle" = "tooltip",
-  #               title = "Map ORCiD(s) to SCOPUS ID(s) one-way for faster retrieval. Auto-refresh does NOT apply to ORCiD -> SCOPUS ID Mapping. Run CollabNET.",
-  #               style = "color: #007bc2; cursor: help; margin-left: 5px; display: inline-block;"
-  #             )
-  #           ),
-  #           value = FALSE
-  #         )),
-  #         shinyjs::disabled(checkboxInput(
-  #           inputId = "autofill_scopusid_input", 
-  #           label = tagList(
-  #             "Autofill SCOPUS ID Input ",
-  #             tags$span(
-  #               icon("circle-question"),
-  #               "data-toggle" = "tooltip",
-  #               title = "Automatically append the discovered SCOPUS IDs into the text box above.",
-  #               style = "color: #007bc2; cursor: help; margin-left: 5px; display: inline-block;"
-  #             )
-  #           ),
-  #           value = FALSE
-  #         ))
-  #       )
-  #     },
-  #     checkboxInput("ext_match", "Extended Keyword Matching", value = TRUE),
-  #     shinyjs::disabled(checkboxInput("ignore_case", "Ignore Case", value = TRUE)),
-  #     
-  #     tags$hr(style = "border-top: 1px solid #ffb74d; margin-top: 10px; margin-bottom: 10px;"),
-  #     tags$div(
-  #       style = "max-height: 250px; overflow-y: auto; overflow-x: hidden; padding-right: 5px;",
-  #       control_rows
-  #     )
-  #   )
-  # })
+  output$fa_icon_preview <- renderUI({
+    req(input$custom_icon_code)
+    
+    # Strip any accidental formatting users might paste (like &#xf19d; or \uf19d)
+    clean_hex <- gsub("[\\\\u&#x;]", "", trimws(input$custom_icon_code))
+    if (clean_hex == "") return(NULL)
+    
+    tagList(
+      fontawesome::fa_html_dependency(), # Safely ensures FA is loaded in the DOM
+      tags$i(
+        class = "fas", #"far fas", 
+        # style = "font-style: normal; display: inline-block;",
+        style = "font-family: 'Font Awesome 6 Free', 'Font Awesome 5 Free'; font-weight: 900; font-style: normal; display: inline-block;",
+        HTML(paste0("&#x", clean_hex, ";"))
+      )
+    )
+  })
   
   observeEvent(input$clear_log, {
     rv$log_text <- ""

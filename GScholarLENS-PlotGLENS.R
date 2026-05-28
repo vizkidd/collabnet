@@ -38,73 +38,128 @@ make_agg <- function(df, pos_col, pos_label) {
   )
 }
 
-build_collaboration_network <- function(df, min_conn_count=1, max_edge_count=1500, main_authors_list, target_col = "Authors", target_delim = ",") {
-  print("target_delim:")
-  print(target_delim)
-
+build_collaboration_network <- function(df, authors_per_pub=c(1,500), node_freq_range=c(1,2), edge_freq_range=c(1,1), main_authors_list, target_col = "Authors", target_delim = ",", fr_iterations = 500, prune_leaves=T, cluster_size_range=c(1,500)) {
+  
   if (is.null(main_authors_list)) main_authors_list <- character(0)
-
+  
   if (!target_col %in% colnames(df)) {
     return(list(nodes = data.frame(), edges = data.frame()))
   }
-
+  
   should_split <- !is.null(target_delim) && nchar(trimws(target_delim)) > 0
-
+  
   clean_df <- df %>%
     mutate(paper_id = row_number()) %>%
     select(paper_id, !!sym(target_col)) %>%
     rename(Entity = !!sym(target_col)) %>%
     mutate(Entity = as.character(Entity)) %>%
     filter(!is.na(Entity), trimws(Entity) != "")
-
+  
   if (should_split) {
     clean_df <- clean_df %>%
       mutate(Entity = stringr::str_split(Entity, stringr::fixed(target_delim))) %>%
       tidyr::unnest(Entity)
   }
-
+  
   clean_df <- clean_df %>%
     mutate(
       Entity = stringr::str_squish(Entity),
       Entity = stringr::str_to_title(Entity)
     ) %>%
     filter(Entity != "", !is.na(Entity))
-
-  # --- CIRCUIT BREAKER 1: Filter Mega-Papers ---
-  # If a paper has more than 50 authors, the combinatorial join will destroy WebR's memory.
-  # We exclude these highly-dense papers from the edge calculation.
-  # max_authors_per_paper <- 50
+  
+  # --- FILTER 1: Mega-Papers ---
   valid_papers <- clean_df %>%
     group_by(paper_id) %>%
     summarise(n_authors = n(), .groups = "drop") %>%
-    # filter(n_authors <= max_authors_per_paper) %>%
+    filter(n_authors >= authors_per_pub[1] & n_authors <= authors_per_pub[2]) %>%
     pull(paper_id)
-
+  
   clean_df <- clean_df %>% filter(paper_id %in% valid_papers)
-  # ---------------------------------------------
-
+  
+  # --- FILTER 2: Node Occurrence Filtering (NEW) ---
+  node_occurrences <- clean_df %>%
+    group_by(Entity) %>%
+    summarise(occurrences = n(), .groups = "drop")
+  
+  valid_entities <- node_occurrences %>%
+    filter(occurrences >= node_freq_range[1] & occurrences <= node_freq_range[2]) %>%
+    pull(Entity)
+  
+  clean_df <- clean_df %>% filter(Entity %in% valid_entities)
+  
+  # -------------------------------------------------
+  
   all_entities <- unique(clean_df$Entity)
   if (length(all_entities) == 0) return(list(nodes = data.frame(), edges = data.frame()))
-
-  # 2. Create Edges
-  edges <- clean_df %>%
-    inner_join(clean_df, by = "paper_id", relationship = "many-to-many") %>%
+  
+  # Ensure each entity is only counted once per paper before joining
+  clean_df_unique <- clean_df %>% 
+    distinct(paper_id, Entity)
+  
+  # --- FILTER 3: Create & Prune Edges ---
+  edges <- clean_df_unique %>%
+    # Join unique instances to find true co-occurrences
+    inner_join(clean_df_unique, by = "paper_id", relationship = "many-to-many") %>%
     filter(Entity.x < Entity.y) %>%
     rename(from = Entity.x, to = Entity.y) %>%
+    
+    # Group and collapse repeating edges into a single weighted connection
     group_by(from, to) %>%
     summarise(connections = n(), .groups = "drop") %>%
-
-    # --- CIRCUIT BREAKER 2 & 3: Prune the Graph ---
-    filter(connections >= min_conn_count) %>% # Only show collabs
-    arrange(desc(connections)) %>%
-    slice_head(n = max_edge_count) %>% # STRICT HARD CAP: Max 1500 edges to prevent browser UI crash
+    
+    # # edge_count_range[1] = Minimum Connection Weight (e.g., must co-occur at least X times)
+    # filter(connections >= edge_count_range[1]) %>% 
+    # arrange(desc(connections)) %>%
+    # 
+    # # edge_count_range[2] = Maximum Total Edges to display on screen
+    # slice_head(n = edge_count_range[2]) %>% 
+    
+    # Filter strictly within the Minimum and Maximum frequency selection window
+    filter(connections >= edge_freq_range[1] & connections <= edge_freq_range[2]) %>%
     mutate(
-      length = (300 / connections) + 30,
-      title = paste("Co-occurrences:", connections, "documents"),
-      value = connections
+      length = (300 / connections) + 30, # Closer distance for stronger connections
+      title = paste("Co-occurrences:", connections, "documents"), # Hover tooltip
+      value = connections # Dynamically scales edge thickness in visNetwork
     )
-
-  # 3. Calculate Node Size based on pruned edges!
+  
+  # --- OPTIMIZATION 1: Prune Leaves (K-Core degree = 1) ---
+  if (prune_leaves && nrow(edges) > 0) {
+    # Count connections per entity
+    node_degrees <- bind_rows(
+      edges %>% select(Entity = from),
+      edges %>% select(Entity = to)
+    ) %>% count(Entity)
+    
+    # Identify leaves, protecting any specifically queried authors
+    leaf_nodes <- node_degrees %>% filter(n == 1) %>% pull(Entity)
+    leaves_to_drop <- setdiff(leaf_nodes, main_authors_list)
+    
+    if (length(leaves_to_drop) > 0) {
+      edges <- edges %>% filter(!(from %in% leaves_to_drop) & !(to %in% leaves_to_drop))
+    }
+  }
+  
+  # --- OPTIMIZATION 2: Prune Floating Islands (Giant Component Filter) ---
+  if (!is.null(cluster_size_range) && nrow(edges) > 0) {
+    # Build a temporary graph to analyze network segments
+    g_temp <- igraph::graph_from_data_frame(d = edges[, c("from", "to")], directed = FALSE)
+    comp <- igraph::components(g_temp)
+    
+    # Find ALL cluster IDs whose population fits inside the slider bounds
+    valid_cluster_ids <- which(comp$csize >= cluster_size_range[1] & comp$csize <= cluster_size_range[2])
+    
+    # Extract the names of the nodes that belong to those specific clusters
+    valid_component_nodes <- igraph::V(g_temp)$name[comp$membership %in% valid_cluster_ids]
+    
+    # Keep those nodes, PLUS any explicitly queried authors
+    keep_nodes <- unique(c(valid_component_nodes, main_authors_list))
+    
+    # Prune the edges down to just the valid clusters
+    edges <- edges %>% filter(from %in% keep_nodes & to %in% keep_nodes)
+  }
+  
+  # Calculate Node Size based on pruned edges
   node_sizes <- if (nrow(edges) > 0) {
     bind_rows(
       edges %>% select(id = from, val = connections),
@@ -115,23 +170,19 @@ build_collaboration_network <- function(df, min_conn_count=1, max_edge_count=150
   } else {
     data.frame(id = all_entities, total_connections = 0)
   }
-
-  # 4. Create Nodes
-  # To avoid floating orphan nodes, only keep nodes that exist in our pruned edge list,
-  # PLUS the main queried authors so they are never accidentally hidden.
-  nodes_to_keep <- unique(c(node_sizes$id, main_authors_list))
-
-  # author_pattern <- if(length(main_authors_list) > 0) {
-  #   escaped_terms <- gsub("([|\\\\{}()\\[\\]^$+*?.-])", "\\\\\\1", main_authors_list)
-  #   paste(escaped_terms, collapse = "|")
-  # } else {
-  #   ""
-  # }
   
+  nodes_to_keep <- unique(c(node_sizes$id, main_authors_list))
   search_terms <- main_authors_list[!is.na(main_authors_list) & trimws(main_authors_list) != ""]
   
+  # # Fetch the hex code dynamically using the fontawesome metadata package
+  # icon_hex <- tryCatch({
+  #   fontawesome::fa_metadata()$icon_set[[icon_name_input]]$unicode
+  # }, error = function(e) {
+  #   "f007" # Fallback to standard 'user' hex code if the name typed is invalid
+  # })
+  
   nodes <- data.frame(id = all_entities, stringsAsFactors = FALSE) %>%
-    filter(id %in% nodes_to_keep) %>% # Drop orphans
+    filter(id %in% nodes_to_keep) %>% 
     left_join(node_sizes, by = "id") %>%
     mutate(
       total_connections = tidyr::replace_na(total_connections, 0),
@@ -143,13 +194,9 @@ build_collaboration_network <- function(df, min_conn_count=1, max_edge_count=150
         "</div>"
       ),
       size = 15 + (log1p(total_connections) * 3),
-      group = ifelse(id %in% main_authors_list, "Queried Target", "Associated Entity"),
-      shape = ifelse(target_col == "Authors", "icon", "dot"),
-      icon.face = "FontAwesome",
-      icon.code = "f007",
-      # icon.color = ifelse(id %in% main_authors_list, "#E74C3C", "#3498DB"),
-      # color.background = ifelse(id %in% main_authors_list, "#E74C3C", "#3498DB"),
-      ## is_target = if(nchar(author_pattern) > 0) grepl(author_pattern, id, ignore.case = TRUE) else FALSE,
+      # shape = "icon", #ifelse(target_col == "Authors", "icon", "dot"),
+      # icon.face = "FontAwesome",
+      # icon.code = icon_hex,
       is_target = if(length(search_terms) > 0) {
         sapply(id, function(node_text) {
           any(stringr::str_detect(node_text, stringr::fixed(search_terms, ignore_case = TRUE)))
@@ -158,24 +205,20 @@ build_collaboration_network <- function(df, min_conn_count=1, max_edge_count=150
         FALSE
       },
       group = ifelse(is_target, "Queried Target", "Associated Entity")
-      # color.border = "#2c3e50"
     ) %>%
     select(-is_target)
-
-  # --- FIX 2: Pre-calculate Fixed Fruchterman-Reingold Coordinates ---
+  
+  # Pre-calculate Fixed Fruchterman-Reingold Coordinates
   if (nrow(nodes) > 0 && nrow(edges) > 0) {
-    # Build a temporary igraph object to run the layout algorithm natively in R
-    
     g <- igraph::graph_from_data_frame(
       d = edges[, c("from", "to")], 
       vertices = nodes[, "id", drop = FALSE], 
       directed = FALSE
     )
     
-    # Calculate layout coordinates
-    coords <- igraph::layout_with_fr(g)
+    # Pass fr_iterations directly here!
+    coords <- igraph::layout_with_fr(g, niter = fr_iterations)
     
-    # Map layout back to visNetwork nodes (scaled out slightly for readability)
     nodes$x <- coords[, 1] * 1000
     nodes$y <- coords[, 2] * 1000
   } else if (nrow(nodes) > 0) {
@@ -183,9 +226,6 @@ build_collaboration_network <- function(df, min_conn_count=1, max_edge_count=150
     nodes$y <- runif(nrow(nodes), -500, 500)
   }
   
-  print(paste("nodes:", nrow(nodes)))
-  print(paste("edges:", nrow(edges)))
-
   return(list(nodes = nodes, edges = edges))
 }
 
