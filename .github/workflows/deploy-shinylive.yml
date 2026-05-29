@@ -80,6 +80,39 @@ jobs:
           )
         shell: Rscript {0}
 
+      # --- NEW STEP: FETCH AND INJECT LATEST WEBR OVERRIDE ---
+      - name: Update webR to Latest GitHub Release
+        env:
+          # GitHub Actions provides this token automatically. We use it 
+          # so the 'gh' CLI doesn't hit unauthenticated rate limits.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
+        run: |
+          echo "Fetching the latest webR release from GitHub..."
+          TMP_DIR=$(mktemp -d)
+          cd $TMP_DIR
+          
+          # Download the latest tarball via GitHub CLI
+          gh release download -R r-wasm/webr --pattern "webr-*.tar.gz" --clobber
+          
+          echo "Extracting webR archive..."
+          ARCHIVE_FILE=$(ls webr-*.tar.gz)
+          tar -xzf "$ARCHIVE_FILE"
+          
+          # Locate the extracted contents
+          EXTRACTED_DIR=$(find . -maxdepth 1 -type d -name "webr*" ! -name "." | head -n 1)
+          
+          echo "Injecting latest webR into Shinylive build..."
+          # We use $GITHUB_WORKSPACE to ensure we are pointing at the correct absolute path
+          if [ -n "$EXTRACTED_DIR" ]; then
+              rsync -av "$EXTRACTED_DIR/" "$GITHUB_WORKSPACE/wasm_build/shinylive/webr/"
+          else
+              rsync -av --exclude="*.tar.gz" ./ "$GITHUB_WORKSPACE/wasm_build/shinylive/webr/"
+          fi
+          
+          echo "Cleaning up temporary files..."
+          cd "$GITHUB_WORKSPACE"
+          rm -rf "$TMP_DIR"
+
       - name: Upload Static Web Site Artifact
         uses: actions/upload-pages-artifact@v3
         with:

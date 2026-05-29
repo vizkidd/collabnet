@@ -5,12 +5,19 @@
 #   gsub("([][{}()+*^$\\\\|?])", "\\\\\\1", x)
 # }
 
-collabnet_required_cols <- c("Citations",	"User_Journal",	"orcid",	"Name",	"JIF5Years",	"Qscore",	"JCR_Journal", "Title",	"Authors",	"Year",	"Source")
+# collabnet_required_cols <- c("Citations",	"User_Journal",	"orcid",	"Name",	"JIF5Years",	"Qscore",	"JCR_Journal", "Title",	"Authors",	"Year",	"Source")
+collabnet_required_cols <- c("Citations", "User_Journal", "Title", "Authors", "Year", "Source")
+collabnet_optional_cols <- c("Qscore", "JIF5Years", "SCOPUS_ID", "doi", "orcid") #JCR_Journal #"Name"
 
 # Helper to escape special regex characters from user inputs
 escape_regex_inline <- function(x) {
   gsub("([\\.\\^\\$\\*\\+\\?\\(\\)\\[\\]\\{\\}\\\\|])", "\\\\\\1", x)
 }
+
+# Header Panel Tags with Clickable CSS
+base_badge_style <- "display: inline-block; padding: 4px 8px; margin: 2px; border-radius: 12px; font-size: 12px; font-weight: bold; color: white; transition: transform 0.2s ease, opacity 0.2s; cursor: pointer; user-select: none;"
+
+# base_badge_style <- "display: inline-block; padding: 4px 8px; margin: 2px; border-radius: 12px; font-size: 12px; font-weight: bold; color: white; user-select: none;"
 
 # Helper to launch the Step 2 Modal (Keeps your code DRY)
 show_row_merge_modal <- function(rv, session) {
@@ -637,7 +644,7 @@ compute_indices <- function(rv, df) {
 #   return(api_results)
 # }
 
-trigger_openalex_js <- function(unique_journals, api_key = NULL, input_id = "openalex_results") {
+trigger_openalex_js <- function(unique_journals, api_key = NULL, mail_key=NULL, input_id = "openalex_results") {
   # Convert R array to JS array safely
   journals_js <- paste0("['", paste(unique_journals, collapse = "','"), "']")
   
@@ -648,9 +655,15 @@ trigger_openalex_js <- function(unique_journals, api_key = NULL, input_id = "ope
     key_js <- paste0("'", api_key, "'")
   }
   
+  if (is.null(mail_key) || length(mail_key) == 0 || is.na(mail_key) || mail_key == "") {
+    mail_js <- "null"
+  } else {
+    mail_js <- paste0("'", mail_key, "'")
+  }
+  
   js_code <- sprintf(
-    "window.fetchOpenAlexJournals(%s, %s, '%s');", 
-    journals_js, key_js, input_id
+    "window.fetchOpenAlexJournals(%s, %s, %s, '%s');", 
+    journals_js, key_js, mail_js, input_id
   )
   shinyjs::runjs(js_code)
 }

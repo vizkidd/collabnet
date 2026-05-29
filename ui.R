@@ -673,7 +673,7 @@ ui <- fluidPage(
     };
   ")),
     tags$script(HTML("
-      window.fetchOpenAlexJournals = async function(journals, apiKey, inputId) {
+      window.fetchOpenAlexJournals = async function(journals, apiKey, mailKey, inputId) {
         try {
           let results = [];
           const total = journals.length;
@@ -683,9 +683,10 @@ ui <- fluidPage(
             const safeQuery = encodeURIComponent(journal);
             
             // NOTE: Replace the email below with your actual email!
-            let url = `https://api.openalex.org/sources?search=${safeQuery}&select=display_name,summary_stats`;
-            //&mailto=your_email@example.com
+            let url = `https://api.openalex.org/sources?search=${safeQuery}&select=display_name,summary_stats&mailto=${mailKey}`;
             if (apiKey && apiKey !== 'null') url += `&api_key=${apiKey}`;
+            
+            //console.log(url)
             
             let success = false;
             let retries = 0;
@@ -797,38 +798,51 @@ ui <- fluidPage(
     tags$div(
       class = "header-buttons",
       # tags$label(
-      #   class = "btn btn-default btn-outline-white",
+      #   class = "btn btn-default btn-outline-white action-button",
       #   style = "margin-bottom: 0; font-weight: normal; cursor: pointer;",
-      #   icon("upload", lib = "font-awesome"),
+      #   tags$i(id = "preupload_icon", class = "fa fa-upload"),
+      #   # tags$span(id = "upload_icon", icon("upload", lib = "font-awesome")),
+      #   tags$span(id = "preupload_text", ""), 
       #   tags$input(
-      #     id = "upload_btn",
-      #     type = "file",
-      #     multiple = FALSE,
-      #     style = "display: none;" # This hides the ugly default browser file input
+      #     id = "preupload_btn",
+      #     type = "button",
+      #     style = "display: none;",
+      #     onchange = "
+      #       document.getElementById('preupload_text').innerText = ' Uploading...';
+      #       document.getElementById('preupload_icon').className = 'fa fa-spinner fa-spin';
+      #     "
       #   )
+      #   # tags$input(
+      #   #   id = "upload_btn",
+      #   #   type = "file",
+      #   #   multiple = FALSE,
+      #   #   style = "display: none;",
+      #   #   onchange = "
+      #   #     document.getElementById('upload_text').innerText = ' Uploading...';
+      #   #     document.getElementById('upload_icon').className = 'fa fa-spinner fa-spin';
+      #   #   "
+      #   # )
       # ),
-      tags$label(
-        class = "btn btn-default btn-outline-white",
+      tags$button(
+        id = "preupload_btn",
+        type = "button",
+        class = "btn btn-default btn-outline-white action-button", 
         style = "margin-bottom: 0; font-weight: normal; cursor: pointer;",
-        tags$i(id = "upload_icon", class = "fa fa-upload"),
-        # tags$span(id = "upload_icon", icon("upload", lib = "font-awesome")),
-        tags$span(id = "upload_text", ""), 
-        tags$input(
-          id = "upload_btn",
-          type = "file",
-          multiple = FALSE,
-          style = "display: none;",
-          onchange = "
-            document.getElementById('upload_text').innerText = ' Uploading...';
-            document.getElementById('upload_icon').className = 'fa fa-spinner fa-spin';
-          "
-        )
+        tags$i(id = "preupload_icon", class = "fa fa-upload"),
+        tags$span(id = "preupload_text", "") 
       ),
       tags$label(
         class = "btn btn-default btn-outline-white",
         style = "margin-bottom: 0; font-weight: normal; cursor: pointer;",
         icon("download", lib = "font-awesome"),
-        tags$input(id="download_btn", type="button", style = "display: none;")
+        tags$input(id="predownload_btn", type="button", class="action-button", style = "display: none;")
+        # downloadButton(
+        #   outputId = "download_btn",
+        #   label = "", 
+        #   icon = icon("download", lib = "font-awesome"),
+        #   class = "btn-default btn-outline-white",
+        #   style = "margin-bottom: 0; font-weight: normal; cursor: pointer;"
+        # )
       ),
       tags$label(
         class = "btn btn-default btn-outline-white",

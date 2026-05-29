@@ -243,6 +243,7 @@ server <- function(input, output, session) {
     return(env_fallback) # Fallback if file is missing (WebR refresh)
   }
   
+  glens_env$mail_key <- get_resolved_key("mail.key", glens_env$mail_key)
   # --- 1. Scopus ---
   glens_env$scopus_key <- get_resolved_key("scopus.key", glens_env$scopus_key)
   if (!is.null(glens_env$scopus_key) && glens_env$scopus_key != "") {
@@ -299,6 +300,7 @@ server <- function(input, output, session) {
   observeEvent(input$browser_stored_keys, {
     keys <- input$browser_stored_keys
     
+    if (!is.null(keys$mail_key) && keys$mail_key != "") glens_env$mail_key <- keys$mail_key
     if (!is.null(keys$scopus_key) && keys$scopus_key != "") glens_env$scopus_key <- keys$scopus_key
     if (!is.null(keys$openalex_key) && keys$openalex_key != "") glens_env$openalex_key <- keys$openalex_key
     # if (!is.null(keys$wos_key) && keys$wos_key != "") glens_env$wos_key <- keys$wos_key
@@ -395,6 +397,113 @@ server <- function(input, output, session) {
   #   )
   # })
   
+  
+  observeEvent(input$predownload_btn, {
+    
+    showModal(modalDialog(
+      title = tags$span(icon("file-export", lib = "font-awesome"), " Data Export"),
+      size = "m",
+      
+      # --- INFO SECTION ---
+      tags$div(
+        style = "margin-bottom: 20px; padding: 15px; background: #f8f9fa; border-radius: 5px; border: 1px solid #ddd;",
+        radioGroupButtons("data_export_frame", label = "Export Data from", choices = c("Current View", "Full Data"), selected = "Current View", direction = "horizontal"),
+        tags$hr(style = "margin: 15px 0;"),
+      ),
+      
+      tags$div(
+        style = "text-align: center; margin-top: 20px; margin-bottom: 10px;",
+        downloadButton(
+          outputId = "download_btn",
+          label = "Download Data",
+          icon = icon("download", lib = "font-awesome"),
+          class = "btn btn-primary btn-lg", 
+          style = "font-weight: normal; cursor: pointer; padding: 10px 30px;",
+          # Keeps your beautiful spinner state active, then automatically resets it after 15 seconds
+          onclick = '
+            var btn = this;
+            btn.innerHTML = "<i class=\\"fa fa-spinner fa-spin\\"></i> Preparing Download...";
+            setTimeout(function() {
+              btn.innerHTML = "<i class=\\"fa fa-download\\"></i> Download Data";
+            }, 15000);
+          '
+        )
+      ),
+      easyClose = FALSE,
+      footer = modalButton("Cancel")
+    ))
+  })
+  
+  observeEvent(input$preupload_btn, {
+    
+    showModal(modalDialog(
+      title = tags$span(icon("file-import", lib = "font-awesome"), " File Upload Instructions"),
+      size = "m",
+      
+      # --- INFO SECTION ---
+      tags$div(
+        style = "margin-bottom: 20px; padding: 15px; background: #f8f9fa; border-radius: 5px; border: 1px solid #ddd;",
+        
+        tags$h5(icon("info-circle"), " Supported Formats", style = "margin-top: 0;"),
+        tags$p("Please upload a data file in one of the following formats: ", 
+               tags$strong(".csv, .tsv, .xlsx, or .xls")),
+        tags$p("Currently accepts files from these sources: ", 
+               tags$strong(tags$a("SCOPUS",href="https://www.scopus.com/pages/search/publications?type=advanced", target="_blank"),",", tags$a("GScholarLENS exported tables", href="https://project.iith.ac.in/sharmaglab/gscholarlens/", target="_blank"))),
+        tags$hr(style = "margin: 15px 0;"),
+        
+        tags$strong("Required Columns:"),
+        tags$p(style = "font-size: 12px; color: #666; margin-bottom: 5px;", "Your file must contain these columns (or variants of these names) to proceed:"),
+        tags$div(
+          style = "margin-bottom: 15px; display: flex; flex-wrap: wrap;",
+          lapply(collabnet_required_cols, function(col) {
+            tags$span(style = paste(base_badge_style, "background-color: #dc3545;"), col)
+          })
+        ),
+        
+        tags$strong("Optional Columns:"),
+        tags$p(style = "font-size: 12px; color: #666; margin-bottom: 5px;", "These metrics will be imported if available, but are not strictly required:"),
+        tags$div(
+          style = "display: flex; flex-wrap: wrap;",
+          lapply(collabnet_optional_cols, function(col) {
+            tags$span(style = paste(base_badge_style, "background-color: #6c757d;"), col)
+          })
+        )
+      ),
+      
+      # --- UPLOAD BUTTON SECTION ---
+      tags$div(
+        style = "text-align: center; margin-top: 20px; margin-bottom: 10px;",
+        tags$label(
+          class = "btn btn-primary btn-lg", # Made it a primary large button so it stands out
+          style = "font-weight: normal; cursor: pointer; padding: 10px 30px;",
+          tags$i(id = "upload_icon", class = "fa fa-upload"),
+          tags$span(id = "upload_text", " Browse & Upload File"), 
+          
+          tags$input(
+            id = "upload_btn",
+            type = "file",
+            multiple = FALSE,
+            accept = ".csv, .tsv, .xlsx, .xls", # OS-level restriction
+            style = "display: none;", # Hides the ugly native input, leaving only the label visible
+            onchange = "
+              document.getElementById('upload_text').innerText = ' Uploading...';
+              document.getElementById('upload_icon').className = 'fa fa-spinner fa-spin';
+              
+              // Reset the trigger button just in case
+              let pre_text = document.getElementById('preupload_text');
+              let pre_icon = document.getElementById('preupload_icon');
+              if(pre_text) pre_text.innerText = ' Uploading...';
+              if(pre_icon) pre_icon.className = 'fa fa-spinner fa-spin';
+            "
+          )
+        )
+      ),
+      
+      easyClose = TRUE,
+      footer = modalButton("Cancel")
+    ))
+  })
+  
   observeEvent(input$upload_btn, {
     
     tryCatch({
@@ -403,6 +512,11 @@ server <- function(input, output, session) {
       document.getElementById('upload_text').innerText = ' Upload Success!';
       document.getElementById('upload_icon').className = 'fa fa-check';
       document.getElementById('upload_icon').style.color = '#28a745';
+      
+      document.getElementById('preupload_text').innerText = ' Upload Success!';
+      document.getElementById('preupload_icon').className = 'fa fa-check';
+      document.getElementById('preupload_icon').style.color = '#28a745';
+            
     ")
       
       message("FILE UPLOADED!")
@@ -431,10 +545,10 @@ server <- function(input, output, session) {
       # --- TRANSITION DELAY ---
       shinyjs::delay(1500, {
         shinyjs::runjs("
-        document.getElementById('upload_text').innerText = '';
-        document.getElementById('upload_icon').className = 'fa fa-upload';
-        document.getElementById('upload_icon').style.color = ''; 
-        document.getElementById('upload_btn').value = ''; 
+        document.getElementById('preupload_text').innerText = '';
+        document.getElementById('preupload_icon').className = 'fa fa-upload';
+        document.getElementById('preupload_icon').style.color = ''; 
+        document.getElementById('preupload_btn').value = ''; 
       ")
         
         showModal(modalDialog(
@@ -830,10 +944,10 @@ server <- function(input, output, session) {
       unique_journals <- unique(extended_df$Name_norm)
       unique_journals <- unique_journals[!is.na(unique_journals) & trimws(unique_journals) != ""]
       
-      shinyWidgets::updateProgressBar(session, id = "prog_journal", value = 0, title = "Journals Matched : 0%")
+      shinyWidgets::updateProgressBar(session, id = "prog_journal", value = 0, title = "Journals Matched : 0%", status="warn")
       
       if (length(unique_journals) > 0) {
-        trigger_openalex_js(unique_journals, glens_env$openalex_key, "openalex_results")
+        trigger_openalex_js(unique_journals, glens_env$openalex_key, glens_env$mail_key , "openalex_results")
       } else {
         shinyjs::runjs("Shiny.setInputValue('openalex_results', '[]', {priority: 'event'});")
       }
@@ -1072,298 +1186,6 @@ server <- function(input, output, session) {
     }
   })
   
-  # observeEvent(input$confirm_import, {
-  #   req(rv$intermediate_merged_df)
-  #   merged_df <- rv$intermediate_merged_df
-  #   rv$glens_full_table_tmp <- rv$glens_full_table
-  #   
-  #   # Force all columns in both datasets to be character text.
-  #   raw_df <- merged_df %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character))
-  #   
-  #   # --- 2. PARSE THE TARGET AUTHORS ---
-  #   # We must do this here so the extend function knows exactly who to search for
-  #   target_variants <- stringi::stri_omit_empty(stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n"))))
-  #   target_variants <- target_variants[target_variants != ""]
-  #   
-  #   if(length(target_variants) > 0) {
-  #     rv$target_variants_norm <- lapply(setNames(target_variants, target_variants), function(v) {
-  #       vn <- normalize_name(v)
-  #       list(norm = vn, parts = extract_parts(vn))
-  #     })
-  #     rv$author_match_regex <- build_name_regex_for_variants(target_variants)
-  #   } else {
-  #     rv$target_variants_norm <- NULL
-  #     rv$author_match_regex <- NULL
-  #   }
-  #   
-  #   
-  #   # --- 3. THE HEAVY LIFTING (Hybrid Paradigm) ---
-  #   # Pass raw_df directly into the extension and matching pipeline
-  #   extended_df <- extend_input_table(rv, raw_df, rv$author_match_regex, rv$target_variants_norm)
-  #   merged_df <- match_journals(rv, extended_df)
-  #   
-  #   # --- Apply NA Removal ---
-  #   # if (input$drop_na_rows) {
-  #   #   # Drops any row that has an NA in ANY column
-  #   #   rv$glens_etable_final <- tidyr::drop_na(rv$glens_etable_final)
-  #   # }
-  #   # 
-  #   # if (input$drop_na_cols) {
-  #   #   # Drops any column that has an NA in ANY row
-  #   #   rv$glens_etable_final <- rv$glens_etable_final %>%
-  #   #     dplyr::select(dplyr::where(~ !any(is.na(.))))
-  #   # }
-  #   # Keep rows if ANY column has a non-NA value (drops rows where ALL are NA)
-  #   merged_df <- merged_df %>%
-  #     dplyr::filter(dplyr::if_any(dplyr::everything(), ~ !is.na(.)))
-  #   
-  #   # Keep columns if they don't have ALL NA values (drops columns where ALL are NA)
-  #   merged_df <- merged_df %>%
-  #     dplyr::select(dplyr::where(~ !all(is.na(.))))
-  #   
-  #   # ------------------------------
-  #   # --- 1. Safely Consolidate & Rename Known Columns ---
-  #   # Define all the variations of names that might come from different files
-  #   target_mappings <- list(
-  #     "orcid" = c("orcid", "ORCiD", "Orcid", "ORCID"),
-  #     "SCOPUS_ID" = c("SCOPUS_ID", "SCOPUS ID", "Scopus ID", "Author(s) ID"),
-  #     "Citations" = c("Citations", "Cited by"),
-  #     "User_Journal" = c("User_Journal", "Source title"),
-  #     "doi" = c("doi", "DOI")
-  #   )
-  #   
-  #   for(targ in names(target_mappings)) {
-  #     aliases <- target_mappings[[targ]]
-  #     # Find which of the aliases actually exist in the current dataframe
-  #     found_cols <- intersect(aliases, colnames(merged_df))
-  #     
-  #     if (length(found_cols) > 0) {
-  #       master_vec <- rep(NA_character_, nrow(merged_df))
-  #       
-  #       # Coalesce all found columns into one master vector (forcing character to avoid type crashes)
-  #       for(fc in found_cols) {
-  #         master_vec <- dplyr::coalesce(master_vec, as.character(merged_df[[fc]]))
-  #       }
-  #       
-  #       # Assign the master merged column
-  #       merged_df[[targ]] <- master_vec
-  #       
-  #       # Drop the old alias columns so the dataset stays clean
-  #       drop_cols <- setdiff(found_cols, targ)
-  #       if (length(drop_cols) > 0) {
-  #         merged_df <- merged_df %>% dplyr::select(-dplyr::all_of(drop_cols))
-  #       }
-  #     }
-  #   }
-  #   
-  #   # 5. Handle Row Logic
-  #   if (input$row_import_type == "New" || is.null(rv$glens_full_table)) {
-  #     glens_full_table <- merged_df
-  #     
-  #   } else if (input$row_import_type == "Append") {
-  #     
-  #       if (rv$saved_col_import_type == "Common Columns") {
-  #       final_common_cols <- intersect(names(rv$glens_full_table), names(merged_df))
-  #       glens_full_table <- dplyr::bind_rows(
-  #         rv$glens_full_table[, final_common_cols, drop = FALSE],
-  #         merged_df[, final_common_cols, drop = FALSE]
-  #       )
-  #     } else {
-  #       print("MERGING:")
-  #       glens_full_table <- dplyr::bind_rows(rv$glens_full_table %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character)), merged_df)
-  #     }
-  #     
-  #   } else if (input$row_import_type == "Merge") {
-  #     
-  #     join_keys <- input$row_merge_keys
-  #     join_type <- input$join_type # Grab the selected join type
-  #     
-  #     print("join_keys:")
-  #     print(join_keys)
-  #     print("join_type:")
-  #     print(join_type)
-  #     
-  #     if (!is.null(join_keys) && length(join_keys) > 0) {
-  #       
-  #       overlap_cols <- setdiff(intersect(names(rv$glens_full_table), names(merged_df)), join_keys)
-  #       
-  #       # 1. Dynamically select the join function based on the dropdown
-  #       join_func <- switch(join_type,
-  #                           "inner" = dplyr::inner_join,
-  #                           "left"  = dplyr::left_join,
-  #                           "right" = dplyr::right_join,
-  #                           "full"  = dplyr::full_join)
-  #       
-  #       # 2. Execute the join
-  #       joined_df <- join_func(
-  #         rv$glens_full_table, 
-  #         merged_df, 
-  #         by = join_keys,  
-  #         suffix = c(".old", ".new"),
-  #         relationship = "many-to-many" 
-  #       )
-  #       
-  #       # 3. Coalesce overlapping columns (prioritizing old data, filling gaps with new data)
-  #       for(col in overlap_cols) {
-  #         old_col <- paste0(col, ".old")
-  #         new_col <- paste0(col, ".new")
-  #         
-  #         # Force both to character to prevent integer/character mismatch crashes
-  #         old_vals <- as.character(joined_df[[old_col]])
-  #         new_vals <- as.character(joined_df[[new_col]])
-  #         
-  #         joined_df[[col]] <- dplyr::coalesce(old_vals, new_vals)
-  #         
-  #         joined_df[[old_col]] <- NULL
-  #         joined_df[[new_col]] <- NULL
-  #       }
-  #       
-  #       # 4. Spread metadata up and down grouped by ALL selected keys
-  #       joined_df <- joined_df %>%
-  #         dplyr::group_by(dplyr::across(dplyr::all_of(join_keys))) %>%
-  #         tidyr::fill(dplyr::everything(), .direction = "downup") %>%
-  #         dplyr::ungroup()
-  #       
-  #       glens_full_table <- joined_df
-  #       
-  #     } else {
-  #       warning("No join keys selected. Falling back to Append.")
-  #       # rv$glens_full_table <- dplyr::bind_rows(rv$glens_full_table, merged_df)
-  #       glens_full_table <- dplyr::bind_rows(rv$glens_full_table %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character)), merged_df)
-  #     }
-  #   }
-  #   
-  #   if(nrow(glens_full_table) <= 0){
-  #     showNotification("Data import/merge returned empty rows. Try different options", type = "error", duration = 10)
-  #     rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'>Data import/merge returned empty rows. Try different options </span>"),sep="<br>")
-  #     rv$imported_data_list <- NULL
-  #     rv$intermediate_merged_df <- NULL
-  #     rv$saved_col_import_type <- NULL
-  #     rv$glens_full_table <- rv$glens_full_table_tmp
-  #     # rv$glens_input_table <- NULL
-  #     # rv$glens_year_filtered <- NULL
-  #     removeModal()
-  #     return()
-  #   }
-  #   
-  #   # #Checks to make sure CollabNET columns exist
-  #   # # Auto-fill any missing columns with NA. 
-  #   # # allows multi-file upload without it getting rejected for missing columns.
-  #   # for(col in collabnet_required_cols) {
-  #   #   if (!(col %in% colnames(rv$glens_etable_final))) {
-  #   #     rv$glens_etable_final[[col]] <- NA_character_
-  #   #   }
-  #   # }
-  #   
-  #   # print(colnames(rv$glens_etable_final))
-  #   # print(nrow(rv$glens_etable_final))
-  #   # print(str(rv$glens_etable_final))
-  #   # print("MERGED_DF:")
-  #   # print(colnames(merged_df))
-  #   # print(nrow(merged_df))
-  #   # print(str(merged_df))
-  #   missing_cols <- setdiff(collabnet_required_cols, colnames(glens_full_table))
-  #   if(length(missing_cols) > 0) {
-  #     
-  #     # Format the missing columns into a clean string
-  #     missing_str <- paste(missing_cols, collapse=", ")
-  #     # Update the log
-  #     rv$log_text <- paste(rv$log_text, 
-  #                          paste0("<span style='color: red;'>Missing required columns: ", missing_str, "</span>"), 
-  #                          sep="<br>")
-  #     # Show the smaller, targeted notification
-  #     showNotification(paste("Missing columns:", missing_str), type = "error", duration = 10)
-  #     # rv$imported_data_list <- NULL
-  #     # rv$intermediate_merged_df <- NULL
-  #     # rv$saved_col_import_type <- NULL
-  #     # rv$glens_etable_final <- rv$glens_etable_final_tmp
-  #     # # rv$glens_input_table <- NULL
-  #     # # rv$glens_year_filtered <- NULL
-  #     # removeModal()
-  #     # return()
-  #   }
-  #   
-  #   # Cleanup
-  #   rv$glens_full_table <- dplyr::distinct(glens_full_table)
-  #   rv$imported_data_list <- NULL
-  #   rv$intermediate_merged_df <- NULL
-  #   rv$saved_col_import_type <- NULL
-  #   rv$log_text <- paste(rv$log_text, paste("Post-Import Total:",nrow(rv$glens_full_table),"lines..."),sep="<br>")
-  #   # rv$glens_input_table <- rv$glens_etable_final
-  #   
-  #   
-  #   # target_variants <- stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n")))
-  #   # target_variants <- target_variants[target_variants != ""]
-  #   # 
-  #   # # Apply normalization based on Extended Matching checkbox
-  #   # if (isTRUE(input$ext_match)) {
-  #   #   rv$target_variants_norm <- lapply(setNames(target_variants, target_variants), function(v) {
-  #   #     vn <- normalize_name(v)
-  #   #     list(norm = vn, parts = extract_parts(vn))
-  #   #   })
-  #   # } else {
-  #   #   # If Extended Matching is off, skip strict normalization but respect case preference
-  #   #   rv$target_variants_norm <- lapply(setNames(target_variants, target_variants), function(v) {
-  #   #     vn <- if(isTRUE(input$ignore_case)) tolower(v) else v
-  #   #     list(norm = vn, parts = list(vn))
-  #   #   })
-  #   # }
-  #   # 
-  #   # # Pass the ignore_case UI value into the regex builder
-  #   # rv$author_match_regex <- build_name_regex_for_variants(target_variants, ignore_case = input$ignore_case)
-  #   # 
-  #   # extend_input_table(rv)
-  #   
-  #   # rv$glens_year_filtered <- rv$glens_full_table
-  #   
-  #   # target_variants <- stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n")))
-  #   # target_variants <- target_variants[target_variants != ""]
-  #   # rv$target_variants_norm <- lapply(setNames(target_variants, target_variants), function(v) {
-  #   #   vn <- normalize_name(v)
-  #   #   list(norm = vn, parts = extract_parts(vn))
-  #   # })
-  #   # rv$author_match_regex <- build_name_regex_for_variants(target_variants)
-  #   # 
-  #   # extend_input_table(rv)
-  #   # 
-  #   # rv$glens_year_filtered <- rv$glens_etable_final
-  #   
-  #   # if (nrow(rv$glens_year_filtered) <= 0) {
-  #   #   rv$log_text <- paste(rv$log_text, "Import: No keywords were matched.",sep="<br>")
-  #   #   # shinyjs::enable("submit_button")
-  #   #   # removeModal()
-  #   #   # return()
-  #   # }else{
-  #   #   
-  #   #   # compute_indices(rv)
-  #   #   # output$summary_table <- renderTable(rv$summary_table, striped = TRUE)
-  #   #   # output$sh_index <- renderUI(HTML(paste("<b>Sh-Index:</b>", "NA")))
-  #   #   # output$extended_table <- DT::renderDataTable({
-  #   #   #   DT::datatable(rv$glens_year_filtered, options = list(scrollY = "600px", scrollX = TRUE, paging = TRUE))
-  #   #   # })
-  #   #   # match_journals(rv)
-  #   #   rv$glens_year_filtered <- rv$glens_full_table
-  #   #   shinyjs::show("extended_table")
-  #   # }
-  #   # 
-  #   # if(length(na.omit(levels(factor(rv$glens_year_filtered$Year)))) > 1){
-  #   #   min_year <- min(as.numeric(rv$glens_year_filtered$Year), na.rm = TRUE)
-  #   #   max_year <- max(as.numeric(rv$glens_year_filtered$Year), na.rm = TRUE)
-  #   #   if (is.finite(min_year) && is.finite(max_year)) {
-  #   #     updateSliderInput(session, "year_slider", value = c(min_year, max_year), min = min_year, max = max_year)
-  #   #     shinyjs::show("year_slider")
-  #   #   }else{
-  #   #     shinyjs::hide("year_slider")
-  #   #   }
-  #   # }else{
-  #   #   shinyjs::hide("year_slider")
-  #   # }
-  #   # # rv$extended_controls <- TRUE
-  #   saveRDS(rv$glens_full_table, "glens_full_table.rds")
-  #   
-  #   removeModal()
-  # })
-  
   # --- Column Mapping UI Generation ---
   output$column_mapping_ui <- renderUI({
     req(rv$imported_data_list)
@@ -1382,13 +1204,10 @@ server <- function(input, output, session) {
     )
     
     # 2. Define Required vs Optional Columns
-    required_cols <- c("Citations", "User_Journal", "Title", "Authors", "Year", "Source")
-    optional_cols <- c("Qscore", "JIF5Years", "SCOPUS_ID", "doi", "JCR_Journal", "orcid", "Name")
+    # required_cols <- c("Citations", "User_Journal", "Title", "Authors", "Year", "Source")
+    # optional_cols <- c("Qscore", "JIF5Years", "SCOPUS_ID", "doi", "JCR_Journal", "orcid", "Name")
     
     all_uploaded_cols <- unique(unlist(lapply(rv$imported_data_list, names)))
-    
-    # 3. Header Panel Tags with Clickable CSS
-    base_badge_style <- "display: inline-block; padding: 4px 8px; margin: 2px; border-radius: 12px; font-size: 12px; font-weight: bold; color: white; transition: transform 0.2s ease, opacity 0.2s; cursor: pointer; user-select: none;"
     
     custom_css <- tags$style(HTML("
       .clickable-badge:hover, .clickable-selected-badge:hover {
@@ -1404,7 +1223,7 @@ server <- function(input, output, session) {
       tags$strong("Required Columns:"),
       tags$div(
         style = "margin-top: 5px; margin-bottom: 10px; display: flex; flex-wrap: wrap;",
-        lapply(required_cols, function(col) {
+        lapply(collabnet_required_cols, function(col) {
           tags$span(id = paste0("req-badge-", col), class = "clickable-badge", style = paste(base_badge_style, "background-color: #dc3545;"), col)
         })
       ),
@@ -1412,7 +1231,7 @@ server <- function(input, output, session) {
       tags$strong("Optional Columns:"),
       tags$div(
         style = "margin-top: 5px; margin-bottom: 15px; display: flex; flex-wrap: wrap;",
-        lapply(optional_cols, function(col) {
+        lapply(collabnet_optional_cols, function(col) {
           tags$span(id = paste0("opt-badge-", col), class = "clickable-badge", style = paste(base_badge_style, "background-color: #6c757d;"), col)
         })
       ),
@@ -1449,8 +1268,8 @@ server <- function(input, output, session) {
       )
     })
     
-    js_req_array <- paste0("['", paste(required_cols, collapse = "','"), "']")
-    js_opt_array <- paste0("['", paste(optional_cols, collapse = "','"), "']")
+    js_req_array <- paste0("['", paste(collabnet_required_cols, collapse = "','"), "']")
+    js_opt_array <- paste0("['", paste(collabnet_optional_cols, collapse = "','"), "']")
     
     # 5. Javascript with Click Toggles
     js_script <- tags$script(HTML(paste0("
@@ -1656,6 +1475,7 @@ server <- function(input, output, session) {
     }
     
     # Resolve keys: Try VFS first. If NULL, fallback to the browser-stored glens_env
+    val_mail    <- if(!is.null(get_vfs_key("mail.key"))) get_vfs_key("mail.key") else glens_env$mail_key
     val_scopus    <- if(!is.null(get_vfs_key("scopus.key"))) get_vfs_key("scopus.key") else glens_env$scopus_key
     val_openalex    <- if(!is.null(get_vfs_key("openalex.key"))) get_vfs_key("openalex.key") else glens_env$openalex_key
     # val_wos       <- if(!is.null(get_vfs_key("wos.key"))) get_vfs_key("wos.key") else glens_env$wos_key
@@ -1664,6 +1484,7 @@ server <- function(input, output, session) {
     # val_opencites <- if(!is.null(get_vfs_key("opencites.key"))) get_vfs_key("opencites.key") else glens_env$opencites_key
     
     # Evaluate boolean flags for the UI Badges (TRUE if we found a key anywhere)
+    rv$has_key_mail    <- !is.null(val_mail) && val_mail != ""
     rv$has_key_scopus    <- !is.null(val_scopus) && val_scopus != ""
     rv$has_key_openalex    <- !is.null(val_openalex) && val_openalex != ""
     # rv$has_key_wos       <- !is.null(val_wos) && val_wos != ""
@@ -1675,6 +1496,31 @@ server <- function(input, output, session) {
     showModal(modalDialog(
       title = tags$span(icon("gears", lib = "font-awesome"), " API Configuration Settings"),
       size = "m",
+      
+      # EMAIL
+      tags$div(class = "api-row",
+               tags$div(class = "input-button-group",
+                        passwordInput("mail_key", 
+                                      label = HTML(paste0('
+             <div style="display: flex; align-items: center;">
+               E-mail :
+               <span class="api-help-container" style="position: relative; display: inline-block;">
+               </span>
+               ', if(rv$has_key_mail) {
+                 '<span class="status-badge badge-found" style="margin-left: auto; font-weight: normal; font-size: 12px;"><i class="fa fa-check"></i> Mail Found</span>'
+               } else {
+                 '<span class="status-badge badge-missing" style="margin-left: auto; font-weight: normal; font-size: 12px; color: #dc3545;">Missing</span>'
+               }, 
+               '</div>'
+                                      )), 
+               placeholder = "Enter E-mail ", 
+               width = "100%"
+                        ),
+               tags$div(class = "api-save-wrap",
+                        actionButton("save_mail", "Save Email", class = "btn-success save-btn-custom")
+               )
+               )
+      ),
       
       # Scopus
       tags$div(class = "api-row",
@@ -1860,6 +1706,7 @@ server <- function(input, output, session) {
     
     # --- FILL TEXT INPUTS ---
     # Update the input boxes safely using the unified values
+    if(rv$has_key_mail) updateTextInput(session, "mail_key", value = val_mail)
     if(rv$has_key_scopus) updateTextInput(session, "scopus_key", value = val_scopus)
     if(rv$has_key_openalex) updateTextInput(session, "openalex_key", value = val_openalex)
   
@@ -1870,6 +1717,23 @@ server <- function(input, output, session) {
   })
   
   # Save handlers
+  observeEvent(input$save_mail, {
+    raw_key <- charToRaw(trimws(input$mail_key))
+    encrypted_scopus <- sodium::data_encrypt(raw_key, key=sha256(glens_env$privkey_dec))
+    saveRDS(encrypted_scopus, file = file.path("keys","mail.key"))
+    if(is_WASM){
+      session$sendCustomMessage("save_key_to_browser", list(platform = "mail_key", key = raw_key))
+    }
+    if(is.null(input$scopus_key) || stringi::stri_isempty(input$mail_key)){
+      if(fs::file_exists(file.path("keys","mail.key")))
+        fs::file_delete(file.path("keys","mail.key"))
+      # removeModal()
+      # return()
+    }else{
+      showNotification("E-mail Encrypted and Saved.", type = "message")
+    }
+    # removeModal()
+  })
   observeEvent(input$save_scopus, {
     # req(input$scopus_key)
     raw_key <- charToRaw(trimws(input$scopus_key))
@@ -2033,7 +1897,7 @@ server <- function(input, output, session) {
     if(length(input$author_list) > 0){
       target_variants <- stringi::stri_omit_empty(stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n"))))
       target_variants <- target_variants[target_variants != ""]
-      # isolate({ rv$author_list <- target_variants })
+      isolate({ rv$author_list <- target_variants })
       
       # if(length(target_variants) > 0){
       #   # FIX 1: Isolate the updates to rv so they don't trigger upstream dependencies
@@ -2086,6 +1950,7 @@ server <- function(input, output, session) {
     # INJECT ROUTER: Use the smart active_filters instead of raw debounced_inputs
     filters <- active_filters()
     
+    rv$is_glens_exec <- TRUE
     print("HERE1:")
     print(nrow(df))
     print(str(filters))
@@ -2201,6 +2066,8 @@ server <- function(input, output, session) {
       return()
     }
     
+    rv$is_glens_exec <- TRUE
+    
     if(stringi::stri_isempty(input$author_list)){
       lapply(c("acounts_plot", "ccounts_plot", "cdist_plot", "aperc_plot", "cperc_plot"), shinyjs::hide)
     }else{
@@ -2217,21 +2084,23 @@ server <- function(input, output, session) {
         max = max(df$token_count, na.rm = TRUE)
       )
     }
+    rv$is_glens_exec <- FALSE
     
     # 3. UPDATE THE PLOTS
     # We use try() because if the skeleton isn't fully rendered in the UI yet, 
     # the proxy might throw a temporary error.
     try({
       req(input$enable_plots)
-      # if(input$enable_plots){
+      rv$is_glens_exec <- TRUE
+        # if(input$enable_plots){
         print("Updating plots via Proxy...")
         plot_glens_table(rv, df, session)
       # }else{
       #   render_skeleton_plots(rv, df, output)
       # }
     }, silent = TRUE)
+    rv$is_glens_exec <- FALSE
   })
-  
   
   # =============================================================================
   # Venn diagram updates
@@ -2296,6 +2165,7 @@ server <- function(input, output, session) {
     delims <- rv$detected_mv_cols
     
     req(df, nrow(df) > 0, col, delims[[col]])
+    rv$is_glens_exec <- TRUE
     target_delim <- delims[[col]]
     
     temp_df <- df %>%
@@ -2343,6 +2213,7 @@ server <- function(input, output, session) {
     updateSliderInput(session, "node_freq_range", min = 1, max = max_node_occurrences, value = c(1, max_node_occurrences))
     updateSliderInput(session, "edge_freq_range", min = 0, max = max_edge_frequency, value = c(1, 1)) 
     updateSliderInput(session, "cluster_size_range", min = 1, max = max_cluster_size, value = c(1, dplyr::if_else(max_cluster_size < 500, max_cluster_size, 500)))
+    rv$is_glens_exec <- FALSE
   })
   
   # 4. Indices Computation (Calculates based on what is currently visible/filtered)
@@ -2381,10 +2252,26 @@ server <- function(input, output, session) {
     }
   })
   
+  observeEvent(rv$is_glens_exec, {
+    
+    # isTRUE prevents NULL crashes
+    is_exec <- isTRUE(rv$is_glens_exec)
+    
+    # toggleState enables when TRUE, disables when FALSE.
+    # Because we want to DISABLE when is_exec is TRUE, we pass the opposite (!is_exec)
+    shinyjs::toggleState("enable_summary", condition = !is_exec)
+    shinyjs::toggleState("enable_plots",   condition = !is_exec)
+    shinyjs::toggleState("enable_table",   condition = !is_exec)
+    shinyjs::toggleState("enable_network", condition = !is_exec)
+    shinyjs::toggleState("enable_venn",    condition = !is_exec)
+    
+  }, ignoreNULL = TRUE)
+  
   # ==============================================================================
   # DYNAMIC UI UPDATES 
   # ==============================================================================
   observe({
+    
     # Wait for the table to be ready
     df <- rv$glens_full_table
     req(nrow(df) > 0)
@@ -2535,6 +2422,7 @@ server <- function(input, output, session) {
   # Calculate Filtered Network Data (Debounced)
   # 1. Initialize Network Cache (Updated for Range inputs)
   network_cache <- reactiveVal(list(
+    enable_network=FALSE,
     col = NULL,
     delim = NULL,
     result = NULL,
@@ -2564,9 +2452,9 @@ server <- function(input, output, session) {
     req(col, df, delims[[col]])
     target_delim <- delims[[col]]
     req(!stringi::stri_isempty(target_delim))
-    
     cache <- network_cache()
-    if (!is.null(cache$col) && 
+    if (cache$enable_network == input$enable_network &&
+        !is.null(cache$col) && 
         cache$col == col && 
         cache$delim == target_delim && 
         identical(cache$edge_freq_range, input$edge_freq_range) && 
@@ -2579,9 +2467,9 @@ server <- function(input, output, session) {
         return(cache$result)
       }
     }
-    
+  
     message(paste("Generating network for:", col))
-    
+    rv$is_glens_exec <- TRUE
     raw_net <- build_collaboration_network(
       df = df, 
       authors_per_pub = input$custom_max_keywords, 
@@ -2601,12 +2489,13 @@ server <- function(input, output, session) {
     }
     
     network_cache(list(
+      enable_network = input$enable_network,
       col = col, delim = target_delim, result = raw_net,
       edge_freq_range = input$edge_freq_range, node_freq_range = input$node_freq_range,
       author_list = rv$author_list, custom_max_keywords = input$custom_max_keywords,
       cluster_size_range = input$cluster_size_range, prune_leaves = input$prune_leaves
     ))
-    
+    rv$is_glens_exec <- FALSE
     return(raw_net)
   })
   
@@ -2686,7 +2575,6 @@ server <- function(input, output, session) {
         # stabilizationIterationsDone = "function () {this.setOptions( { physics: false } );}"
       ) %>%
       addFontAwesome()
-    
   })
   
   output$network_summary_table <- renderUI({
@@ -2726,30 +2614,45 @@ server <- function(input, output, session) {
   # 1. Trigger on BOTH inputs so changing the keyword draws the circle instantly
   observeEvent(list(input$neighbourhood_slider, input$custom_node_selector), {
     req(input$enable_network)
+    
+    # --- FIX 1: FREEZE THE SLIDER ---
+    # Instantly lock the slider to prevent event flooding while the user drags it
+    shinyjs::disable("neighbourhood_slider")
+    
     proxy <- visNetworkProxy("network_filtered")
     
     # Scenario A: Wiped or empty selector state
     if (is.null(input$custom_node_selector) || length(input$custom_node_selector) == 0 || all(input$custom_node_selector == "")) {
       proxy %>% visUnselectAll() 
       updateSelectizeInput(session, "neighbourhood_nodes", choices = character(0), server = TRUE)
-      shinyjs::disable("neighbourhood_slider")
+      # Leave the slider disabled because there is no active target
       return()
     }
     
     # Scenario B: Target Keyword exists
-    shinyjs::enable("neighbourhood_slider")
     proxy %>% visSelectNodes(id = input$custom_node_selector)
     
     net_data <- net_data_filtered_debounced()
-    req(net_data, nrow(net_data$nodes) > 0)
+    if (is.null(net_data) || nrow(net_data$nodes) == 0) {
+      shinyjs::enable("neighbourhood_slider")
+      return()
+    }
     
     current_nodes <- net_data$nodes
-    if (!("x" %in% colnames(current_nodes)) || !("y" %in% colnames(current_nodes))) return()
+    # If layout coordinates (x,y) haven't been bound to the dataframe, abort safely
+    if (!("x" %in% colnames(current_nodes)) || !("y" %in% colnames(current_nodes))) {
+      shinyjs::enable("neighbourhood_slider")
+      return()
+    }
     
     centroid_ids <- input$custom_node_selector
     valid_centroids <- current_nodes[current_nodes$id %in% centroid_ids, ]
-    if (nrow(valid_centroids) == 0) return()
+    if (nrow(valid_centroids) == 0) {
+      shinyjs::enable("neighbourhood_slider")
+      return()
+    }
     
+    # Calculate distances
     dist_matrix <- sapply(1:nrow(valid_centroids), function(i) {
       sqrt((current_nodes$x - valid_centroids$x[i])^2 + (current_nodes$y - valid_centroids$y[i])^2)
     })
@@ -2770,17 +2673,86 @@ server <- function(input, output, session) {
       session, 
       "neighbourhood_nodes", 
       selected = nodes_in_circle,
-      choices = current_nodes$id ,
+      choices = current_nodes$id,
       server = TRUE
     )
     
+    # --- FIX 2: RENDER THE CIRCLES ---
     circles_js <- lapply(1:nrow(valid_centroids), function(i) {
       list(nodeId = valid_centroids$id[i], r = current_radius)
     })
     
-    session$sendCustomMessage("draw_neighbourhood_circle", circles_js)
+    # Convert the R list to JSON safely
+    circles_json <- jsonlite::toJSON(circles_js, auto_unbox = TRUE)
+    
+    # Inject it directly into the JS window object (bypassing the need for a UI message handler)
+    shinyjs::runjs(sprintf("window.neighbourhoodCircles = %s;", circles_json))
+    
+    # CRITICAL: Force the static network to visually update so the 'beforeDrawing' event triggers
+    proxy %>% visRedraw()
+    
+    # Unfreeze the slider now that calculations and rendering are complete
+    shinyjs::enable("neighbourhood_slider")
     
   }, ignoreInit = TRUE, ignoreNULL = FALSE)
+  
+  # observeEvent(list(input$neighbourhood_slider, input$custom_node_selector), {
+  #   req(input$enable_network)
+  #   proxy <- visNetworkProxy("network_filtered")
+  #   
+  #   # Scenario A: Wiped or empty selector state
+  #   if (is.null(input$custom_node_selector) || length(input$custom_node_selector) == 0 || all(input$custom_node_selector == "")) {
+  #     proxy %>% visUnselectAll() 
+  #     updateSelectizeInput(session, "neighbourhood_nodes", choices = character(0), server = TRUE)
+  #     shinyjs::disable("neighbourhood_slider")
+  #     return()
+  #   }
+  #   
+  #   # Scenario B: Target Keyword exists
+  #   shinyjs::enable("neighbourhood_slider")
+  #   proxy %>% visSelectNodes(id = input$custom_node_selector)
+  #   
+  #   net_data <- net_data_filtered_debounced()
+  #   req(net_data, nrow(net_data$nodes) > 0)
+  #   
+  #   current_nodes <- net_data$nodes
+  #   if (!("x" %in% colnames(current_nodes)) || !("y" %in% colnames(current_nodes))) return()
+  #   
+  #   centroid_ids <- input$custom_node_selector
+  #   valid_centroids <- current_nodes[current_nodes$id %in% centroid_ids, ]
+  #   if (nrow(valid_centroids) == 0) return()
+  #   
+  #   dist_matrix <- sapply(1:nrow(valid_centroids), function(i) {
+  #     sqrt((current_nodes$x - valid_centroids$x[i])^2 + (current_nodes$y - valid_centroids$y[i])^2)
+  #   })
+  #   
+  #   r_max <- max(dist_matrix, na.rm = TRUE)
+  #   neighbourhood_val <- abs((1 - (input$neighbourhood_slider / 100)) * 100)
+  #   current_radius <- r_max * (1 - (neighbourhood_val / 100))
+  #   
+  #   if (is.vector(dist_matrix)) {
+  #     in_any_circle <- dist_matrix <= current_radius
+  #   } else {
+  #     in_any_circle <- rowSums(dist_matrix <= current_radius) > 0
+  #   }
+  #   
+  #   nodes_in_circle <- current_nodes$id[in_any_circle]
+  #   
+  #   updateSelectizeInput(
+  #     session, 
+  #     "neighbourhood_nodes", 
+  #     selected = nodes_in_circle,
+  #     choices = current_nodes$id ,
+  #     server = TRUE
+  #   )
+  #   
+  #   circles_js <- lapply(1:nrow(valid_centroids), function(i) {
+  #     list(nodeId = valid_centroids$id[i], r = current_radius)
+  #   })
+  #   
+  #   session$sendCustomMessage("draw_neighbourhood_circle", circles_js)
+  #   
+  # }, ignoreInit = TRUE, ignoreNULL = FALSE)
   
   
   
@@ -3399,6 +3371,48 @@ server <- function(input, output, session) {
   # #     addFontAwesome()
   # # })
   
+  output$download_btn <- downloadHandler(
+    filename = function() {
+      paste0("CollabNET_", Sys.Date(), ".cnet")
+    },
+    content = function(file) {
+      print("--- DOWNLOAD PROCESS STARTED ---")
+      req(input$data_export_frame)
+      
+      export_data <- NULL
+      
+      if (input$data_export_frame == "Current View") {
+        print("Fetching data from glens_year_filtered_rx()...")
+        # Use a tryCatch to prevent a silent reactive crash from hanging the browser
+        export_data <- tryCatch({
+          glens_year_filtered_rx()
+        }, error = function(e) {
+          print(paste("Error reading reactive data:", e$message))
+          return(NULL)
+        })
+      } else if (input$data_export_frame == "Full Data") {
+        print("Fetching data from rv$glens_full_table...")
+        export_data <- rv$glens_full_table
+      }
+      
+      # Validation check: If data is empty or failed, write a placeholder 
+      # to prevent a 0-byte file from hanging the browser window
+      if (is.null(export_data) || nrow(export_data) == 0) {
+        print("WARNING: Export data is empty. Creating a placeholder dataframe.")
+        export_data <- data.frame(Status = "No data matched the current filters.")
+      }
+      
+      print(paste("Writing compressed RDS file. Total rows:", nrow(export_data)))
+      
+      final_con <- gzfile(file, open = "wb", compression = 9)
+      # Foolproof single-connection level 9 compression
+      saveRDS(export_data, file = gzfile("glens_full_table.rds", open = "wb", compression = 9))
+      
+      close(final_con)
+      print("--- DOWNLOAD PROCESS COMPLETE ---")
+    }
+  )
+  
   output$dynamic_source_ui <- renderUI({
     req(rv$glens_full_table)
     df <- rv$glens_full_table
@@ -3637,7 +3651,8 @@ server <- function(input, output, session) {
       session = session, 
       id = "prog_journal", 
       value = input$openalex_results_progress, 
-      title = paste0(input$openalex_results_progress, "%")
+      title = paste0(input$openalex_results_progress, "%"),
+      status = "warn"
     )
   })
   
@@ -3648,7 +3663,7 @@ server <- function(input, output, session) {
     flow_type <- rv$pending_flow_type
     
     if (is.null(extended_df) || is.null(flow_type)) return()
-    
+    rv$is_glens_exec <- TRUE
     shinyWidgets::updateProgressBar(session = session, id = "prog_journal", value = 100, status = "success", title = "Journals Matched : 100%")
     
     # Remove existing metrics to avoid .x/.y duplicate column conflicts
@@ -3775,7 +3790,7 @@ server <- function(input, output, session) {
         rv$pending_flow_type <- NULL
         return()
       }
-      
+      rv$is_glens_exec <- TRUE
       # Check Missing Columns
       missing_cols <- setdiff(collabnet_required_cols, colnames(glens_full_table))
       if(length(missing_cols) > 0) {
@@ -3810,6 +3825,7 @@ server <- function(input, output, session) {
       shinyjs::show("scopus_bar_container")
     }
     
+    rv$is_glens_exec <- FALSE
     # CLEAR PENDING STATE SO IT DOESN'T ACCIDENTALLY REFIRE
     rv$pending_extended_df <- NULL
     rv$pending_flow_type <- NULL
@@ -3889,7 +3905,7 @@ server <- function(input, output, session) {
     
     tryCatch({
       message("Both Streams Finished! Merging Data...")
-      
+      rv$is_glens_exec <- TRUE  
       # --- 1. MERGE THE SCRAPED DATA ---
       valid_dois <- Filter(is.data.frame, rv$final_results)
       accumulated_df <- dplyr::bind_rows(valid_dois)
@@ -3976,10 +3992,10 @@ server <- function(input, output, session) {
         unique_journals <- unique(extended_df$Name_norm)
         unique_journals <- unique_journals[!is.na(unique_journals) & trimws(unique_journals) != ""]
         
-        shinyWidgets::updateProgressBar(session, id = "prog_journal", value = 0, title = "Journals Matched : 0%")
+        shinyWidgets::updateProgressBar(session, id = "prog_journal", value = 0, title = "Journals Matched : 0%", status="warn")
         
         if (length(unique_journals) > 0) {
-          trigger_openalex_js(unique_journals, glens_env$openalex_key, "openalex_results")
+          trigger_openalex_js(unique_journals, glens_env$openalex_key, glens_env$mail_key, "openalex_results")
         } else {
           shinyjs::runjs("Shiny.setInputValue('openalex_results', '[]', {priority: 'event'});")
         }
@@ -3988,9 +4004,10 @@ server <- function(input, output, session) {
         rv$pending_flow_type <- "submit_btn"
         shinyjs::runjs("Shiny.setInputValue('openalex_results', '[]', {priority: 'event'});")
       }
-      
+      rv$is_glens_exec <- FALSE
     }, error = function(e) {
       print(e)
+      rv$is_glens_exec <- FALSE
       shinyWidgets::updateProgressBar(session, id = "prog_doi", value = 100, status = "danger", title = "Process Failed!")
       rv$log_text <- paste(rv$log_text, sprintf("\n(Master) Failed in Final Processing: %s", conditionMessage(e)), sep="<br>")
       shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
@@ -4068,6 +4085,8 @@ server <- function(input, output, session) {
                                       title = "DOI / ORCID Resolver: 0%", status = "info")
       shinyWidgets::updateProgressBar(session, id = "prog_scopus", value = 0, 
                                       title = "Scopus API: 0%", status = "info")
+      shinyWidgets::updateProgressBar(session, id = "prog_journal", value = 0, 
+                                      title = "Journals Matched: 0%", status = "warn")
       
       # check_orcid_input <- F
       # input_is_orcid <- F
@@ -4130,6 +4149,13 @@ server <- function(input, output, session) {
       progress_state$scopus_done = 0
       progress_state$doi_found = 0
       
+      if (!is.null(glens_env$mail_key) && glens_env$mail_key != "") {
+        rv$log_text <- paste(rv$log_text, "Found E-mail!", sep="<br>")
+        rv$has_key_mail <- T
+      } else {
+        rv$log_text <- paste(rv$log_text, "E-mail not found. Please provide it to avoid rate-limits and for using the 'polite-pool'.", sep="<br>")
+        rv$has_key_mail <- F
+      }
       # --- 1. SCOPUS ---
       if (!is.null(glens_env$scopus_key) && glens_env$scopus_key != "") {
         rv$log_text <- paste(rv$log_text, "Found Scopus API key!", sep="<br>")

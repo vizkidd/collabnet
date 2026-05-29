@@ -343,35 +343,35 @@ compute_h_index <- function(citations_vec) {
   as.integer(h)
 }
 
-########JOURNAL MATCHING AND SCORING HELPERS
-# ---------------------------
-# Read JCR file and pick relevant columns
-# ---------------------------
-read_jcr <- function(path) {
-  ext <- tolower(tools::file_ext(path))
-  if (ext %in% c("xlsx","xls")) {
-    j <- readxl::read_excel(path)
-  } else if (ext %in% c("csv","txt")) {
-    j <- read.csv(path, stringsAsFactors = FALSE, check.names = FALSE)
-  } else {
-    stop("Unsupported JCR file type")
-  }
-  #Rename 8th column to Qscore
-  colnames(j)[8] <- "Qscore"
-  # Normalize column names and select the ones requested (if present)
-  names(j) <- str_trim(names(j))
-  want <- c("Name", "Abbr Name","ISSN","EISSN","JIF","JIF5Years","Category","Qscore","Rank","Rank out of Total Journals")
-  present <- want[want %in% names(j)]
-  # print(colnames(j))
-  # print(present)
-  j2 <- j[, present, drop = FALSE]
-  # rename to consistent names
-  colnames(j2) <- make.names(colnames(j2))
-  # ensure Rank columns are numeric if present
-  if ("Rank" %in% names(j2)) j2$Rank <- suppressWarnings(as.numeric(j2$Rank))
-  if ("Rank.out.of.Total.Journals" %in% names(j2)) j2$Rank.out.of.Total.Journals <- suppressWarnings(as.numeric(j2$Rank.out.of.Total.Journals))
-  j2
-}
+# ########JOURNAL MATCHING AND SCORING HELPERS
+# # ---------------------------
+# # Read JCR file and pick relevant columns
+# # ---------------------------
+# read_jcr <- function(path) {
+#   ext <- tolower(tools::file_ext(path))
+#   if (ext %in% c("xlsx","xls")) {
+#     j <- readxl::read_excel(path)
+#   } else if (ext %in% c("csv","txt")) {
+#     j <- read.csv(path, stringsAsFactors = FALSE, check.names = FALSE)
+#   } else {
+#     stop("Unsupported JCR file type")
+#   }
+#   #Rename 8th column to Qscore
+#   colnames(j)[8] <- "Qscore"
+#   # Normalize column names and select the ones requested (if present)
+#   names(j) <- str_trim(names(j))
+#   want <- c("Name", "Abbr Name","ISSN","EISSN","JIF","JIF5Years","Category","Qscore","Rank","Rank out of Total Journals")
+#   present <- want[want %in% names(j)]
+#   # print(colnames(j))
+#   # print(present)
+#   j2 <- j[, present, drop = FALSE]
+#   # rename to consistent names
+#   colnames(j2) <- make.names(colnames(j2))
+#   # ensure Rank columns are numeric if present
+#   if ("Rank" %in% names(j2)) j2$Rank <- suppressWarnings(as.numeric(j2$Rank))
+#   if ("Rank.out.of.Total.Journals" %in% names(j2)) j2$Rank.out.of.Total.Journals <- suppressWarnings(as.numeric(j2$Rank.out.of.Total.Journals))
+#   j2
+# }
 
 normalize_journal <- function(x) {
   x |>
@@ -385,77 +385,77 @@ normalize_journal <- function(x) {
     str_squish()
 }
 
-getExcelColumns <- function(journalTitleIdx, unique_journals, jsonData) {
-  journalTitle <- unique_journals[journalTitleIdx]
-  if(length(journalTitle) <= 0){
-    warning(paste("idx:", journalTitleIdx, "is empty!:", unique_journals[journalTitleIdx]))
-    stop()
-    return(data.frame(Name_norm=NA, Journal=NA, JIF5Years=NA, Qscore=NA))
-  }
-  title_norm <- normalize_journal(journalTitle)
-  if(length(title_norm) <= 0){
-    warning(paste("idx:", journalTitleIdx, "normalize failed!:", unique_journals[journalTitleIdx]))
-    stop()
-    # print(c(idx,title_norm, journalTitle))
-  }
-  idx <- c()
-  idx <- which(
-    str_detect(title_norm, fixed(jsonData$Name_norm)) &
-      str_detect(jsonData$Name_norm, fixed(title_norm))
-  )
-  if (length(idx) == 0) {
-    idx <- which(
-      str_detect(title_norm, paste0("\\b", jsonData$Name_norm, "\\b")) &
-        str_detect(jsonData$Name_norm, paste0("\\b", title_norm, "\\b"))
-    )
-    # idx <- which(
-    #   str_detect(
-    #     title_norm,
-    #     paste0("(^|\\s)", jsonData$Name_norm, "(\\s|$)")
-    #   )
-    # )
-  }
-  
-  if (length(idx) == 1) {
-    i <- idx
-    return(data.frame(
-      Name_norm=title_norm,
-      Journal=jsonData$Name[i],
-      JIF5Years=jsonData$JIF5Years[i],
-      Qscore=jsonData$Qscore[i]
-    ))
-  }
-  else if(length(idx) > 1) {
-    # warning(c(paste("idx:", journalTitleIdx, "multiple matches!:", title_norm," + ", journalTitle,"\nMatching with these JCR rows:\n")), paste(jsonData$Name[idx], collapse = ","), paste(idx, collapse = ","))
-    # #stop()
-    i <- idx[1]
-    return(data.frame(
-      Name_norm=title_norm,
-      Journal=jsonData$Name[i],
-      JIF5Years=jsonData$JIF5Years[i],
-      Qscore=jsonData$Qscore[i]
-    ))
-  }
-  
-  if (length(idx) == 0) {
-    idx <- which(
-      str_detect(title_norm, paste0("\\b", jsonData$Name_norm, "\\b")) |
-        str_detect(jsonData$Name_norm, paste0("\\b", title_norm, "\\b"))
-    )
-    # idx <- which(
-    #   str_detect(
-    #     title_norm,
-    #     paste0("(^|\\s)", jsonData$Name_norm, "(\\s|$)")
-    #   )
-    # )
-  }
-  
-  #DEBUG
-  # if(length(idx) == 0) {
-  #   warning(paste("idx:", journalTitleIdx, "cannot match!:", title_norm," + ", journalTitle))
-  #   warning(paste("norm 1->2:",all(str_detect(title_norm, fixed(jsonData$Name_norm)))), "norm 2->1:", all(str_detect(jsonData$Name_norm, fixed(title_norm))))
-  #   # stop()
-  # }
-  
-  return(data.frame(Name_norm=title_norm, Journal=journalTitle, JIF5Years=NA, Qscore=NA))
-}
+# getExcelColumns <- function(journalTitleIdx, unique_journals, jsonData) {
+#   journalTitle <- unique_journals[journalTitleIdx]
+#   if(length(journalTitle) <= 0){
+#     warning(paste("idx:", journalTitleIdx, "is empty!:", unique_journals[journalTitleIdx]))
+#     stop()
+#     return(data.frame(Name_norm=NA, Journal=NA, JIF5Years=NA, Qscore=NA))
+#   }
+#   title_norm <- normalize_journal(journalTitle)
+#   if(length(title_norm) <= 0){
+#     warning(paste("idx:", journalTitleIdx, "normalize failed!:", unique_journals[journalTitleIdx]))
+#     stop()
+#     # print(c(idx,title_norm, journalTitle))
+#   }
+#   idx <- c()
+#   idx <- which(
+#     str_detect(title_norm, fixed(jsonData$Name_norm)) &
+#       str_detect(jsonData$Name_norm, fixed(title_norm))
+#   )
+#   if (length(idx) == 0) {
+#     idx <- which(
+#       str_detect(title_norm, paste0("\\b", jsonData$Name_norm, "\\b")) &
+#         str_detect(jsonData$Name_norm, paste0("\\b", title_norm, "\\b"))
+#     )
+#     # idx <- which(
+#     #   str_detect(
+#     #     title_norm,
+#     #     paste0("(^|\\s)", jsonData$Name_norm, "(\\s|$)")
+#     #   )
+#     # )
+#   }
+#   
+#   if (length(idx) == 1) {
+#     i <- idx
+#     return(data.frame(
+#       Name_norm=title_norm,
+#       Journal=jsonData$Name[i],
+#       JIF5Years=jsonData$JIF5Years[i],
+#       Qscore=jsonData$Qscore[i]
+#     ))
+#   }
+#   else if(length(idx) > 1) {
+#     # warning(c(paste("idx:", journalTitleIdx, "multiple matches!:", title_norm," + ", journalTitle,"\nMatching with these JCR rows:\n")), paste(jsonData$Name[idx], collapse = ","), paste(idx, collapse = ","))
+#     # #stop()
+#     i <- idx[1]
+#     return(data.frame(
+#       Name_norm=title_norm,
+#       Journal=jsonData$Name[i],
+#       JIF5Years=jsonData$JIF5Years[i],
+#       Qscore=jsonData$Qscore[i]
+#     ))
+#   }
+#   
+#   if (length(idx) == 0) {
+#     idx <- which(
+#       str_detect(title_norm, paste0("\\b", jsonData$Name_norm, "\\b")) |
+#         str_detect(jsonData$Name_norm, paste0("\\b", title_norm, "\\b"))
+#     )
+#     # idx <- which(
+#     #   str_detect(
+#     #     title_norm,
+#     #     paste0("(^|\\s)", jsonData$Name_norm, "(\\s|$)")
+#     #   )
+#     # )
+#   }
+#   
+#   #DEBUG
+#   # if(length(idx) == 0) {
+#   #   warning(paste("idx:", journalTitleIdx, "cannot match!:", title_norm," + ", journalTitle))
+#   #   warning(paste("norm 1->2:",all(str_detect(title_norm, fixed(jsonData$Name_norm)))), "norm 2->1:", all(str_detect(jsonData$Name_norm, fixed(title_norm))))
+#   #   # stop()
+#   # }
+#   
+#   return(data.frame(Name_norm=title_norm, Journal=journalTitle, JIF5Years=NA, Qscore=NA))
+# }
