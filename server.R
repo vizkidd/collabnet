@@ -2068,7 +2068,7 @@ server <- function(input, output, session) {
     
     rv$is_glens_exec <- TRUE
     
-    if(stringi::stri_isempty(input$author_list)){
+    if(!shiny::isTruthy(input$author_list)){
       lapply(c("acounts_plot", "ccounts_plot", "cdist_plot", "aperc_plot", "cperc_plot"), shinyjs::hide)
     }else{
       lapply(c("acounts_plot", "ccounts_plot", "cdist_plot", "aperc_plot", "cperc_plot"), shinyjs::show)  

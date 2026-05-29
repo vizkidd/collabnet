@@ -902,7 +902,13 @@ ui <- fluidPage(
               title = "Type the lookup-keywords here line-by-line. Keywords are matched in-order."
               )
           ),
-          textAreaInput("author_list",  value = "", rows = 2, width = "100%", label = NULL),
+          textAreaInput("author_list_text",  value = "", rows = 2, width = "100%", label = NULL),
+          tags$script(HTML("
+            $(document).on('blur', '#author_list_text', function() {
+              // Creates a new reactive input called 'input$author_list'
+              Shiny.setInputValue('author_list', $(this).val());
+            });
+          ")),
           uiOutput("dynamic_author_filter"),
           div(
             style = "display: inline-flex; align-items: center; gap: 5px;",
