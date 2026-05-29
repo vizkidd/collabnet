@@ -217,7 +217,7 @@ server <- function(input, output, session) {
     has_key_crossref = F
   )
   
-  shinyjs::hide(id =  "year_slider")
+  # shinyjs::hide(id =  "year_slider")
   # shinyjs::hide("sh_index")
   # shinyjs::hide("summary_table")
   shinyjs::hide("acounts_plot")
@@ -1862,7 +1862,7 @@ server <- function(input, output, session) {
       # shinyjs::hide("network_filtered")
       # shinyjs::hide("network_full")
       # shinyjs::hide("extended_table")
-      shinyjs::hide(id="year_slider")
+      # shinyjs::hide(id="year_slider")
       shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
       shinyjs::enable(id = "submit_button")
       # Update logs
@@ -2267,29 +2267,69 @@ server <- function(input, output, session) {
     
   }, ignoreNULL = TRUE)
   
-  # ==============================================================================
-  # DYNAMIC UI UPDATES 
-  # ==============================================================================
   observe({
-    
     # Wait for the table to be ready
     df <- rv$glens_full_table
     req(nrow(df) > 0)
-
-    years <- as.numeric(na.omit(df$Year))
-
-    if (length(years) > 0) {
-      min_yr <- min(years)
-      max_yr <- max(years)
-
-      updateSliderInput(session, "year_slider",
-                        min = min_yr,
-                        max = max_yr,
-                        value = c(min_yr, max_yr))
-
-      shinyjs::show("year_slider")
+    
+    # 1. Conditionally show/hide Timeline Card
+    if ("Year" %in% colnames(df)) {
+      years <- as.numeric(na.omit(df$Year))
+      
+      if (length(years) > 0) {
+        min_yr <- min(years)
+        max_yr <- max(years)
+        
+        updateSliderInput(session, "year_slider",
+                          min = min_yr,
+                          max = max_yr,
+                          value = c(min_yr, max_yr))
+        
+        shinyjs::show("timeline_card") # Show outer card
+        shinyjs::show("year_slider")   # Show inner slider
+      } else {
+        shinyjs::hide("timeline_card")
+      }
+    } else {
+      shinyjs::hide("timeline_card")
+    }
+    
+    # 2. Conditionally show/hide Source Card
+    if ("Source" %in% colnames(df)) {
+      available_sources <- as.character(na.omit(unique(df$Source)))
+      if(length(available_sources) > 0) {
+        shinyjs::show("source_card")
+      } else {
+        shinyjs::hide("source_card")
+      }
+    } else {
+      shinyjs::hide("source_card")
     }
   })
+  
+  # ==============================================================================
+  # DYNAMIC UI UPDATES 
+  # ==============================================================================
+  # observe({
+  #   
+  #   # Wait for the table to be ready
+  #   df <- rv$glens_full_table
+  #   req(nrow(df) > 0)
+  # 
+  #   years <- as.numeric(na.omit(df$Year))
+  # 
+  #   if (length(years) > 0) {
+  #     min_yr <- min(years)
+  #     max_yr <- max(years)
+  # 
+  #     updateSliderInput(session, "year_slider",
+  #                       min = min_yr,
+  #                       max = max_yr,
+  #                       value = c(min_yr, max_yr))
+  # 
+  #     shinyjs::show("year_slider")
+  #   }
+  # })
   
   # --- UI OUTPUTS ---
   output$summary_table <- renderTable({
@@ -3572,7 +3612,16 @@ server <- function(input, output, session) {
       tags$p(style = "font-size: 0.9em; color: #555;", "Select columns for look-up and their delimiters (if any)."),
       
       # Use the preserved variable here
-      checkboxInput("auto_refresh_lookup", "Auto-Refresh Lookup", value = current_auto_refresh),
+      checkboxInput("auto_refresh_lookup", 
+                    label=tagList(
+                      "Auto-Refresh Lookup",
+                      tags$span(
+                        icon("circle-question"),
+                        "data-toggle" = "tooltip",
+                        title = "Auto-refresh data for a reactive and immersive experience. When switched off you have to 'Run CollabNET' manually.",
+                        style = "color: #007bc2; cursor: help; margin-left: 5px; display: inline-block;"
+                      )
+                    ), value = current_auto_refresh),
       
       if (isTRUE(rv$has_scopus_key) || !is.null(glens_env$scopus_key)) {
         tagList(
@@ -3703,18 +3752,18 @@ server <- function(input, output, session) {
       
       render_skeleton_plots(rv, matched_df, output)
       
-      years <- as.numeric(na.omit(matched_df$Year))
-      if (length(years) > 0) {
-        min_yr <- min(years)
-        max_yr <- max(years)
-        updateSliderInput(session, "year_slider", min = min_yr, max = max_yr, value = c(min_yr, max_yr))
-      }
+      # years <- as.numeric(na.omit(matched_df$Year))
+      # if (length(years) > 0) {
+      #   min_yr <- min(years)
+      #   max_yr <- max(years)
+      #   updateSliderInput(session, "year_slider", min = min_yr, max = max_yr, value = c(min_yr, max_yr))
+      # }
       
       if (!isTRUE(input$auto_refresh_lookup)) {
         later::later(function() { isolate({ rv$manual_submit <- if(is.null(rv$manual_submit)) 1 else rv$manual_submit + 1 }) }, delay = 0.8)
       }
       
-      shinyjs::show("year_slider")
+      # shinyjs::show("year_slider")
       shinyjs::show("sh_index")
       shinyjs::show("summary_table")
       shinyjs::show("lookup_controls_panel")
@@ -3791,25 +3840,26 @@ server <- function(input, output, session) {
         return()
       }
       rv$is_glens_exec <- TRUE
-      # Check Missing Columns
-      missing_cols <- setdiff(collabnet_required_cols, colnames(glens_full_table))
-      if(length(missing_cols) > 0) {
-        missing_str <- paste(missing_cols, collapse=", ")
-        rv$log_text <- paste(rv$log_text, paste0("<span style='color: red;'>Missing required columns: ", missing_str, "</span>"), sep="<br>")
-        showNotification(paste("Missing columns:", missing_str), type = "error", duration = 10)
-      }
+
+      # # Check Missing Columns
+      # missing_cols <- setdiff(collabnet_required_cols, colnames(glens_full_table))
+      # if(length(missing_cols) > 0) {
+      #   missing_str <- paste(missing_cols, collapse=", ")
+      #   rv$log_text <- paste(rv$log_text, paste0("<span style='color: red;'>Missing required columns: ", missing_str, "</span>"), sep="<br>")
+      #   showNotification(paste("Missing columns:", missing_str), type = "error", duration = 10)
+      # }
       
       glens_full_table <- dplyr::distinct(glens_full_table)
       rv$glens_full_table <- glens_full_table
       
       render_skeleton_plots(rv, glens_full_table, output)
       
-      years <- as.numeric(na.omit(glens_full_table$Year))
-      if (length(years) > 0) {
-        min_yr <- min(years)
-        max_yr <- max(years)
-        updateSliderInput(session, "year_slider", min = min_yr, max = max_yr, value = c(min_yr, max_yr))
-      }
+      # years <- as.numeric(na.omit(glens_full_table$Year))
+      # if (length(years) > 0) {
+      #   min_yr <- min(years)
+      #   max_yr <- max(years)
+      #   updateSliderInput(session, "year_slider", min = min_yr, max = max_yr, value = c(min_yr, max_yr))
+      # }
       
       if (!isTRUE(input$auto_refresh_lookup)) {
         rv$manual_submit <- if(is.null(rv$manual_submit)) 1 else rv$manual_submit + 1
@@ -4100,7 +4150,7 @@ server <- function(input, output, session) {
       }
       
       shinyjs::disable(id = "submit_button")
-      shinyjs::hide(id="year_slider")
+      # shinyjs::hide(id="year_slider")
       shinyjs::show("progress_overlay")
         
       if (is.null(input$doi_text) || stringi::stri_isempty(input$doi_text)) {
@@ -4119,7 +4169,7 @@ server <- function(input, output, session) {
         showNotification(paste("Error:", "ORCiD can have only numbers and '-'."), type = "error", duration = 5)
         rv$log_text <- paste(rv$log_text, "<span style='color: red;'>Invalid characters in ORCiD</span>", sep="<br>")
         shinyjs::enable(id = "submit_button")
-        shinyjs::show(id="year_slider")
+        # shinyjs::show(id="year_slider")
         shinyjs::hide("progress_overlay")
         return()
       }
@@ -4128,7 +4178,7 @@ server <- function(input, output, session) {
         showNotification(paste("Error:", "SCOPUS IDs can have only numbers."), type = "error", duration = 5)
         rv$log_text <- paste(rv$log_text, "<span style='color: red;'>Invalid characters in SCOPUS IDs</span>", sep="<br>")
         shinyjs::enable(id = "submit_button")
-        shinyjs::show(id="year_slider")
+        # shinyjs::show(id="year_slider")
         shinyjs::hide("progress_overlay")
         return()
       }

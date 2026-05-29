@@ -6,8 +6,8 @@
 # }
 
 # collabnet_required_cols <- c("Citations",	"User_Journal",	"orcid",	"Name",	"JIF5Years",	"Qscore",	"JCR_Journal", "Title",	"Authors",	"Year",	"Source")
-collabnet_required_cols <- c("Citations", "User_Journal", "Title", "Authors", "Year", "Source")
-collabnet_optional_cols <- c("Qscore", "JIF5Years", "SCOPUS_ID", "doi", "orcid") #JCR_Journal #"Name"
+collabnet_required_cols <- c("Citations", "User_Journal", "Title", "Authors")
+collabnet_optional_cols <- c("Qscore", "JIF5Years", "SCOPUS_ID", "doi", "orcid", "Year", "Source") #JCR_Journal #"Name"
 
 # Helper to escape special regex characters from user inputs
 escape_regex_inline <- function(x) {

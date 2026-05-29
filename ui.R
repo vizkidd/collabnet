@@ -862,14 +862,14 @@ ui <- fluidPage(
       class = "left-sidebar-col",
       style = "padding: 0;", 
       
-      # Section 1: Search
+      # Section 1: Fetch
       tags$div(
         class = "custom-card",
         style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; margin-bottom: 25px;",
         tags$div(
           class = "custom-card-header",
           style = "display: flex; justify-content: space-between; align-items: center; cursor: pointer; user-select: none; margin-bottom: 0;",
-          h4("Search & Identification", style = "margin: 0; font-weight: bold; font-size: 16px;"),
+          h4("Fetch", style = "margin: 0; font-weight: bold; font-size: 16px;"),
           tags$button(
             type = "button", 
             class = "btn-minimize", 
@@ -881,6 +881,7 @@ ui <- fluidPage(
           class = "custom-card-content",
           # style = "margin-top: 15px;", 
           style = "display: none;",
+          tags$br(),
           div(
             style = "display: inline-flex; align-items: center; gap: 5px;",
             tags$b("DOI input:"),
@@ -892,24 +893,6 @@ ui <- fluidPage(
               )
           ),
           textAreaInput("doi_text", value = "", rows = 2, width = "100%", label = NULL),
-          div(
-            style = "display: inline-flex; align-items: center; gap: 5px;",
-            tags$b("Lookup Keywords:"),
-            icon(
-              "circle-question",
-              "data-toggle" = "tooltip",
-              style = "color: #007bc2; cursor: help;",
-              title = "Type the lookup-keywords here line-by-line. Keywords are matched in-order."
-              )
-          ),
-          textAreaInput("author_list_text",  value = "", rows = 2, width = "100%", label = NULL),
-          tags$script(HTML("
-            $(document).on('blur', '#author_list_text', function() {
-              // Creates a new reactive input called 'input$author_list'
-              Shiny.setInputValue('author_list', $(this).val());
-            });
-          ")),
-          uiOutput("dynamic_author_filter"),
           div(
             style = "display: inline-flex; align-items: center; gap: 5px;",
             tags$b("ORCiD input:"),
@@ -932,7 +915,46 @@ ui <- fluidPage(
               )
           )),
           shinyjs::hidden(textAreaInput("scopusid_text", value = "", rows = 2, width = "100%", label = NULL)),
-          actionButton("submit_button", "Run CollabNET", icon = icon("play", lib = "font-awesome"), class = "btn-primary", style = "width: 100%; font-weight: bold; margin-top: 10px; background-color: #4B8BBE; border: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"),
+          actionButton("submit_button", "Run CollabNET", icon = icon("play", lib = "font-awesome"), class = "btn-primary", style = "width: 100%; font-weight: bold; margin-top: 10px; background-color: #4B8BBE; border: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;")
+        )
+      ),
+      tags$div(
+        class = "custom-card",
+        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; margin-bottom: 25px;",
+        tags$div(
+          class = "custom-card-header",
+          style = "display: flex; justify-content: space-between; align-items: center; cursor: pointer; user-select: none; margin-bottom: 0;",
+          h4("Lookup Controls", style = "margin: 0; font-weight: bold; font-size: 16px;"),
+          tags$button(
+            type = "button", 
+            class = "btn-minimize", 
+            style = "background: transparent; border: none; font-size: 1.6em; line-height: 1; cursor: pointer; padding: 0 5px;",
+            HTML("&plus;")
+          ),
+        ),
+        tags$div(
+          class = "custom-card-content",
+          # style = "margin-top: 15px;", 
+          style = "display: none;",
+          tags$br(),
+          div(
+            style = "display: inline-flex; align-items: center; gap: 5px;",
+            tags$b("Lookup Keywords:"),
+            icon(
+              "circle-question",
+              "data-toggle" = "tooltip",
+              style = "color: #007bc2; cursor: help;",
+              title = "Type the lookup-keywords here line-by-line. Keywords are matched in-order."
+            )
+          ),
+          textAreaInput("author_list_text",  value = "", rows = 2, width = "100%", label = NULL),
+          tags$script(HTML("
+            $(document).on('blur', '#author_list_text', function() {
+              // Creates a new reactive input called 'input$author_list'
+              Shiny.setInputValue('author_list', $(this).val());
+            });
+          ")),
+          uiOutput("dynamic_author_filter"),
           # The Toggle Lock Button
           actionButton("toggle_extended", "Show Lookup Controls", icon = icon("magnifying-glass"), 
                        class = "btn-secondary", style = "margin-top: 10px; width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"),
@@ -951,13 +973,14 @@ ui <- fluidPage(
       #   uiOutput("lookup_controls_panel")
       # ),
       # Section 2: Timeline
-      tags$div(
+      shinyjs::hidden(tags$div(
+        id = "timeline_card",
         class = "custom-card",
         style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; margin-bottom: 25px;",
         tags$div(
           class = "custom-card-header",
           style = "display: flex; justify-content: space-between; align-items: center; cursor: pointer; user-select: none; margin-bottom: 0;",
-          h4("Filter by Timeline", style = "margin: 0; font-weight: bold; font-size: 16px;"),
+          h4("Timeline", style = "margin: 0; font-weight: bold; font-size: 16px;"),
           tags$button(
             type = "button", 
             class = "btn-minimize", 
@@ -969,12 +992,14 @@ ui <- fluidPage(
           class = "custom-card-content",
           # style = "margin-top: 15px;", 
           style = "display: none;",
+          tags$br(),
           shinyjs::hidden(sliderInput("year_slider", "Publication Years", min = 0, max = 0, value = c(0, 0), step = 1, round = TRUE, width = "100%"))
         )
-      ),
+      )),
       
       # Section 3: Source
-      tags$div(
+      shinyjs::hidden(tags$div(
+        id = "source_card",
         class = "custom-card",
         style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; margin-bottom: 25px;",
         tags$div(
@@ -992,9 +1017,10 @@ ui <- fluidPage(
           class = "custom-card-content",
           # style = "margin-top: 15px;", 
           style = "display: none;",
+          tags$br(),
           uiOutput("dynamic_source_ui") 
         )
-      ),
+      )),
       
       # Section 4: Log Output 
       tags$div(id = "log_wrapper",
@@ -1399,10 +1425,10 @@ ui <- fluidPage(
         # Card Body (The Plot)
         tags$div(
           class = "custom-card-content",
-          
           # Move your conditionalPanel inside the wrapper
           conditionalPanel(
             condition = "input.enable_venn == true",
+            hr(),
             tags$div(
               style = "display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; align-items: end; margin-top: 10px; margin-bottom: 10px; padding: 15px; background: #f8f9fa; border-radius: 6px; border: 1px solid #e9ecef;",
               selectInput("venn_col_filtered", "Choose column to visualize:", choices = NULL, width = "100%"),
