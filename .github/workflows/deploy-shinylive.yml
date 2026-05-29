@@ -41,6 +41,9 @@ jobs:
           use-public-rspm: true # Leverages pre-compiled Linux binary speeds
       
       - name: Install Build Toolchain Dependencies
+        env:
+          # Injects the automatic token so 'remotes' isn't rate-limited
+          GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
         run: |
           install.packages(c("fs", "remotes"), repos = "https://cran.rstudio.com")
           # Pull the absolute latest Shinylive build which contains the updated webR bindings
