@@ -315,15 +315,21 @@ apply_author_logic <- function(pubs_df, selected_authors, gate, ext_match = TRUE
   ret_df <- pubs_df %>%
     mutate(match_counts = rowSums(match_matrix)) %>%
     filter(
-      case_when(
-        is.null(gate)  ~ TRUE,
-        gate == "OR"   ~ match_counts > 0,  # Has AT LEAST 1 of the selected authors
-        gate == "AND"  ~ match_counts == N, # Has ALL of the selected authors
-        gate == "XOR"  ~ match_counts == 1, # Has EXACTLY 1 of the selected authors
-        gate == "NOR"  ~ match_counts == 0, # Has NONE of the selected authors
-        gate == "NAND" ~ match_counts < N,  # Divide: NEVER has all of them together (can have some, or none)
-        TRUE           ~ TRUE
-      )
+      if (is.null(gate)) {
+        TRUE
+      } else if (gate == "OR") {
+        match_counts > 0  # Has AT LEAST 1 of the selected authors
+      } else if (gate == "AND") {
+        match_counts == N # Has ALL of the selected authors
+      } else if (gate == "XOR") {
+        match_counts == 1 # Has EXACTLY 1 of the selected authors
+      } else if (gate == "NOR") {
+        match_counts == 0 # Has NONE of the selected authors
+      } else if (gate == "NAND") {
+        match_counts < N  # Divide: NEVER has all of them together
+      } else {
+        TRUE
+      }
     ) %>%
     select(-match_counts)
   return(ret_df)

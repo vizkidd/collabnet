@@ -5283,6 +5283,33 @@ server <- function(input, output, session) {
 
   }) #observeEVENT(submit_button)
   
+  # Opens the modal when JS hits the 429
+  observeEvent(input$rate_limit_hit, {
+    showModal(
+      modalDialog(
+        title = "⏳ Rate Limit Reached",
+        tags$p(
+          style = "font-size: 16px;",
+          sprintf(
+            "The API requires a cooldown. Pausing for %s seconds before retrying '%s'...", 
+            input$rate_limit_hit$seconds, 
+            input$rate_limit_hit$journal
+          )
+        ),
+        # Optional: Add a spinner icon if you are using shiny/fontawesome
+        tags$div(style = "text-align: center; margin-top: 15px;", icon("spinner", class = "fa-spin fa-2x")),
+        
+        easyClose = FALSE, # Prevent user from clicking away
+        footer = NULL      # Remove the default "Dismiss" button so it auto-manages
+      )
+    )
+  })
+  
+  # Closes the modal automatically when the JS loop resumes
+  observeEvent(input$rate_limit_resolved, {
+    removeModal()
+  })
+  
   # Tell Shiny to render this UI in the background even while the parent div is hidden.
   outputOptions(output, "lookup_controls_panel", suspendWhenHidden = FALSE)
   outputOptions(output, "extended_table", suspendWhenHidden = FALSE)

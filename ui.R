@@ -703,7 +703,17 @@ ui <- fluidPage(
                   let waitTime = retryAfter ? parseInt(retryAfter) * 1000 : 2000;
                   
                   console.warn(`[429 Rate Limit] Waiting ${waitTime}ms before retrying ${journal}...`);
+                  // 1. Tell R to OPEN the modal
+                  Shiny.setInputValue('rate_limit_hit', {
+                    journal: journal, 
+                    seconds: waitTime / 1000
+                  }, { priority: 'event' });
+                  
+                  // 2. Wait out the penalty
                   await new Promise(r => setTimeout(r, waitTime));
+                  
+                  // 3. Tell R to CLOSE the modal
+                  Shiny.setInputValue('rate_limit_resolved', Date.now(), { priority: 'event' });
                   retries++;
                   continue; // Loop again
                 }
