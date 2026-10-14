@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "collabnet": {
+      "command": "node",
+      "args": ["mcp/src/server.mjs"],
+      "env": {
+        "COLLABNET_REPO": ".",
+        "COLLABNET_WASM_BUILD": "wasm_build",
+        "COLLABNET_PORT": "8788"
+      }
+    }
+  }
+}

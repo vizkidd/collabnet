@@ -9,7 +9,7 @@ suppressPackageStartupMessages(require(systemfonts))
 suppressPackageStartupMessages(require(ggplot2))
 suppressPackageStartupMessages(require(plotly))
 suppressPackageStartupMessages(require(stringr))
-suppressPackageStartupMessages(require(stringi))
+# stringi removed - using base R equivalents (nzchar, trimws, etc.)
 suppressPackageStartupMessages(require(tibble))
 suppressPackageStartupMessages(require(scales))
 suppressPackageStartupMessages(require(stringdist))
@@ -24,7 +24,9 @@ suppressPackageStartupMessages(require(openssl))
 suppressPackageStartupMessages(require(xfun))
 suppressPackageStartupMessages(require(httr))
 suppressPackageStartupMessages(require(xml2))
-suppressPackageStartupMessages(require(httr2))
+if (!exists("is_WASM") || !isTRUE(is_WASM)) {
+  suppressPackageStartupMessages(require(httr2, quietly = TRUE))
+}
 suppressPackageStartupMessages(require(jsonlite))
 suppressPackageStartupMessages(require(ipc))
 suppressPackageStartupMessages(require(parallel))
@@ -39,11 +41,7 @@ is_WASM <- grepl(pattern="wasm",x=Sys.info()["machine"])
 
 # use a multisession plan so futures run in background R sessions
 # if(!is_WASM){
-  # future::plan(future::multisession)
-# future::plan(future.callr::callr)
-future::plan(future::multicore)
 # }else{
-#   future::plan(future::sequential)
 # }
 
 fs::dir_create("keys") 
@@ -85,6 +83,7 @@ if(xfun::is_windows()){
 message(paste("Active ID:", BIOS_ID))
 
 #CREATING PRIVATE KEY (if it doesn't exist) TO encrypt API keys
+dir.create("keys", showWarnings = FALSE, recursive = TRUE)
 if (is_WASM) {
   # =========================================================================
   # BRANCH 1: WebR / WASM (No Sodium, Mock Encryption)
@@ -182,6 +181,8 @@ source("GScholarLENS-SCOPUS2Data.R", local = TRUE)
 source("GScholarLENS-Data2GLENS.R", local = TRUE)
 source("GScholarLENS-PlotGLENS.R", local = TRUE)
 source("GScholarLENS-helpers.R",local=TRUE)
+source("GScholarLENS-Graph.R", local = TRUE)
+source("GScholarLENS-Fixes.R", local = TRUE)
 
 server <- function(input, output, session) {
   rv <- reactiveValues(
@@ -566,10 +567,14 @@ server <- function(input, output, session) {
           easyClose = FALSE
         ))
         
-        if (is.null(rv$glens_full_table) || ncol(rv$glens_full_table) == 0) {
+        if (is.null(rv$glens_full_table) || ncol(rv$glens_full_table) == 0 || nrow(rv$glens_full_table) == 0) {
           updateRadioButtons(session, "col_import_type", selected = "All Columns")
           shinyjs::delay(100, {
             shinyjs::runjs("$('input[name=\"col_import_type\"][value=\"Common Columns\"]').prop('disabled', true);")
+          })
+        } else {
+          shinyjs::delay(100, {
+            shinyjs::runjs("$('input[name=\"col_import_type\"][value=\"Common Columns\"]').prop('disabled', false);")
           })
         }
       })
@@ -622,6 +627,8 @@ server <- function(input, output, session) {
         delim_val <- input[[paste0("map_delim_", safe_id)]]
         if (!is.null(delim_val) && trimws(delim_val) != "") {
           detected_mv_cols[[final_name]] <- trimws(delim_val)
+        } else if (grepl("^(authors|author\\(s\\) id|keywords|author keywords|index keywords)$", final_name, ignore.case = TRUE)) {
+          detected_mv_cols[[final_name]] <- ","
         }
       }
     }
@@ -769,7 +776,8 @@ server <- function(input, output, session) {
     }
     
     # --- 2. PARSE THE TARGET AUTHORS ---
-    target_variants <- stringi::stri_omit_empty(stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n"))))
+    target_variants <- stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n")))
+    target_variants <- target_variants[nzchar(target_variants)]
     target_variants <- target_variants[target_variants != ""]
     
     if(length(target_variants) > 0) {
@@ -1058,7 +1066,7 @@ server <- function(input, output, session) {
       }, 300);
     "))
     
-    if (is.null(rv$glens_full_table) || ncol(rv$glens_full_table) == 0) {
+    if (is.null(rv$glens_full_table) || ncol(rv$glens_full_table) == 0 || nrow(rv$glens_full_table) == 0) {
       return(tagList(
         tags$div(class = "alert alert-warning", "No existing data to merge with. Selecting 'New'."),
         unlock_script # Make sure they can click confirm!
@@ -1069,6 +1077,8 @@ server <- function(input, output, session) {
     if (!is.null(rv$glens_full_table) && !is.null(rv$intermediate_merged_df)) {
       # Only show keys that exist in BOTH datasets to prevent join errors
       common_keys <- intersect(names(rv$glens_full_table), names(rv$intermediate_merged_df))
+      default_selected <- intersect(common_keys, c("doi", "DOI", "Title", "title", "orcid", "ORCID", "SCOPUS_ID", "Authors"))
+      if (length(default_selected) == 0 && length(common_keys) > 0) default_selected <- common_keys[1]
       
       tagList(
         tags$div(
@@ -1076,7 +1086,7 @@ server <- function(input, output, session) {
           
           # Primary Key Selector
           selectizeInput("row_merge_keys", "Select Primary Key(s) to Join By:", 
-                         choices = common_keys, multiple = TRUE, width = "100%",
+                         choices = common_keys, selected = default_selected, multiple = TRUE, width = "100%",
                          options = list(placeholder = "Select one or more keys (e.g., orcid, Title)")),
           
           # NEW: Join Type Selector
@@ -1097,37 +1107,9 @@ server <- function(input, output, session) {
     }
   })
   
-  # output$delimiter_ui <- renderUI({
-  #   req(rv$detected_mv_cols)
-  #   
-  #   mapping_rows <- lapply(names(rv$detected_mv_cols), function(col) {
-  #     safe_id <- paste0("delim_action_", make.names(col))
-  #     delim_id <- paste0("delim_val_", make.names(col))
-  #     
-  #     suggested_delim <- rv$detected_mv_cols[[col]]
-  #     
-  #     fluidRow(
-  #       style = "margin-bottom: 10px; align-items: flex-end; display: flex; background: #f8f9fa; padding: 10px; border-radius: 5px;",
-  #       column(4, tags$strong(col, style="word-break: break-all; color: #333;")),
-  #       column(4, textInput(delim_id, "Delimiter:", value = suggested_delim)),
-  #       column(4, 
-  #              selectizeInput(safe_id, "Action:",  # <--- Changed to selectizeInput
-  #                             choices = c("Split to Rows (Lengthen)" = "rows", "Do Not Split" = "none"), 
-  #                             selected = "none",
-  #                             options = list(dropdownParent = 'body')) # <--- Now this is perfectly valid!
-  #       )
-  #     )
-  #   })
-  #   
-  #   tagList(
-  #     tags$div(style = "max-height: 450px; overflow-y: auto; overflow-x: hidden; padding-right: 10px;",
-  #              mapping_rows)
-  #   )
-  # })
-  
   observeEvent(input$row_import_type, {
     if (input$row_import_type %in% c("New", "Append")) {
-      # If New or Append, no UI is needed, so unlock the button immediately
+      # If New or Append, no merge UI is needed, so unlock the button immediately
       shinyjs::runjs("
       var btn = $('#confirm_import');
       btn.prop('disabled', false);
@@ -1135,7 +1117,7 @@ server <- function(input, output, session) {
       btn.css('opacity', '1');
     ")
     } else if (input$row_import_type == "Merge") {
-      # If they click Merge, immediately lock the button until the UI finishes loading it
+      # If they click Merge, briefly lock the button until the UI finishes loading it
       shinyjs::runjs("
       var btn = $('#confirm_import');
       btn.prop('disabled', true);
@@ -1143,7 +1125,7 @@ server <- function(input, output, session) {
       btn.css('opacity', '0.5');
     ")
     }
-  }, ignoreInit = TRUE)
+  }, ignoreInit = FALSE)
   
   #observe for in-place split, combine, drop buttons
   observe({
@@ -1264,7 +1246,7 @@ server <- function(input, output, session) {
         tags$div(style = "width: 30%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;", tags$strong(col)),
         tags$div(style = "width: 10%; text-align: center;", icon("arrow-right")),
         tags$div(style = "width: 35%;", textInput(paste0("map_name_", safe_id), "", value = prefill_name, width = "90%")),
-        tags$div(style = "width: 20%;", textInput(paste0("map_delim_", safe_id), "", placeholder = "Delim (e.g. ,)", width = "100%"))
+        tags$div(style = "width: 20%;", textInput(paste0("map_delim_", safe_id), "", value = if (grepl("^(authors|author\\(s\\) id|keywords|author keywords|index keywords)$", prefill_name, ignore.case = TRUE)) "," else "", placeholder = "Delim (e.g. ,)", width = "100%"))
       )
     })
     
@@ -1724,7 +1706,7 @@ server <- function(input, output, session) {
     if(is_WASM){
       session$sendCustomMessage("save_key_to_browser", list(platform = "mail_key", key = raw_key))
     }
-    if(is.null(input$scopus_key) || stringi::stri_isempty(input$mail_key)){
+    if(is.null(input$scopus_key) || !nzchar(input$mail_key)){
       if(fs::file_exists(file.path("keys","mail.key")))
         fs::file_delete(file.path("keys","mail.key"))
       # removeModal()
@@ -1746,7 +1728,7 @@ server <- function(input, output, session) {
     if(is_WASM){
       session$sendCustomMessage("save_key_to_browser", list(platform = "scopus_key", key = raw_key))
     }
-    if(is.null(input$scopus_key) || stringi::stri_isempty(input$scopus_key)){
+    if(is.null(input$scopus_key) || !nzchar(input$scopus_key)){
       if(fs::file_exists(file.path("keys","scopus.key")))
         fs::file_delete(file.path("keys","scopus.key"))
       # removeModal()
@@ -1763,7 +1745,7 @@ server <- function(input, output, session) {
     if(is_WASM){
       session$sendCustomMessage("save_key_to_browser", list(platform = "openalex_key", key = raw_key))
     }
-    if(is.null(input$openalex_key) || stringi::stri_isempty(input$openalex_key)){
+    if(is.null(input$openalex_key) || !nzchar(input$openalex_key)){
       if(fs::file_exists(file.path("keys","openalex.key")))
         fs::file_delete(file.path("keys","openalex.key"))
       # removeModal()
@@ -1895,7 +1877,8 @@ server <- function(input, output, session) {
     
     target_variants <- ""
     if(length(input$author_list) > 0){
-      target_variants <- stringi::stri_omit_empty(stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n"))))
+      target_variants <- stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n")))
+    target_variants <- target_variants[nzchar(target_variants)]
       target_variants <- target_variants[target_variants != ""]
       isolate({ rv$author_list <- target_variants })
       
@@ -2077,12 +2060,15 @@ server <- function(input, output, session) {
     shinyjs::show("summary_table")
     
     if ("token_count" %in% colnames(df)) {
-      updateSliderInput(
-        session, 
-        "custom_max_keywords", 
-        min = min(df$token_count, na.rm = TRUE), 
-        max = max(df$token_count, na.rm = TRUE)
-      )
+      tc_vals <- na.omit(df$token_count)
+      if (length(tc_vals) > 0 && any(is.finite(tc_vals))) {
+        updateSliderInput(
+          session, 
+          "custom_max_keywords", 
+          min = min(tc_vals), 
+          max = max(tc_vals)
+        )
+      }
     }
     rv$is_glens_exec <- FALSE
     
@@ -2155,18 +2141,23 @@ server <- function(input, output, session) {
   # 1. FIXED: DYNAMIC SLIDER BOUND UPDATER WITH REACTIVE FREEZING
   # =========================================================================
   observeEvent(list(
+    input$enable_network,
     input$net_col_filtered, 
     glens_year_filtered_rx(), 
     input$custom_max_keywords
   ), {
-    req(input$enable_network)
+    req(isTRUE(input$enable_network))
     df <- glens_year_filtered_rx()
+    req(df, nrow(df) > 0)
+
     col <- input$net_col_filtered
-    delims <- rv$detected_mv_cols
+    if (is.null(col) || !nzchar(col) || !(col %in% colnames(df))) {
+      col <- if ("Authors" %in% colnames(df)) "Authors" else colnames(df)[1]
+    }
     
-    req(df, nrow(df) > 0, col, delims[[col]])
+    delims <- rv$detected_mv_cols
+    target_delim <- if (!is.null(delims) && !is.null(delims[[col]]) && nzchar(trimws(delims[[col]]))) delims[[col]] else ","
     rv$is_glens_exec <- TRUE
-    target_delim <- delims[[col]]
     
     temp_df <- df %>%
       mutate(paper_id = row_number()) %>% 
@@ -2174,35 +2165,45 @@ server <- function(input, output, session) {
       filter(!is.na(Entity), trimws(Entity) != "") %>%
       mutate(Entity = as.character(Entity))
     
-    if (!is.null(target_delim) && nchar(trimws(target_delim)) > 0) {
-      temp_df <- temp_df %>%
-        mutate(Entity = stringr::str_split(Entity, stringr::fixed(target_delim))) %>%
-        tidyr::unnest(Entity)
-    }
+    # Use smart multi-value splitting (handles both ';' and ',' delimiters seamlessly)
+    pieces <- cn_split_multivalue(temp_df$Entity, target_delim)
+    temp_df <- data.frame(
+      paper_id = rep.int(temp_df$paper_id, lengths(pieces)),
+      Entity = unlist(pieces, use.names = FALSE),
+      stringsAsFactors = FALSE
+    )
     
     temp_df <- temp_df %>%
       mutate(Entity = stringr::str_squish(Entity)) %>%
       filter(Entity != "")
     
-    # Calculate boundaries
-    max_node_occurrences <- temp_df %>% count(Entity) %>% pull(n) %>% max(na.rm = TRUE)
-    if (is.infinite(max_node_occurrences) || max_node_occurrences < 1) max_node_occurrences <- 1
+    # Calculate boundaries safely without triggering max() warnings
+    node_counts <- if (nrow(temp_df) > 0) temp_df %>% count(Entity) %>% pull(n) else integer(0)
+    max_node_occurrences <- if (length(node_counts) > 0) max(node_counts, na.rm = TRUE) else 1L
+    if (is.infinite(max_node_occurrences) || max_node_occurrences < 1) max_node_occurrences <- 1L
     
-    temp_edges <- temp_df %>%
-      distinct(paper_id, Entity) %>%
-      inner_join(temp_df %>% distinct(paper_id, Entity), by = "paper_id", relationship = "many-to-many") %>%
-      filter(Entity.x < Entity.y)
+    temp_edges <- if (nrow(temp_df) > 0) {
+      temp_df %>%
+        distinct(paper_id, Entity) %>%
+        inner_join(temp_df %>% distinct(paper_id, Entity), by = "paper_id", relationship = "many-to-many") %>%
+        filter(Entity.x < Entity.y)
+    } else {
+      data.frame(Entity.x = character(0), Entity.y = character(0), stringsAsFactors = FALSE)
+    }
     
-    max_edge_frequency <- temp_edges %>% count(Entity.x, Entity.y) %>% pull(n) %>% max(na.rm = TRUE)
-    if (is.infinite(max_edge_frequency) || max_edge_frequency < 1) max_edge_frequency <- 1
+    edge_counts <- if (nrow(temp_edges) > 0) temp_edges %>% count(Entity.x, Entity.y) %>% pull(n) else integer(0)
+    max_edge_frequency <- if (length(edge_counts) > 0) max(edge_counts, na.rm = TRUE) else 1L
+    if (is.infinite(max_edge_frequency) || max_edge_frequency < 1) max_edge_frequency <- 1L
     
+    max_cluster_size <- 2L
     if (nrow(temp_edges) > 0) {
       g_temp <- igraph::graph_from_data_frame(temp_edges[, c("Entity.x", "Entity.y")], directed = FALSE)
-      max_cluster_size <- max(igraph::components(g_temp)$csize, na.rm = TRUE)
-    } else {
-      max_cluster_size <- 2
+      csizes <- igraph::components(g_temp)$csize
+      if (length(csizes) > 0) {
+        max_cluster_size <- max(csizes, na.rm = TRUE)
+      }
     }
-    if (is.infinite(max_cluster_size) || max_cluster_size < 2) max_cluster_size <- 2
+    if (is.infinite(max_cluster_size) || max_cluster_size < 2) max_cluster_size <- 2L
     
     # CRITICAL FIX: Freeze inputs so downstream data generation waits for updates to settle
     shiny::freezeReactiveValue(input, "node_freq_range")
@@ -2211,7 +2212,7 @@ server <- function(input, output, session) {
     
     # Update inputs with fixed defaults
     updateSliderInput(session, "node_freq_range", min = 1, max = max_node_occurrences, value = c(1, max_node_occurrences))
-    updateSliderInput(session, "edge_freq_range", min = 0, max = max_edge_frequency, value = c(1, 1)) 
+    updateSliderInput(session, "edge_freq_range", min = 0, max = max_edge_frequency, value = c(1, max_edge_frequency)) 
     updateSliderInput(session, "cluster_size_range", min = 1, max = max_cluster_size, value = c(1, dplyr::if_else(max_cluster_size < 500, max_cluster_size, 500)))
     rv$is_glens_exec <- FALSE
   })
@@ -2265,7 +2266,14 @@ server <- function(input, output, session) {
     shinyjs::toggleState("enable_network", condition = !is_exec)
     shinyjs::toggleState("enable_venn",    condition = !is_exec)
     
+    # Notify browser to update the non-blocking global loading indicator
+    session$sendCustomMessage("glens_busy_state", is_exec)
   }, ignoreNULL = TRUE)
+  
+  observe({
+    has_data <- !is.null(rv$glens_full_table) && is.data.frame(rv$glens_full_table) && nrow(rv$glens_full_table) > 0
+    session$sendCustomMessage("glens_data_status", list(has_data = has_data))
+  })
   
   observe({
     # Wait for the table to be ready
@@ -2461,85 +2469,58 @@ server <- function(input, output, session) {
 
   # Calculate Filtered Network Data (Debounced)
   # 1. Initialize Network Cache (Updated for Range inputs)
-  network_cache <- reactiveVal(list(
-    enable_network=FALSE,
-    col = NULL,
-    delim = NULL,
-    result = NULL,
-    author_list = c(),
-    edge_freq_range = c(1, 1), # NEW double-valued edge range
-    node_freq_range = c(1, 2),  # NEW double-valued node range
-    custom_max_keywords = c(1, 500),
-    cluster_size_range = c(1, 500),
-    prune_leaves = FALSE
-  ))
-  
-  # =========================================================================
-  # 2. Calculate Filtered Network Data (Debounced) (PURE reactive without UI side-effects)
-  # =========================================================================
-  net_data_filtered_raw <- reactive({
-    if(!input$enable_network){
-      return(list(nodes = data.frame(), edges = data.frame()))
+net_data_filtered_raw <- reactive({
+    if (!isTRUE(input$enable_network))
+      return(list(nodes = data.frame(), edges = data.frame(),
+                  graph = NULL, stats = list()))
+
+    req(input$edge_freq_range, input$node_freq_range,
+        input$custom_max_keywords, input$cluster_size_range)
+
+    df  <- glens_year_filtered_rx()
+    req(df, nrow(df) > 0)
+    col <- input$net_col_filtered %||% "Authors"
+    if (!nzchar(col) || !(col %in% colnames(df))) {
+      col <- if ("Authors" %in% colnames(df)) "Authors" else colnames(df)[1]
     }
-    
-    req(input$edge_freq_range, input$node_freq_range, input$custom_max_keywords, input$cluster_size_range)
-    
-    col <- input$net_col_filtered
-    delims <- rv$detected_mv_cols
-    df <- glens_year_filtered_rx()
-    
-    # req(col, df, nrow(df) > 0, delims[[col]])
-    req(col, df, delims[[col]])
-    target_delim <- delims[[col]]
-    req(!stringi::stri_isempty(target_delim))
-    cache <- network_cache()
-    if (cache$enable_network == input$enable_network &&
-        !is.null(cache$col) && 
-        cache$col == col && 
-        cache$delim == target_delim && 
-        identical(cache$edge_freq_range, input$edge_freq_range) && 
-        identical(cache$node_freq_range, input$node_freq_range) && 
-        identical(cache$custom_max_keywords, input$custom_max_keywords) &&
-        identical(cache$cluster_size_range, input$cluster_size_range) && 
-        isTRUE(cache$prune_leaves) == isTRUE(input$prune_leaves)) {
-      
-      if (setequal(cache$author_list, rv$author_list)) {
-        return(cache$result)
-      }
-    }
-  
-    message(paste("Generating network for:", col))
-    rv$is_glens_exec <- TRUE
-    raw_net <- build_collaboration_network(
-      df = df, 
-      authors_per_pub = input$custom_max_keywords, 
-      node_freq_range = input$node_freq_range,   
-      edge_freq_range = input$edge_freq_range,   
-      main_authors_list = rv$author_list, 
-      target_col = col, 
-      target_delim = target_delim,
-      fr_iterations = input$fr_iterations,        
-      prune_leaves = input$prune_leaves,
-      cluster_size_range = input$cluster_size_range
+
+    target_delim <- isolate(rv$detected_mv_cols)[[col]]
+    if (is.null(target_delim) || !nzchar(trimws(target_delim))) target_delim <- ","
+
+    build_collaboration_network(
+      df                 = df,
+      authors_per_pub    = input$custom_max_keywords,
+      node_freq_range    = input$node_freq_range,
+      edge_freq_range    = input$edge_freq_range,
+      main_authors_list  = isolate(rv$author_list),
+      target_col         = col,
+      target_delim       = target_delim,
+      fr_iterations      = input$fr_iterations,
+      prune_leaves       = isTRUE(input$prune_leaves),
+      cluster_size_range = input$cluster_size_range,
+      weight_scheme      = input$weight_scheme      %||% "newman",
+      oversize_mode      = input$oversize_mode      %||% "star",
+      backbone_alpha     = if (isTRUE(input$use_backbone)) input$backbone_alpha else NULL,
+      max_edges          = input$max_render_edges   %||% 20000L,
+      detect_communities = isTRUE(input$detect_communities),
+      compute_centrality = isTRUE(input$compute_centrality),
+      layout_engine      = input$layout_engine      %||% "auto",
+      verbose            = TRUE
     )
-    
-    # req(nrow(raw_net$nodes) > 0)
-    if (is.null(raw_net) || nrow(raw_net$nodes) == 0) {
-      return(list(nodes = data.frame(), edges = data.frame()))
-    }
-    
-    network_cache(list(
-      enable_network = input$enable_network,
-      col = col, delim = target_delim, result = raw_net,
-      edge_freq_range = input$edge_freq_range, node_freq_range = input$node_freq_range,
-      author_list = rv$author_list, custom_max_keywords = input$custom_max_keywords,
-      cluster_size_range = input$cluster_size_range, prune_leaves = input$prune_leaves
-    ))
-    rv$is_glens_exec <- FALSE
-    return(raw_net)
   })
+
+  net_data_filtered_debounced <- net_data_filtered_raw %>% debounce(600)
+
+  observeEvent(list(input$node_freq_range, input$edge_freq_range,
+                    input$cluster_size_range, input$custom_max_keywords,
+                    input$net_col_filtered, input$fr_iterations), {
+    rv$is_glens_exec <- TRUE
+  }, ignoreInit = TRUE)
+
+  observeEvent(net_data_filtered_debounced(), {
+    rv$is_glens_exec <- FALSE      # always clears, on every path
+  }, ignoreNULL = FALSE, priority = -10)
   
-  net_data_filtered_debounced <- net_data_filtered_raw %>% debounce(1000)
   
   
   output$network_filtered <- renderVisNetwork({
@@ -2617,39 +2598,75 @@ server <- function(input, output, session) {
       addFontAwesome()
   })
   
-  output$network_summary_table <- renderUI({
-    req(input$enable_network)
-    
-    # Read the live computed network data frame list
-    net_data <- net_data_filtered_debounced()
-    req(net_data)
-    
-    total_nodes <- nrow(net_data$nodes)
-    total_edges <- nrow(net_data$edges)
-    
-    # Render a clean, stylized dark table to match analytics dashboards
-    tags$div(style = "margin-top: 20px; padding: 10px; background: #2c3e50; border-radius: 6px; box-shadow: inset 0 1px 3px rgba(0,0,0,0.2);",
-             tags$table(class = "table table-condensed",
-                        style = "margin-bottom: 0px; color: #ecf0f1; font-size: 13px; width: 100%;",
-                        tags$thead(
-                          tags$tr(style = "border-bottom: 2px solid #34495e;",
-                                  tags$th(style = "padding: 6px; border: none;", "Network Object"),
-                                  tags$th(style = "padding: 6px; border: none; text-align: right;", "Active Render Count")
-                          )
-                        ),
-                        tags$tbody(
-                          tags$tr(style = "border-bottom: 1px solid #34495e;",
-                                  tags$td(style = "padding: 8px 6px; border: none;", tags$span(style="color: #3498db; margin-right: 6px;", "●"), "Nodes (Unique Entities)"),
-                                  tags$td(style = "padding: 8px 6px; border: none; text-align: right; font-weight: bold;", total_nodes)
-                          ),
-                          tags$tr(style = "border: none;",
-                                  tags$td(style = "padding: 8px 6px; border: none;", tags$span(style="color: #2ecc71; margin-right: 6px;", "▬"), "Edges (Co-occurrences)"),
-                                  tags$td(style = "padding: 8px 6px; border: none; text-align: right; font-weight: bold;", total_edges)
-                          )
-                        )
-             )
-    )
+  net_view_rx <- reactive({
+    net <- net_data_filtered_debounced()
+    if (identical(input$graph_view, "communities")) cn_collapse_communities(net) else net
   })
+
+  output$network_metrics_table <- renderTable({
+    req(isTRUE(input$enable_network))
+    net <- net_data_filtered_debounced()
+    req(!is.null(net), !is.null(net$graph), igraph::vcount(net$graph) > 0)
+    tryCatch({
+      cn_network_metrics(net)
+    }, error = function(e) {
+      message("Error in cn_network_metrics: ", conditionMessage(e))
+      data.frame(Metric = "Error", Value = conditionMessage(e), stringsAsFactors = FALSE)
+    })
+  }, striped = TRUE, width = "100%")
+
+  output$hamiltonian_diagnostics_table <- renderTable({
+    req(isTRUE(input$enable_network))
+    net <- net_data_filtered_debounced()
+    req(!is.null(net), !is.null(net$graph), igraph::vcount(net$graph) > 0)
+    tryCatch({
+      res <- cn_hamiltonian_diagnostics(net)
+      message("hamiltonian_diagnostics_table rendered: ", nrow(res), " rows")
+      res
+    }, error = function(e) {
+      message("Error in cn_hamiltonian_diagnostics: ", conditionMessage(e))
+      data.frame(Property = "Error", Status = conditionMessage(e), stringsAsFactors = FALSE)
+    })
+  }, striped = TRUE, width = "100%")
+
+  output$centrality_leaderboard_table <- renderTable({
+    req(isTRUE(input$enable_network))
+    net <- net_data_filtered_debounced()
+    req(!is.null(net), !is.null(net$nodes), nrow(net$nodes) > 0)
+    tryCatch({
+      res <- cn_centrality_leaderboard(net, top_n = 20L)
+      message("centrality_leaderboard_table rendered: ", nrow(res), " rows")
+      res
+    }, error = function(e) {
+      message("Error in cn_centrality_leaderboard: ", conditionMessage(e))
+      data.frame(Error = conditionMessage(e), stringsAsFactors = FALSE)
+    })
+  }, striped = TRUE, width = "100%")
+
+  output$centrality_scatter_plot <- renderPlot({
+    req(isTRUE(input$enable_network))
+    net <- net_data_filtered_debounced()
+    req(!is.null(net), !is.null(net$nodes), nrow(net$nodes) > 0)
+    cn_centrality_scatter_plot(net)
+  })
+
+  outputOptions(output, "network_metrics_table", suspendWhenHidden = FALSE)
+  outputOptions(output, "hamiltonian_diagnostics_table", suspendWhenHidden = FALSE)
+  outputOptions(output, "centrality_leaderboard_table", suspendWhenHidden = FALSE)
+  outputOptions(output, "centrality_scatter_plot", suspendWhenHidden = FALSE)
+
+  output$ego_metrics_table <- renderTable({
+    req(isTRUE(input$enable_network), length(rv$author_list) > 0)
+    cn_ego_metrics(net_data_filtered_debounced(), rv$author_list)
+  }, striped = TRUE, width = "100%")
+
+  output$bibliometrics_table <- renderTable({
+    # We use glens_year_filtered_rx() here, so req(isTRUE(input$enable_network)) is better
+    req(isTRUE(input$enable_network), nrow(glens_year_filtered_rx()) > 0)
+    col <- input$net_col_filtered %||% "Authors"
+    cn_bibliometrics(glens_year_filtered_rx(), col,
+                     rv$detected_mv_cols[[col]] %||% ",")
+  }, striped = TRUE, width = "100%")
   
   # 1. Trigger on BOTH inputs so changing the keyword draws the circle instantly
   observeEvent(list(input$neighbourhood_slider, input$custom_node_selector), {
@@ -3251,7 +3268,7 @@ server <- function(input, output, session) {
   #     visNetwork::visRedraw()
   # })
   
-  observeEvent(net_data_filtered_debounced(), {
+  observeEvent(list(net_data_filtered_debounced(), input$node_size_metric, input$node_color_metric), {
     net_data <- net_data_filtered_debounced()
     proxy <- visNetworkProxy("network_filtered")
     
@@ -3260,9 +3277,10 @@ server <- function(input, output, session) {
         data.frame(id = "placeholder_empty", label = "No links", shape = "text", font.size = 20, font.color = "red")
       }else{
         data.frame(id = "placeholder_empty", label = "Network Disabled", shape = "text", font.size = 20, font.color = "blue")  
-        }
+      }
       empty_edges <- data.frame(from = character(0), to = character(0))
       proxy %>% visSetData(nodes = empty_nodes, edges = empty_edges)
+      shiny::freezeReactiveValue(input, "custom_node_selector")
       updateSelectizeInput(session, "custom_node_selector", choices = character(0))
       updateSelectizeInput(session, "neighbourhood_nodes", choices = character(0))
       return()
@@ -3282,30 +3300,74 @@ server <- function(input, output, session) {
     net_data$edges$from <- as.character(net_data$edges$from)
     net_data$edges$to <- as.character(net_data$edges$to)
     
-    proxy %>% visSetData(nodes = net_data$nodes, edges = net_data$edges)
+    # --- DYNAMIC NODE SIZING ---
+    size_metric <- input$node_size_metric %||% "strength"
+    vals <- switch(size_metric,
+                   "strength"    = net_data$nodes$strength,
+                   "degree"      = net_data$nodes$degree,
+                   "betweenness" = net_data$nodes$betweenness,
+                   "closeness"   = net_data$nodes$closeness,
+                   "harmonic"    = net_data$nodes$harmonic,
+                   "pagerank"    = net_data$nodes$pagerank,
+                   net_data$nodes$strength)
+    vals <- as.numeric(vals)
+    vals[is.na(vals) | !is.finite(vals)] <- 0
+    max_v <- max(vals, na.rm = TRUE)
+    if (max_v > 0) {
+      net_data$nodes$size <- 12 + (vals / max_v) * 28
+    } else {
+      net_data$nodes$size <- 14
+    }
+
+    # --- DYNAMIC NODE COLORING ---
+    color_metric <- input$node_color_metric %||% "group"
+    use_custom_shape <- FALSE
+
+    if (color_metric == "community" && "community" %in% names(net_data$nodes)) {
+      pal <- grDevices::hcl.colors(max(c(1, net_data$nodes$community), na.rm = TRUE), "Dark 3")
+      net_data$nodes$color.background <- pal[pmax(1, net_data$nodes$community)]
+      net_data$nodes$color.border     <- "#2c3e50"
+      net_data$nodes$shape            <- "dot"
+      use_custom_shape <- TRUE
+    } else if (color_metric %in% c("betweenness", "closeness", "pagerank")) {
+      metric_vals <- as.numeric(net_data$nodes[[color_metric]] %||% 0)
+      metric_vals[is.na(metric_vals) | !is.finite(metric_vals)] <- 0
+      scaled <- if (max(metric_vals, na.rm = TRUE) > 0) metric_vals / max(metric_vals, na.rm = TRUE) else rep(0, length(metric_vals))
+      pal <- grDevices::hcl.colors(100, "Plasma")
+      idx <- pmax(1, pmin(100, round(scaled * 99) + 1))
+      net_data$nodes$color.background <- pal[idx]
+      net_data$nodes$color.border     <- "#2c3e50"
+      net_data$nodes$shape            <- "dot"
+      use_custom_shape <- TRUE
+    } else if (color_metric == "cut_vertex") {
+      is_cut <- isTRUE(net_data$nodes$is_cut_vertex) | (net_data$nodes$is_cut_vertex %in% TRUE)
+      net_data$nodes$color.background <- ifelse(is_cut, "#e74c3c", "#3498db")
+      net_data$nodes$color.border     <- ifelse(is_cut, "#962d22", "#2c3e50")
+      net_data$nodes$shape            <- "dot"
+      use_custom_shape <- TRUE
+    } else if (color_metric == "coreness") {
+      cores <- as.numeric(net_data$nodes$coreness %||% 1)
+      cores[is.na(cores) | !is.finite(cores)] <- 1
+      pal <- grDevices::hcl.colors(max(cores, 1), "Viridis")
+      net_data$nodes$color.background <- pal[pmax(1, cores)]
+      net_data$nodes$color.border     <- "#2c3e50"
+      net_data$nodes$shape            <- "dot"
+      use_custom_shape <- TRUE
+    }
+
+    keep_n <- intersect(c("id","label","title","size","shape","group","x","y", "community", "color.background", "color.border"), names(net_data$nodes))
+    keep_e <- intersect(c("from","to","value","title"), names(net_data$edges))
+    proxy %>% visSetData(nodes = net_data$nodes[keep_n], edges = net_data$edges[keep_e])
     
     proxy %>% visPhysics(enabled = FALSE)
     
-    # if (input$net_col_filtered == "Authors") {
-    #   proxy %>%
-    #     visGroups(groupname = "Queried Target", shape = "icon", 
-    #               icon = list(face = "FontAwesome", code = "f007", color = "#E74C3C")) %>%
-    #     visGroups(groupname = "Associated Entity", shape = "icon", 
-    #               icon = list(face = "FontAwesome", code = "f007", color = "#3498DB"))
-    # } else {
-    #   # If rendering Keywords or other shapes, fall back to native dots
-    #   proxy %>%
-    #     visGroups(groupname = "Queried Target", shape = "dot", 
-    #               color = list(background = "#E74C3C", border = "#2c3e50")) %>%
-    #     visGroups(groupname = "Associated Entity", shape = "dot", 
-    #               color = list(background = "#3498DB", border = "#2c3e50"))
-    # }
-    
-    proxy %>%
-      visGroups(groupname = "Queried Target", shape = "icon", 
-                icon = list(face = "FontAwesome", code = icon_hex_raw, color = "#E74C3C")) %>%
-      visGroups(groupname = "Associated Entity", shape = "icon", 
-                icon = list(face = "FontAwesome", code = icon_hex_raw, color = "#3498DB"))
+    if (!use_custom_shape) {
+      proxy %>%
+        visGroups(groupname = "Queried Target", shape = "icon", 
+                  icon = list(face = "FontAwesome", code = icon_hex_raw, color = "#E74C3C")) %>%
+        visGroups(groupname = "Associated Entity", shape = "icon", 
+                  icon = list(face = "FontAwesome", code = icon_hex_raw, color = "#3498DB"))
+    }
     
     proxy %>% visOptions(
       highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE),
@@ -3350,6 +3412,7 @@ server <- function(input, output, session) {
   observeEvent(input$network_filtered_clicked, {
     req(input$enable_network)
     # This captures the array of IDs sent from Javascript
+    shiny::freezeReactiveValue(input, "custom_node_selector")
     updateSelectizeInput(session, "custom_node_selector", selected = input$network_filtered_clicked, server = TRUE)
   }, ignoreNULL = FALSE, ignoreInit = TRUE)
   
@@ -3444,11 +3507,9 @@ server <- function(input, output, session) {
       
       print(paste("Writing compressed RDS file. Total rows:", nrow(export_data)))
       
-      final_con <- gzfile(file, open = "wb", compression = 9)
+      saveRDS(export_data, file = file, compress = "gzip", version = 3)
       # Foolproof single-connection level 9 compression
-      saveRDS(export_data, file = gzfile("glens_full_table.rds", open = "wb", compression = 9))
       
-      close(final_con)
       print("--- DOWNLOAD PROCESS COMPLETE ---")
     }
   )
@@ -3748,79 +3809,45 @@ server <- function(input, output, session) {
     
     if (flow_type == "submit_btn") {
       # --- SUBMIT BTN FINALE ---
-      if(nrow(matched_df) > 0) rv$glens_full_table <- matched_df
+      has_existing <- !is.null(rv$glens_full_table) && is.data.frame(rv$glens_full_table) && nrow(rv$glens_full_table) > 0
       
-      render_skeleton_plots(rv, matched_df, output)
-      
-      # years <- as.numeric(na.omit(matched_df$Year))
-      # if (length(years) > 0) {
-      #   min_yr <- min(years)
-      #   max_yr <- max(years)
-      #   updateSliderInput(session, "year_slider", min = min_yr, max = max_yr, value = c(min_yr, max_yr))
-      # }
-      
-      if (!isTRUE(input$auto_refresh_lookup)) {
-        later::later(function() { isolate({ rv$manual_submit <- if(is.null(rv$manual_submit)) 1 else rv$manual_submit + 1 }) }, delay = 0.8)
+      if (has_existing && nrow(matched_df) > 0) {
+        # Existing data detected (e.g. post-file-upload)! Prompt user with Append / Merge / New options
+        rv$pending_fetch_df <- matched_df
+        shinyjs::hide("progress_overlay")
+        show_fetch_merge_modal(rv, session, nrow(matched_df))
+      } else {
+        if(nrow(matched_df) > 0) rv$glens_full_table <- matched_df
+        
+        render_skeleton_plots(rv, matched_df, output)
+        
+        if (!isTRUE(input$auto_refresh_lookup)) {
+          later::later(function() { isolate({ rv$manual_submit <- if(is.null(rv$manual_submit)) 1 else rv$manual_submit + 1 }) }, delay = 0.8)
+        }
+        
+        shinyjs::show("sh_index")
+        shinyjs::show("summary_table")
+        shinyjs::show("lookup_controls_panel")
+        
+        rv$log_text <- paste(rv$log_text, "<span style='color: green;'>✓ Run complete.</span>", sep="<br>")
+        try({ if (fs::file_exists("run.lock")) fs::file_delete("run.lock") }, silent = TRUE)
+        
+        rv$is_cancelled <- FALSE
+        rv$is_glens_exec <- FALSE
+        shinyjs::hide("progress_overlay")
+        shinyjs::enable("submit_button")
       }
-      
-      # shinyjs::show("year_slider")
-      shinyjs::show("sh_index")
-      shinyjs::show("summary_table")
-      shinyjs::show("lookup_controls_panel")
-      
-      rv$log_text <- paste(rv$log_text, "<span style='color: green;'>✓ Run complete.</span>", sep="<br>")
-      try({ if (fs::file_exists("run.lock")) fs::file_delete("run.lock") }, silent = TRUE)
-      
-      rv$is_cancelled <- FALSE
-      rv$is_glens_exec <- FALSE
-      shinyjs::hide("progress_overlay")
-      shinyjs::enable("submit_button")
       
     } else if (flow_type == "confirm_import") {
       # --- CONFIRM IMPORT FINALE ---
-      merged_df <- matched_df
-      
-      # Keep rows if ANY column has a non-NA value
-      merged_df <- merged_df %>% dplyr::filter(dplyr::if_any(dplyr::everything(), ~ !is.na(.)))
-      # Keep columns if they don't have ALL NA values
-      merged_df <- merged_df %>% dplyr::select(dplyr::where(~ !all(is.na(.))))
-      
-      if (input$row_import_type == "New" || is.null(rv$glens_full_table)) {
-        glens_full_table <- merged_df
-      } else if (input$row_import_type == "Append") {
-        if (rv$saved_col_import_type == "Common Columns") {
-          final_common_cols <- intersect(names(rv$glens_full_table), names(merged_df))
-          glens_full_table <- dplyr::bind_rows(
-            rv$glens_full_table[, final_common_cols, drop = FALSE],
-            merged_df[, final_common_cols, drop = FALSE]
-          )
-        } else {
-          glens_full_table <- dplyr::bind_rows(rv$glens_full_table %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character)), merged_df)
-        }
-      } else if (input$row_import_type == "Merge") {
-        join_keys <- input$row_merge_keys
-        join_type <- input$join_type 
-        
-        if (!is.null(join_keys) && length(join_keys) > 0) {
-          overlap_cols <- setdiff(intersect(names(rv$glens_full_table), names(merged_df)), join_keys)
-          join_func <- switch(join_type, "inner" = dplyr::inner_join, "left"  = dplyr::left_join, "right" = dplyr::right_join, "full"  = dplyr::full_join)
-          
-          joined_df <- join_func(rv$glens_full_table, merged_df, by = join_keys, suffix = c(".old", ".new"), relationship = "many-to-many")
-          
-          for(col in overlap_cols) {
-            old_col <- paste0(col, ".old")
-            new_col <- paste0(col, ".new")
-            joined_df[[col]] <- dplyr::coalesce(as.character(joined_df[[old_col]]), as.character(joined_df[[new_col]]))
-            joined_df[[old_col]] <- NULL
-            joined_df[[new_col]] <- NULL
-          }
-          joined_df <- joined_df %>% dplyr::group_by(dplyr::across(dplyr::all_of(join_keys))) %>% tidyr::fill(dplyr::everything(), .direction = "downup") %>% dplyr::ungroup()
-          glens_full_table <- joined_df
-        } else {
-          warning("No join keys selected. Falling back to Append.")
-          glens_full_table <- dplyr::bind_rows(rv$glens_full_table %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character)), merged_df)
-        }
-      }
+      glens_full_table <- execute_glens_merge(
+        table_existing = rv$glens_full_table,
+        table_new = matched_df,
+        import_type = input$row_import_type,
+        join_keys = input$row_merge_keys,
+        join_type = if (!is.null(input$join_type)) input$join_type else "full",
+        col_import_type = rv$saved_col_import_type
+      )
       
       if(nrow(glens_full_table) <= 0){
         showNotification("Data import/merge returned empty rows. Try different options", type = "error", duration = 10)
@@ -3879,6 +3906,93 @@ server <- function(input, output, session) {
     # CLEAR PENDING STATE SO IT DOESN'T ACCIDENTALLY REFIRE
     rv$pending_extended_df <- NULL
     rv$pending_flow_type <- NULL
+  })
+
+  # Dynamic UI for selecting keys when 'Merge' is chosen in the fetch modal
+  output$fetch_row_merge_ui <- renderUI({
+    req(input$fetch_row_import_type == "Merge")
+    req(rv$glens_full_table, rv$pending_fetch_df)
+    
+    common_keys <- intersect(names(rv$glens_full_table), names(rv$pending_fetch_df))
+    default_selected <- intersect(common_keys, c("doi", "DOI", "Title", "title", "orcid", "ORCID", "SCOPUS_ID", "Authors"))
+    if (length(default_selected) == 0 && length(common_keys) > 0) default_selected <- common_keys[1]
+    
+    tagList(
+      tags$div(
+        style = "margin-top: 15px; padding: 12px; border-left: 3px solid #17a2b8; background-color: #f8f9fa; border-radius: 4px;",
+        selectizeInput("fetch_row_merge_keys", "Select Primary Key(s) to Join By:",
+                       choices = common_keys, selected = default_selected, multiple = TRUE, width = "100%",
+                       options = list(placeholder = "Select one or more keys (e.g. DOI, Title)")),
+        selectInput("fetch_join_type", "Select Join Type:", width = "100%",
+                    choices = c(
+                      "Full Join (Keep ALL rows from both)" = "full",
+                      "Inner Join (Keep ONLY rows that match exactly)" = "inner",
+                      "Left Join (Keep ALL Existing Data, drop unmatched Fetched Data)" = "left",
+                      "Right Join (Keep ALL Fetched Data, drop unmatched Existing Data)" = "right"
+                    ),
+                    selected = "full")
+      )
+    )
+  })
+
+  # Confirm button handler for post-fetch merge modal
+  observeEvent(input$confirm_fetch_merge, {
+    req(rv$pending_fetch_df)
+    removeModal()
+    
+    table_new <- rv$pending_fetch_df
+    rv$pending_fetch_df <- NULL
+    
+    import_choice <- if (!is.null(input$fetch_row_import_type)) input$fetch_row_import_type else "Append"
+    table_existing <- rv$glens_full_table
+    
+    glens_full_table <- execute_glens_merge(
+      table_existing = table_existing,
+      table_new = table_new,
+      import_type = import_choice,
+      join_keys = input$fetch_row_merge_keys,
+      join_type = if (!is.null(input$fetch_join_type)) input$fetch_join_type else "full"
+    )
+    
+    if (nrow(glens_full_table) <= 0) {
+      showNotification("Data merge returned empty rows. Keeping existing data.", type = "error", duration = 10)
+      rv$log_text <- paste(rv$log_text, "<span style='color: red;'>Data merge returned empty rows. Keeping existing data.</span>", sep="<br>")
+      rv$is_glens_exec <- FALSE
+      shinyjs::enable("submit_button")
+      try({ if (fs::file_exists("run.lock")) fs::file_delete("run.lock") }, silent = TRUE)
+      return()
+    }
+    
+    glens_full_table <- dplyr::distinct(glens_full_table)
+    rv$glens_full_table <- glens_full_table
+    
+    render_skeleton_plots(rv, glens_full_table, output)
+    
+    if (!isTRUE(input$auto_refresh_lookup)) {
+      later::later(function() { isolate({ rv$manual_submit <- if(is.null(rv$manual_submit)) 1 else rv$manual_submit + 1 }) }, delay = 0.8)
+    }
+    
+    shinyjs::show("sh_index")
+    shinyjs::show("summary_table")
+    shinyjs::show("lookup_controls_panel")
+    
+    rv$log_text <- paste(rv$log_text, sprintf("<span style='color: green;'>✓ Run complete. Incorporated %d records (total: %d records).</span>", nrow(table_new), nrow(glens_full_table)), sep="<br>")
+    try({ if (fs::file_exists("run.lock")) fs::file_delete("run.lock") }, silent = TRUE)
+    
+    rv$is_cancelled <- FALSE
+    rv$is_glens_exec <- FALSE
+    shinyjs::enable("submit_button")
+  })
+
+  # Cancel button handler for post-fetch merge modal
+  observeEvent(input$cancel_fetch_merge, {
+    removeModal()
+    rv$pending_fetch_df <- NULL
+    rv$is_cancelled <- FALSE
+    rv$is_glens_exec <- FALSE
+    shinyjs::enable("submit_button")
+    try({ if (fs::file_exists("run.lock")) fs::file_delete("run.lock") }, silent = TRUE)
+    rv$log_text <- paste(rv$log_text, "<span style='color: #7f8c8d;'>Fetch merge cancelled. Existing data preserved.</span>", sep="<br>")
   })
   
   output$fa_icon_preview <- renderUI({
@@ -3963,16 +4077,17 @@ server <- function(input, output, session) {
         accumulated_df <- accumulated_df %>% dplyr::distinct() %>% dplyr::mutate(Source = "DOI/ORCID")
       }
       
-      # Prevent Year mismatch crash before binding
-      if(nrow(accumulated_df) > 0 && "Year" %in% names(accumulated_df)) accumulated_df$Year <- as.character(accumulated_df$Year)
-      if(nrow(rv$scopus_df) > 0 && "Year" %in% names(rv$scopus_df)) rv$scopus_df$Year <- as.character(rv$scopus_df$Year)
+      # Prevent column type mismatch crash before binding
+      if(nrow(accumulated_df) > 0) accumulated_df <- accumulated_df %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character))
+      if(nrow(rv$scopus_df) > 0) rv$scopus_df <- rv$scopus_df %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character))
       
       # The unified raw table!
       raw_df <- dplyr::bind_rows(accumulated_df, rv$scopus_df)
       print(paste("raw_df:", nrow(raw_df)))
       
       # --- 2. PARSE THE TARGET AUTHORS ---
-      target_variants <- stringi::stri_omit_empty(stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n"))))
+      target_variants <- stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n")))
+    target_variants <- target_variants[nzchar(target_variants)]
       target_variants <- target_variants[target_variants != ""]
 
       if(length(target_variants) > 0) {
@@ -4140,7 +4255,7 @@ server <- function(input, output, session) {
       
       # check_orcid_input <- F
       # input_is_orcid <- F
-      if (is.null(input$author_list) || stringi::stri_isempty(input$author_list)) {
+      if (is.null(input$author_list) || !nzchar(input$author_list)) {
         rv$log_text <- paste(rv$log_text, "Keyword list empty.", sep="<br>")
         # shinyjs::enable(id = "submit_button")
         # shinyjs::hide("progress_overlay")
@@ -4153,15 +4268,17 @@ server <- function(input, output, session) {
       # shinyjs::hide(id="year_slider")
       shinyjs::show("progress_overlay")
         
-      if (is.null(input$doi_text) || stringi::stri_isempty(input$doi_text)) {
+      if (is.null(input$doi_text) || !nzchar(input$doi_text)) {
         rv$log_text <- paste(rv$log_text, "No DOIs provided in Input.", sep="<br>")
       }
-      orcid_list <- stringr::str_trim(stringi::stri_omit_empty(str_split(input$orcid_text, "\n")[[1]]))
-      scopus_list <- stringr::str_trim(stringi::stri_omit_empty(str_split(input$scopusid_text, "\n")[[1]]))
+      orcid_list <- stringr::str_trim(str_split(input$orcid_text, "\n")[[1]])
+      orcid_list <- orcid_list[nzchar(orcid_list)]
+      scopus_list <- stringr::str_trim(str_split(input$scopusid_text, "\n")[[1]])
+      scopus_list <- scopus_list[nzchar(scopus_list)]
       print(orcid_list)
       # print(length(orcid_list))
       # if(check_orcid_input){
-      if (is.null(input$orcid_text) || stringi::stri_isempty(input$orcid_text) || length(orcid_list) == 0) {
+      if (is.null(input$orcid_text) || !nzchar(input$orcid_text) || length(orcid_list) == 0) {
         rv$log_text <- paste(rv$log_text, "Empty ORC-ID input.", sep="<br>")
       } 
       
@@ -4185,7 +4302,7 @@ server <- function(input, output, session) {
       
       doi_lines <- c()
       # print(orcid_list)
-      if(length(orcid_list) == 1 && stringi::stri_isempty(orcid_list)){
+      if(length(orcid_list) == 1 && !nzchar(orcid_list)){
         orcid_list<- list()
       }
       
@@ -4316,14 +4433,15 @@ server <- function(input, output, session) {
         # Create the communication queue
         progress_queue <- ipc::shinyQueue()
         
-        # Define the handler. Notice it directly accepts 'current' and 'total'
-        progress_queue$consumer$addHandler(function(signal, msg, env) {
-          
-          # Extract our values from the msg object
-          current <- msg$current
-          total <- msg$total
+        progress_queue$consumer$addHandler(function(signal = NULL, msg = NULL, env = NULL, message = NULL, obj = NULL, ...) {
+          payload <- if (!is.null(msg)) msg else if (!is.null(message)) message else obj
+          if (is.null(payload)) return()
+
+          current <- payload$current
+          total <- payload$total
+          if (is.null(current) || is.null(total) || total == 0) return()
           pct <- round((current / total) * 100)
-          
+
           shinyWidgets::updateProgressBar(
             session, id = "prog_scopus", 
             value = current, total = total,
@@ -4387,7 +4505,7 @@ server <- function(input, output, session) {
           })
         }, 
         globals = c("get_scopus_data_id", "scopus_list", "scopus_count", "glens_env", "progress_queue"),
-        packages = c("dplyr", "httr2", "jsonlite", "tidyr", "purrr", "ipc"), seed = TRUE 
+        packages = c("dplyr", "jsonlite", "tidyr", "purrr", "ipc"), seed = TRUE 
         ) %...>% (function(res) {
           if(!fs::file_exists(file.path("run.lock"))) return(NULL)
           print("SCOPUS:1:")
@@ -4712,7 +4830,7 @@ server <- function(input, output, session) {
               })
           }, 
           globals = c("get_scopus_data_orcid", "orcid_list","orcid_count", "has_key_scopus", "glens_env", "glens_env$scopus_key", "rv", "session", "progress_state", "print_log"),
-          packages = c("shinyWidgets","dplyr", "httr2", "jsonlite", "tidyr", "purrr", "shiny"), seed = TRUE 
+          packages = c("shinyWidgets","dplyr", "jsonlite", "tidyr", "purrr", "shiny"), seed = TRUE 
           ) %...>% (function(res) {
             # if (rv$is_cancelled) return(NULL)
             if(!fs::file_exists(file.path("run.lock"))) return(NULL)

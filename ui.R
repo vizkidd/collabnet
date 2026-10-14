@@ -10,7 +10,6 @@ suppressPackageStartupMessages(require(systemfonts))
 suppressPackageStartupMessages(require(ggplot2))
 suppressPackageStartupMessages(require(plotly))
 suppressPackageStartupMessages(require(stringr))
-suppressPackageStartupMessages(require(stringi))
 suppressPackageStartupMessages(require(tibble))
 suppressPackageStartupMessages(require(scales))
 suppressPackageStartupMessages(require(stringdist))
@@ -101,8 +100,160 @@ ui <- fluidPage(
           container: 'body' // Prevents the tooltip from breaking inside hidden divs
         });
       });
+
+      // Global Loading Indicator for reactive calculations & plot rendering
+      var _glensHasData = false;
+      var _glensServerBusy = false;
+      var _glensBusyTimer = null;
+
+      function updateGlensBusyState() {
+        var overlay = document.getElementById('progress_overlay');
+        var overlayVisible = overlay && overlay.style.display !== 'none' && $(overlay).is(':visible');
+
+        // Check if data is present in the app (server flag or DOM table data)
+        var extTable = document.getElementById('extended_table');
+        var hasTableRows = extTable && extTable.querySelector('tbody tr') && !extTable.querySelector('.dataTables_empty');
+        var sumTable = document.getElementById('summary_table');
+        var hasSummaryRows = sumTable && sumTable.querySelectorAll('tr').length > 1;
+        var hasData = Boolean(_glensHasData || hasTableRows || hasSummaryRows);
+
+        var isBusy = $('html').hasClass('shiny-busy') || _glensServerBusy === true;
+
+        if (hasData && isBusy && !overlayVisible) {
+          if (!_glensBusyTimer) {
+            _glensBusyTimer = setTimeout(function() {
+              var ov = document.getElementById('progress_overlay');
+              var ovVis = ov && ov.style.display !== 'none' && $(ov).is(':visible');
+              var currentBusy = $('html').hasClass('shiny-busy') || _glensServerBusy === true;
+              if (hasData && currentBusy && !ovVis) {
+                $('#glens_global_loading').addClass('active');
+              }
+              _glensBusyTimer = null;
+            }, 120);
+          }
+        } else {
+          if (_glensBusyTimer) {
+            clearTimeout(_glensBusyTimer);
+            _glensBusyTimer = null;
+          }
+          $('#glens_global_loading').removeClass('active');
+        }
+      }
+
+      $(document).on('shiny:busy', function() {
+        updateGlensBusyState();
+      });
+
+      $(document).on('shiny:idle', function() {
+        updateGlensBusyState();
+      });
+
+      $(document).on('shiny:connected', function() {
+        if (window.Shiny && Shiny.addCustomMessageHandler) {
+          Shiny.addCustomMessageHandler('glens_busy_state', function(isBusy) {
+            _glensServerBusy = Boolean(isBusy);
+            updateGlensBusyState();
+          });
+          Shiny.addCustomMessageHandler('glens_data_status', function(msg) {
+            _glensHasData = Boolean(msg && msg.has_data);
+            updateGlensBusyState();
+          });
+        }
+      });
     ")),
     tags$style(HTML("
+      /* --- Global Loading Indicator (when progress_overlay is not shown) --- */
+      .glens-busy-overlay {
+        display: none;
+        pointer-events: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        z-index: 9990;
+      }
+      .glens-busy-overlay.active {
+        display: block !important;
+      }
+      .glens-busy-bar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 4px;
+        background: linear-gradient(90deg, #4B8BBE, #C96480, #f39c12, #4B8BBE);
+        background-size: 250% 100%;
+        animation: glensBarAnim 1.6s linear infinite;
+        z-index: 9995;
+        box-shadow: 0 0 10px rgba(201, 100, 128, 0.6);
+      }
+      @keyframes glensBarAnim {
+        0% { background-position: 0% 0%; }
+        100% { background-position: 100% 0%; }
+      }
+      .glens-busy-pill {
+        position: fixed;
+        top: 18px;
+        right: 24px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        background: rgba(33, 37, 41, 0.92);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        color: white;
+        padding: 9px 18px;
+        border-radius: 30px;
+        box-shadow: 0 4px 18px rgba(0, 0, 0, 0.3);
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        z-index: 9996;
+        animation: glensPillFadeIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      }
+      @keyframes glensPillFadeIn {
+        from { opacity: 0; transform: translateY(-10px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      .glens-busy-spinner {
+        width: 18px;
+        height: 18px;
+        border: 2.5px solid rgba(255, 255, 255, 0.25);
+        border-top-color: #C96480;
+        border-right-color: #f39c12;
+        border-radius: 50%;
+        animation: glensSpinnerRotate 0.75s linear infinite;
+        flex-shrink: 0;
+      }
+      @keyframes glensSpinnerRotate {
+        to { transform: rotate(360deg); }
+      }
+      .glens-busy-content {
+        display: flex;
+        flex-direction: column;
+      }
+      .glens-busy-title {
+        font-size: 13px;
+        font-weight: 700;
+        line-height: 1.2;
+        color: #ffffff;
+        letter-spacing: 0.2px;
+      }
+      .glens-busy-desc {
+        font-size: 10px;
+        color: #ced4da;
+        line-height: 1.2;
+      }
+
+      /* Recalculating state visual hint on charts and tables */
+      .shiny-plot-output.recalculating, 
+      .visNetwork.recalculating, 
+      .shiny-table-output.recalculating,
+      .datatables.recalculating {
+        opacity: 0.55 !important;
+        filter: grayscale(20%) blur(0.5px);
+        transition: opacity 0.2s ease, filter 0.2s ease;
+      }
+
       @font-face {
         font-family: 'schibsted-grotesk';
         src: url('fonts/SchibstedGrotesk.ttf') format('truetype');
@@ -682,9 +833,13 @@ ui <- fluidPage(
             const journal = journals[i];
             const safeQuery = encodeURIComponent(journal);
             
-            // NOTE: Replace the email below with your actual email!
-            let url = `https://api.openalex.org/sources?search=${safeQuery}&select=display_name,summary_stats&mailto=${mailKey}`;
-            if (apiKey && apiKey !== 'null') url += `&api_key=${apiKey}`;
+            let url = `https://api.openalex.org/sources?search=${safeQuery}&select=display_name,summary_stats`;
+            if (mailKey && mailKey !== 'null' && String(mailKey).trim() !== '') {
+              url += `&mailto=${encodeURIComponent(String(mailKey).trim())}`;
+            }
+            if (apiKey && apiKey !== 'null' && String(apiKey).trim() !== '') {
+              url += `&api_key=${encodeURIComponent(String(apiKey).trim())}`;
+            }
             
             //console.log(url)
             
@@ -698,24 +853,18 @@ ui <- fluidPage(
                 
                 // 1. Check for explicit Rate Limit (429)
                 if (res.status === 429) {
-                  let retryAfter = res.headers.get('Retry-After');
-                  // 'Retry-After' is usually in seconds. Fallback to 2000ms if missing.
-                  let waitTime = retryAfter ? parseInt(retryAfter) * 1000 : 2000;
-                  
-                  console.warn(`[429 Rate Limit] Waiting ${waitTime}ms before retrying ${journal}...`);
-                  // 1. Tell R to OPEN the modal
-                  Shiny.setInputValue('rate_limit_hit', {
-                    journal: journal, 
-                    seconds: waitTime / 1000
-                  }, { priority: 'event' });
-                  
-                  // 2. Wait out the penalty
-                  await new Promise(r => setTimeout(r, waitTime));
-                  
-                  // 3. Tell R to CLOSE the modal
-                  Shiny.setInputValue('rate_limit_resolved', Date.now(), { priority: 'event' });
-                  retries++;
-                  continue; // Loop again
+                  console.warn(`[429 Rate Limit] OpenAlex rate limited for ${journal}, using default.`);
+                  results.push({ Name_norm: journal, JCR_Journal: journal, Qscore: 'NA', JIF5Years: '0' });
+                  consecutive429 = (typeof consecutive429 !== 'undefined' ? consecutive429 : 0) + 1;
+                  if (consecutive429 >= 2) {
+                    console.warn(`[429 Rate Limit] OpenAlex rate limit detected; auto-filling remaining ${total - i - 1} journals with defaults.`);
+                    for (let j = i + 1; j < total; j++) {
+                      results.push({ Name_norm: journals[j], JCR_Journal: journals[j], Qscore: 'NA', JIF5Years: '0' });
+                    }
+                    i = total; // End outer loop immediately
+                  }
+                  success = true;
+                  break;
                 }
                 
                 // 2. Handle successful response
@@ -1266,6 +1415,64 @@ ui <- fluidPage(
                              choices = NULL, 
                              width = "100%", 
                              options = list(placeholder = 'Type a keyword...')),
+
+              selectInput("weight_scheme", "Edge weighting:",
+                          choices = c("Newman (1/(k-1)) — recommended" = "newman",
+                                      "Raw co-occurrence count"        = "count",
+                                      "Jaccard similarity"             = "jaccard"),
+                          selected = "newman"),
+              
+              selectInput("oversize_mode",
+                          tags$span("Hyperauthored papers:",
+                            tags$i(class = "fa fa-info-circle",
+                                   title = paste("A 3000-author paper contributes 4.5M edges",
+                                                 "if expanded. 'Hub' keeps the paper as a",
+                                                 "single node linked to each author: same",
+                                                 "information, 3000 edges."))),
+                          choices = c("Fold into a hub node" = "star",
+                                      "Exclude"              = "drop",
+                                      "Expand fully (slow)"  = "clique"),
+                          selected = "star"),
+              
+              selectInput("layout_engine", "Layout engine:",
+                          choices = c("Automatic"                 = "auto",
+                                      "Fruchterman-Reingold"      = "fr",
+                                      "DrL (large graphs)"        = "drl",
+                                      "Kamada-Kawai"              = "kk"),
+                          selected = "auto"),
+              
+              checkboxInput("use_backbone",
+                            tags$b("Extract statistical backbone (disparity filter)"),
+                            value = FALSE),
+              sliderInput("backbone_alpha", "Backbone significance (alpha):",
+                          min = 0.01, max = 0.5, value = 0.05, step = 0.01),
+              
+              checkboxInput("detect_communities", tags$b("Detect communities (Louvain)"), value = TRUE),
+              checkboxInput("compute_centrality", tags$b("Compute centralities"), value = TRUE),
+              selectInput("node_size_metric", "Size Nodes By:",
+                          choices = c("Weighted Strength"        = "strength",
+                                      "Degree"                   = "degree",
+                                      "Betweenness Centrality"   = "betweenness",
+                                      "Closeness Centrality"     = "closeness",
+                                      "Harmonic Centrality"      = "harmonic",
+                                      "PageRank"                 = "pagerank"),
+                          selected = "strength"),
+              selectInput("node_color_metric", "Color Nodes By:",
+                          choices = c("Queried Target vs Associated" = "group",
+                                      "Community (Louvain)"         = "community",
+                                      "Betweenness (Gradient)"      = "betweenness",
+                                      "Closeness (Gradient)"        = "closeness",
+                                      "PageRank (Gradient)"         = "pagerank",
+                                      "Critical Brokers (Cut-Nodes)" = "cut_vertex",
+                                      "k-core Centrality"           = "coreness"),
+                          selected = "group"),
+              numericInput("max_render_edges", "Max edges to render:", value = 20000,
+                           min = 500, max = 200000, step = 500),
+              radioButtons("graph_view", "View:",
+                           choices = c("Full network" = "full",
+                                       "Community metagraph" = "communities"),
+                           selected = "full", inline = TRUE),
+
               numericInput(
                 inputId = "fr_iterations", 
                 label = tags$span(
@@ -1307,9 +1514,9 @@ ui <- fluidPage(
                              title = "Filter edges. The lower handle sets the minimum connections required, and the upper handle sets the maximum allowed edges."
                            )
                          ), 
-                         value = c(1, 1),
+                         value = c(1, 50),
                          min = 0, 
-                         max = 2, 
+                         max = 50, 
                          step = 1,
                          width = "100%"
                        )
@@ -1317,7 +1524,7 @@ ui <- fluidPage(
               sliderInput("cluster_size_range", 
                           label = "Cluster Size (Min/Max Nodes per Group):",
                           min = 1, max = 500, value = c(1, 500)),
-              checkboxInput("prune_leaves", tags$b("Trim Leaf Nodes (Degree = 1)"), value = TRUE),
+              checkboxInput("prune_leaves", tags$b("Trim Leaf Nodes (Degree = 1)"), value = FALSE),
               tags$div(
                 style = "margin-top: 10px; margin-bottom: 10px; width: 100%;",
                 
@@ -1399,8 +1606,57 @@ ui <- fluidPage(
               )
             ),
             
-            visNetwork::visNetworkOutput("network_filtered", height = "500px"),
-            uiOutput("network_summary_table")
+            visNetwork::visNetworkOutput("network_filtered", height = "520px"),
+            tags$div(
+              style = "margin-top: 25px;",
+              tabsetPanel(
+                id = "network_analytics_tabs",
+                tabPanel(
+                  title = tags$span(icon("project-diagram", lib = "font-awesome"), " Hamiltonian & Topology"),
+                  tags$div(
+                    style = "padding: 15px 5px;",
+                    h4("Hamiltonian Feasibility & Topological Invariants"),
+                    tags$p(style = "color: #666; font-size: 13px;",
+                           "Evaluates whether the collaboration network contains a Hamiltonian cycle (visiting every author once), checking Dirac's condition, Ore's condition, 2-connectivity, articulation points, bridges, and Eulerian circuits."),
+                    tableOutput("hamiltonian_diagnostics_table"),
+                    hr(),
+                    h4("Global Network Metrics & Centralization"),
+                    tableOutput("network_metrics_table")
+                  )
+                ),
+                tabPanel(
+                  title = tags$span(icon("trophy", lib = "font-awesome"), " Centrality Leaderboard"),
+                  tags$div(
+                    style = "padding: 15px 5px;",
+                    h4("Author Centrality Rankings & Roles"),
+                    tags$p(style = "color: #666; font-size: 13px;",
+                           "Ranks top gatekeepers and hubs by Betweenness Centrality (bottlenecks), Closeness Centrality (information spread), Harmonic Centrality, and PageRank."),
+                    tableOutput("centrality_leaderboard_table")
+                  )
+                ),
+                tabPanel(
+                  title = tags$span(icon("chart-line", lib = "font-awesome"), " Centrality Map"),
+                  tags$div(
+                    style = "padding: 15px 5px;",
+                    h4("Betweenness vs. Closeness Centrality Distribution"),
+                    tags$p(style = "color: #666; font-size: 13px;",
+                           "Visualizes structural brokers (high betweenness) vs. central hubs (high closeness)."),
+                    plotOutput("centrality_scatter_plot", height = "450px")
+                  )
+                ),
+                tabPanel(
+                  title = tags$span(icon("users", lib = "font-awesome"), " Ego & Bibliometrics"),
+                  tags$div(
+                    style = "padding: 15px 5px;",
+                    h4("Ego & Brokerage Metrics"),
+                    tableOutput("ego_metrics_table"),
+                    hr(),
+                    h4("Bibliometrics"),
+                    tableOutput("bibliometrics_table")
+                  )
+                )
+              )
+            )
           )
         )
       ),
@@ -1524,9 +1780,25 @@ ui <- fluidPage(
               class = "btn-danger", # Makes it red
               style = "margin-top: 20px; width: 50%; border-radius: 20px;"
             )
+          )  # closes tags$div custom-card (line 1708)
+        )  # closes tags$div fixed backdrop (line 1703)
+      ),  # closes tags$div progress_overlay (line 1699) — comma: sibling follows
+
+      # Global Loading Indicator (active during reactive calculations & plot updates)
+      tags$div(
+        id = "glens_global_loading",
+        class = "glens-busy-overlay",
+        tags$div(class = "glens-busy-bar"),
+        tags$div(
+          class = "glens-busy-pill",
+          tags$div(class = "glens-busy-spinner"),
+          tags$div(
+            class = "glens-busy-content",
+            tags$span(class = "glens-busy-title", "Processing Analysis..."),
+            tags$span(class = "glens-busy-desc", "Updating calculations & visualizations")
           )
         )
       )
-    )
-  )
+    )  # closes column(width = 9) (line 1192)
+  )  # closes fluidRow (line 986)
 )

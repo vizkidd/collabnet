@@ -18,11 +18,20 @@ fs::dir_create("staging_app")
 # 2. Copy only required files (e.g., app.R, your sourced scripts, and the Excel file)
 app_files <- c("ui.R", "server.R", "app.R")#, "2024-JCR_IMPACT_FACTOR.xlsx")
 # Also include your helper scripts
-helper_scripts <- list.files(pattern = "GScholarLENS.*\\.R")
+helper_scripts <- c(
+  "GScholarLENS-DOI2Data.R", "GScholarLENS-ORCID2Data.R",
+  "GScholarLENS-SCOPUS2Data.R", "GScholarLENS-ProcessJCR.R",
+  "GScholarLENS-Data2GLENS.R", "GScholarLENS-PlotGLENS.R",
+  "GScholarLENS-Graph.R", "GScholarLENS-helpers.R",
+  "GScholarLENS-Fixes.R"
+)
 
 # cat("WASM <- TRUE", file="staging_app/app.R")
 cat(unlist(lapply(c(helper_scripts, app_files), function(x){
-  return(grep(pattern = "source\\(.*\\)", x = readLines(x), value = TRUE, invert = T))
+  lines <- readLines(x)
+  lines <- grep(pattern = "source\\(.*\\)", x = lines, value = TRUE, invert = TRUE)
+  lines <- grep(pattern = "require\\(httr2\\)", x = lines, value = TRUE, invert = TRUE)
+  return(lines)
 })), file="staging_app/app.R", sep="\n")
 
 fs::dir_copy("www/","staging_app/")
@@ -34,6 +43,26 @@ fs::file_copy("2024-JCR_IMPACT_FACTOR.xlsx", "staging_app/")
 # remotes::install_github("posit-dev/r-shinylive")
 
 shinylive::export(appdir = "./staging_app/", destdir = "./wasm_build/", wasm_packages=T, quiet=F)
+
+# -----------------------------------------------------------------------------
+# 3. FAST COLD-START OPTIMIZATION: Inject packages into library.data.gz
+# -----------------------------------------------------------------------------
+# Pre-bakes all packages from wasm_build/shinylive/webr/packages/ directly into
+# the WebR virtual filesystem (library.data.gz & library.js.metadata).
+# This avoids downloading ~60 .tgz packages via HTTP on cold start, dropping boot
+# time from >90s to <5s and enabling full offline operation.
+message("\n=== Injecting downloaded packages into library.data.gz (VFS pre-bake) ===")
+if (file.exists("inject_packages.py")) {
+  inject_status <- system("python3 inject_packages.py wasm_build")
+  if (inject_status == 0) {
+    message("Successfully pre-baked packages into library.data.gz!")
+  } else {
+    warning("Package injection script returned non-zero exit code: ", inject_status)
+  }
+} else {
+  message("inject_packages.py not found in working directory; skipping VFS injection.")
+}
+
 
 # #Download and install the latest version of webR from github
 # # Load required package for API parsing (install.packages("jsonlite") if needed)
@@ -119,10 +148,12 @@ shinylive::export(appdir = "./staging_app/", destdir = "./wasm_build/", wasm_pac
 # 
 # message("Success! The latest version of webR has been deployed.")
 
-httpuv::runStaticServer("./wasm_build/", headers = list(
-  "Cross-Origin-Opener-Policy" = "same-origin",
-  "Cross-Origin-Embedder-Policy" = "require-corp"
-)) #host = "0.0.0.0"
+# httpuv::runStaticServer("./wasm_build/", headers = list(
+#   "Cross-Origin-Opener-Policy" = "same-origin",
+#   "Cross-Origin-Embedder-Policy" = "require-corp"
+# )) #host = "0.0.0.0"
+
+# httpuv::runStaticServer("./wasm_build/", headers = list()) #host = "0.0.0.0"
 
 # # httpuv::runServer(
 # #   host = "127.0.0.1", port = 7446,

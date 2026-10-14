@@ -1,18 +1,14 @@
 suppressPackageStartupMessages(require(httr))
-suppressPackageStartupMessages(require(httr2))
+is_WASM <- grepl(pattern="wasm",x=Sys.info()["machine"])
+if (!is_WASM) {
+  suppressPackageStartupMessages(require(httr2, quietly = TRUE))
+}
 suppressPackageStartupMessages(require(jsonlite))
-suppressPackageStartupMessages(require(stringi))
 suppressPackageStartupMessages(require(dplyr))
 suppressPackageStartupMessages(require(openxlsx))
-
-is_WASM <- grepl(pattern="wasm",x=Sys.info()["machine"])
 # use a multisession plan so futures run in background R sessions
 # if(!is_WASM){
-  # future::plan(future::multisession)
-# future::plan(future.callr::callr)
-future::plan(future::multicore)
 # }else{
-#   future::plan(future::sequential)
 # }
 
 # Universal Extractor: Pulls pure DOIs out of full URLs, dirty text, and ignores non-DOIs (like Scopus EIDs)
@@ -406,7 +402,7 @@ get_semanticscholar_count <- function(doi, api_key = NULL) {
   # message(paste("HERE0",glens_env$semantic_key))
   if(is.null(api_key) && !is.null(glens_env$semantic_key)){
     # message("HERE1")
-    if(!stringi::stri_isempty(glens_env$semantic_key)){
+    if(!is.null(glens_env$semantic_key) && nzchar(glens_env$semantic_key)){
       api_key <- glens_env$semantic_key
       # message("HERE2")
     }
@@ -450,7 +446,7 @@ get_opencitations_count_async <- function(doi, opencitations_key = NULL, input_i
 
 get_semanticscholar_count_async <- function(doi, api_key = NULL, input_id = "api_count_result") {
   # Handle your global environment key logic in R before passing to JS
-  if (is.null(api_key) && !is.null(glens_env$semantic_key) && !stringi::stri_isempty(glens_env$semantic_key)) {
+  if (is.null(api_key) && !is.null(glens_env$semantic_key) && nzchar(glens_env$semantic_key)) {
     api_key <- glens_env$semantic_key
   }
   
@@ -638,13 +634,13 @@ construct_author_list_from_ris <- function(ris){
 }
 
 prepare_doi_metadata <- function(doi_input, orcid, rv, id_type = "DOI", write_file = NULL) {
-  if(is.null(doi_input) || length(doi_input) == 0 || is.na(doi_input[1]) || stringi::stri_length(doi_input[1]) <= 0){
+  if(is.null(doi_input) || length(doi_input) == 0 || is.na(doi_input[1]) || nchar(doi_input[1]) <= 0){
     warning("Empty DOI")
     return(NULL)
   }
   
   if(!fs::file_exists(file.path("run.lock"))) return(NULL)
-  if(stringi::stri_isempty(doi_input)) return(NULL)
+  if(!nzchar(doi_input)) return(NULL)
   
   ris <- NULL
   

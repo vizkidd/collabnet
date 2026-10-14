@@ -37,14 +37,120 @@ show_row_merge_modal <- function(rv, session) {
     easyClose = FALSE
   ))
   
-  if (is.null(rv$glens_etable_final) || ncol(rv$glens_etable_final) == 0) {
+  has_existing_data <- !is.null(rv$glens_full_table) && is.data.frame(rv$glens_full_table) && nrow(rv$glens_full_table) > 0 && ncol(rv$glens_full_table) > 0
+  if (!has_existing_data) {
     updateRadioButtons(session, "row_import_type", selected = "New")
     shinyjs::delay(100, {
       shinyjs::runjs("$('input[name=\"row_import_type\"][value=\"Append\"]').prop('disabled', true);")
       shinyjs::runjs("$('input[name=\"row_import_type\"][value=\"Merge\"]').prop('disabled', true);")
     })
+  } else {
+    shinyjs::delay(100, {
+      shinyjs::runjs("$('input[name=\"row_import_type\"][value=\"Append\"]').prop('disabled', false);")
+      shinyjs::runjs("$('input[name=\"row_import_type\"][value=\"Merge\"]').prop('disabled', false);")
+    })
   }
 }
+
+show_fetch_merge_modal <- function(rv, session, new_count) {
+  existing_count <- if (!is.null(rv$glens_full_table) && is.data.frame(rv$glens_full_table)) nrow(rv$glens_full_table) else 0
+  showModal(modalDialog(
+    title = tags$span(icon("layer-group", lib = "font-awesome"), " Incorporate Fetched Records"),
+    size = "m",
+    tags$div(
+      style = "margin-bottom: 15px;",
+      tags$p(
+        HTML(sprintf(
+          "CollabNET already contains <b>%d</b> records (from file upload or previous search). You have fetched <b>%d</b> new records.<br><br>Choose how to incorporate the fetched records:",
+          existing_count, new_count
+        ))
+      )
+    ),
+    radioButtons(
+      "fetch_row_import_type",
+      label = "Import action:",
+      choices = c(
+        "Append (Add as new records)" = "Append",
+        "Merge (Join on shared keys e.g. DOI/Title)" = "Merge",
+        "New (Replace existing data)" = "New"
+      ),
+      selected = "Append",
+      inline = FALSE
+    ),
+    uiOutput("fetch_row_merge_ui"),
+    footer = tagList(
+      actionButton("cancel_fetch_merge", "Cancel", class = "btn-default"),
+      actionButton("confirm_fetch_merge", "Confirm & Incorporate", class = "btn-success")
+    ),
+    easyClose = FALSE
+  ))
+}
+
+execute_glens_merge <- function(table_existing, table_new, import_type, join_keys = NULL, join_type = "full", col_import_type = NULL) {
+  table_new <- table_new %>% 
+    dplyr::filter(dplyr::if_any(dplyr::everything(), ~ !is.na(.))) %>% 
+    dplyr::select(dplyr::where(~ !all(is.na(.))))
+  
+  if (identical(import_type, "New") || is.null(table_existing) || nrow(table_existing) == 0) {
+    return(table_new)
+  }
+  
+  t_existing <- table_existing %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character))
+  t_new <- table_new %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character))
+  
+  if (identical(import_type, "Append")) {
+    if (identical(col_import_type, "Common Columns")) {
+      common_cols <- intersect(names(t_existing), names(t_new))
+      return(dplyr::bind_rows(t_existing[, common_cols, drop = FALSE], t_new[, common_cols, drop = FALSE]))
+    } else {
+      return(dplyr::bind_rows(t_existing, t_new))
+    }
+  } else if (identical(import_type, "Merge")) {
+    valid_keys <- intersect(join_keys, intersect(names(t_existing), names(t_new)))
+    if (length(valid_keys) > 0) {
+      for (k in valid_keys) {
+        t_existing[[k]] <- trimws(t_existing[[k]])
+        t_new[[k]] <- trimws(t_new[[k]])
+      }
+      overlap_cols <- setdiff(intersect(names(t_existing), names(t_new)), valid_keys)
+      join_func <- switch(join_type,
+                          "inner" = dplyr::inner_join,
+                          "left"  = dplyr::left_join,
+                          "right" = dplyr::right_join,
+                          "full"  = dplyr::full_join,
+                          dplyr::full_join)
+      
+      joined_df <- join_func(
+        t_existing, t_new,
+        by = valid_keys,
+        suffix = c(".old", ".new"),
+        relationship = "many-to-many"
+      )
+      
+      for (col in overlap_cols) {
+        old_col <- paste0(col, ".old")
+        new_col <- paste0(col, ".new")
+        if (old_col %in% names(joined_df) && new_col %in% names(joined_df)) {
+          joined_df[[col]] <- dplyr::coalesce(joined_df[[old_col]], joined_df[[new_col]])
+          joined_df[[old_col]] <- NULL
+          joined_df[[new_col]] <- NULL
+        }
+      }
+      
+      joined_df <- joined_df %>%
+        dplyr::group_by(dplyr::across(dplyr::all_of(valid_keys))) %>%
+        tidyr::fill(dplyr::everything(), .direction = "downup") %>%
+        dplyr::ungroup()
+        
+      return(joined_df)
+    } else {
+      warning("No valid join keys selected. Falling back to Append.")
+      return(dplyr::bind_rows(t_existing, t_new))
+    }
+  }
+  return(dplyr::bind_rows(t_existing, t_new))
+}
+
 
 detect_vpn <- function(rv, output) {
   req <- request("https://ipinfo.io/json") |>
@@ -811,7 +917,7 @@ match_journals <- function(rv, df, openalex_key=NULL, session = NULL){
   
   # 4. Fetch metrics using our optimized caching API driver
   # jcr_subset <- fetch_scimango_metrics(unique_normalized_journals, rv, api_key)
-  openalex_key <- if(!is.null(openalex_key) && !stringi::stri_isempty(openalex_key)) openalex_key else NULL
+  openalex_key <- if(!is.null(openalex_key) && nzchar(openalex_key)) openalex_key else NULL
   jcr_subset <- fetch_journal_metrics_openalex(unique_normalized_journals, rv, openalex_key, session)
   
   if (!is.null(session)) shinyWidgets::updateProgressBar(session = session, id = "prog_journal", value = 100, status = "success", title = "Journals Matched : 100%")

@@ -3,12 +3,9 @@ suppressPackageStartupMessages(require(jsonlite))
 suppressPackageStartupMessages(require(dplyr))
 suppressPackageStartupMessages(require(purrr))
 suppressPackageStartupMessages(require(stringr))
-
-suppressPackageStartupMessages(require(httr2))
-suppressPackageStartupMessages(require(jsonlite))
-suppressPackageStartupMessages(require(dplyr))
-suppressPackageStartupMessages(require(purrr))
-suppressPackageStartupMessages(require(stringr))
+if (!exists("is_WASM") || !isTRUE(is_WASM)) {
+  suppressPackageStartupMessages(require(httr2, quietly = TRUE))
+}
 
 get_scopus_data_orcid <- function(orcid, rv, api_key = NULL) {
   if(is.null(api_key) || trimws(api_key) == ""){ stop("SCOPUS API Key is missing.") }

@@ -1,0 +1,167 @@
+╔══════════════════════════════════════════════════════════════════════╗
+║  CollabNET WebR Test Suite                                           ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+Repo  : /home/linuxusb/Downloads/collabnet-main-mcp/collabnet-main
+CSV   : /home/linuxusb/Downloads/collabnet-main-mcp/collabnet-main/scopus_export_March2026.csv
+Time  : 2026-09-27T11:03:42.142Z
+
+
+══════════════════════════════════════════════════════════════════════
+  1  Session bootstrap & package installation
+──────────────────────────────────────────────────────────────────────
+  ✓ Packages installed                                      PASS
+  ✓ All 9 helper files loaded                               PASS
+  ✓ No files failed to load                                 PASS
+  ✓ Graph.R loads after PlotGLENS.R                         PASS
+  ✓ Fixes.R loads last                                      PASS
+
+══════════════════════════════════════════════════════════════════════
+  2  Package dependency scan (WASM availability)
+──────────────────────────────────────────────────────────────────────
+  ✗ No undeclared :: dependencies                           FAIL  » curl, fontawesome, fs, ggVennDiagram, grDevices, htmlwidgets, httpuv, later, methods, shinylive, stats, sysfonts, webr
+
+══════════════════════════════════════════════════════════════════════
+  3  Invariant unit tests  (mcp_tests)
+──────────────────────────────────────────────────────────────────────
+  ✓ h-index >= not >                                        PASS
+  ✓ h-index zero vector                                     PASS
+  ✓ h-index handles NA                                      PASS
+  ✓ g-index basic                                           PASS
+  ✓ split_authors semicolons                                PASS
+  ✓ split_authors plain list                                PASS
+  ✓ decide_label always returns token_count                 PASS
+  ✓ newman weight A-B == 1 + 0.5                            PASS
+  ✓ raw count A-B == 2                                      PASS
+  ✓ star folds 400-author paper to <= 400 edges             PASS
+  ✓ upper triplets are strictly upper                       PASS
+  ✓ cn_match_targets is word-bounded                        PASS
+
+══════════════════════════════════════════════════════════════════════
+  4  Scopus CSV import
+──────────────────────────────────────────────────────────────────────
+  ✓ CSV loaded without error                                PASS
+  → 79 rows × 45 cols
+  ✓ Column "Authors" present                                PASS
+  ✓ Column "Title" present                                  PASS
+  ✓ Column "Year" present                                   PASS
+  ✓ Column "DOI" present                                    PASS
+  ✓ DataFrame normalised for graph engine                   PASS
+
+══════════════════════════════════════════════════════════════════════
+  5  cn_slider_bounds (UI initialisation)
+──────────────────────────────────────────────────────────────────────
+  ✓ max_node_occurrence >= 1                                PASS
+  ✓ max_edge_frequency >= 1                                 PASS
+
+══════════════════════════════════════════════════════════════════════
+  6  Graph engine: weight_scheme parameter
+──────────────────────────────────────────────────────────────────────
+  ✓ weight_scheme="newman" builds without error             PASS
+  ✓ weight_scheme="count" builds without error              PASS
+  ✓ weight_scheme="jaccard" builds without error            PASS
+  ✓ Newman AB weight == 1.5                                 PASS
+  ✓ Raw count AB == 2                                       PASS
+
+══════════════════════════════════════════════════════════════════════
+  7  Graph engine: oversize_mode parameter
+──────────────────────────────────────────────────────────────────────
+  ✗ star: edge count <= 400                                 FAIL  » got 420
+  ✓ drop: 400-author paper excluded                         PASS
+  ✓ clique: builds without crash                            PASS
+
+══════════════════════════════════════════════════════════════════════
+  8  Graph engine: backbone_alpha
+──────────────────────────────────────────────────────────────────────
+  ✓ backbone alpha=NULL                                     PASS  » edges=9741
+  ✓ backbone alpha=0.1                                      PASS  » edges=86
+  ✓ backbone alpha=0.05                                     PASS  » edges=80
+  ✓ backbone alpha=0.01                                     PASS  » edges=79
+
+══════════════════════════════════════════════════════════════════════
+  9  Graph engine: node_freq_range filter
+──────────────────────────────────────────────────────────────────────
+  ✓ node_freq_range [1,Inf]                                 PASS  » nodes=2835
+  ✓ node_freq_range [2,Inf]                                 PASS  » nodes=2380
+
+══════════════════════════════════════════════════════════════════════
+  10 Graph engine: edge_freq_range filter
+──────────────────────────────────────────────────────────────────────
+  ✓ edge_freq_range [1,Inf]                                 PASS  » edges=9741
+  ✓ edge_freq_range [2,Inf]                                 PASS  » edges=33
+
+══════════════════════════════════════════════════════════════════════
+  11 Graph engine: authors_per_pub
+──────────────────────────────────────────────────────────────────────
+  ✓ authors_per_pub [1,5]                                   PASS  » nodes=2857
+  ✓ authors_per_pub [1,200]                                 PASS  » nodes=2835
+
+══════════════════════════════════════════════════════════════════════
+  12 Graph engine: prune_leaves toggle
+──────────────────────────────────────────────────────────────────────
+  ✓ prune_leaves=TRUE gives <= nodes than FALSE             PASS
+
+══════════════════════════════════════════════════════════════════════
+  13 Graph engine: cluster_size_range
+──────────────────────────────────────────────────────────────────────
+  ✓ cluster_size_range [2,Inf]                              PASS  » nodes=2835
+
+══════════════════════════════════════════════════════════════════════
+  14 Graph engine: community detection & centrality
+──────────────────────────────────────────────────────────────────────
+  ✓ community column present                                PASS
+
+══════════════════════════════════════════════════════════════════════
+  15 Graph engine: layout_engine parameter
+──────────────────────────────────────────────────────────────────────
+  ✓ layout_engine="auto"                                    PASS
+  ✓ layout_engine="fr"                                      PASS
+
+══════════════════════════════════════════════════════════════════════
+  16 cn_network_metrics
+──────────────────────────────────────────────────────────────────────
+  ✗ cn_network_metrics has "nodes" column                   FAIL
+
+══════════════════════════════════════════════════════════════════════
+  17 cn_ego_metrics
+──────────────────────────────────────────────────────────────────────
+  ✓ cn_ego_metrics returns a data frame                     PASS
+
+══════════════════════════════════════════════════════════════════════
+  18 cn_bibliometrics
+──────────────────────────────────────────────────────────────────────
+  ✓ cn_bibliometrics returns a data frame                   PASS
+
+══════════════════════════════════════════════════════════════════════
+  19 cn_collapse_communities
+──────────────────────────────────────────────────────────────────────
+  ✓ Metagraph has fewer nodes than full graph               PASS
+
+══════════════════════════════════════════════════════════════════════
+  20 Edge cases & stress tests
+──────────────────────────────────────────────────────────────────────
+  ✓ Empty dataframe returns empty network                   PASS
+  ✓ max_edges=5 caps edge count                             PASS
+
+══════════════════════════════════════════════════════════════════════
+  21 Synthetic fixture benchmark
+──────────────────────────────────────────────────────────────────────
+  ✓ newman+star (default)                                   PASS  » 0.134s
+  ✓ count+drop                                              PASS  » 0.128s
+  ✓ newman+star+backbone                                    PASS  » 0.182s
+  ✓ newman+clique (slow)                                    PASS  » 0.129s
+
+══════════════════════════════════════════════════════════════════════
+  SUMMARY
+──────────────────────────────────────────────────────────────────────
+  ✓ PASSED : 56
+  ✗ FAILED : 3
+  ⚠ WARNED : 0
+  TOTAL  : 59
+
+  Failed tests:
+    [deps] No undeclared :: dependencies  —  curl, fontawesome, fs, ggVennDiagram, grDevices, htmlwidgets, httpuv, later, methods, shinylive, stats, sysfonts, webr
+    [oversize_mode] star: edge count <= 400  —  got 420
+    [metrics] cn_network_metrics has "nodes" column  —  
+══════════════════════════════════════════════════════════════════════
+
