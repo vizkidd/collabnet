@@ -20,6 +20,44 @@ import json
 import gzip
 import tarfile
 import shutil
+import urllib.request
+
+REPO_URL = "https://repo.r-wasm.org/bin/emscripten/contrib/4.6"
+ESSENTIAL_PACKAGES = {
+    "UpSetR": "1.4.1",
+    "colourpicker": "1.3.0",
+    "data.table": "1.18.6.1",
+    "gridExtra": "2.3.1",
+    "httr": "1.4.9",
+    "miniUI": "0.1.2",
+    "plotly": "4.12.1",
+    "plyr": "1.8.9",
+    "shinyjs": "2.1.1",
+    "showtext": "0.9-8",
+    "showtextdb": "3.0",
+    "stringdist": "0.9.17",
+    "sysfonts": "0.8.9",
+    "visNetwork": "2.1.4"
+}
+
+def ensure_packages(pkg_dir):
+    """Ensures all essential CollabNET packages exist in pkg_dir before injection."""
+    os.makedirs(pkg_dir, exist_ok=True)
+    for pkg, ver in ESSENTIAL_PACKAGES.items():
+        tar_name = f"{pkg}_{ver}.tgz"
+        pkg_subdir = os.path.join(pkg_dir, pkg)
+        os.makedirs(pkg_subdir, exist_ok=True)
+        target = os.path.join(pkg_subdir, tar_name)
+        if not os.path.exists(target) or os.path.getsize(target) == 0:
+            url = f"{REPO_URL}/{tar_name}"
+            try:
+                print(f"Downloading essential package {pkg} ({tar_name})...")
+                req = urllib.request.Request(url, headers={"User-Agent": "R (4.6.0)"})
+                with urllib.request.urlopen(req, timeout=15) as resp, open(target, "wb") as f:
+                    f.write(resp.read())
+                print(f"Successfully downloaded {pkg}.")
+            except Exception as e:
+                print(f"Notice: Could not download {pkg} from {url} ({e}); continuing with existing packages.")
 
 def inject(build_dir="wasm_build"):
     webr_dir = os.path.join(build_dir, "shinylive", "webr")
@@ -31,9 +69,8 @@ def inject(build_dir="wasm_build"):
         print(f"Error: {meta_path} or {data_path} not found.")
         return False
 
-    if not os.path.exists(pkg_dir):
-        print(f"Warning: {pkg_dir} does not exist. Nothing to inject.")
-        return True
+    # Auto-ensure all essential packages are downloaded
+    ensure_packages(pkg_dir)
 
     print(f"Reading existing metadata from {meta_path}...")
     with open(meta_path, "r", encoding="utf-8") as f:
@@ -68,6 +105,8 @@ def inject(build_dir="wasm_build"):
 
     for tgz_path in tgz_files:
         pkg_name = os.path.basename(os.path.dirname(tgz_path))
+        if pkg_name == "packages" or not pkg_name:
+            pkg_name = os.path.basename(tgz_path).split("_")[0]
         if pkg_name in existing_pkgs:
             continue
 

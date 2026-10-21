@@ -106,7 +106,7 @@ export class ShinyliveHarness {
 
     this.browser = await pw.chromium.launch({
       headless,
-      args: ["--enable-features=SharedArrayBuffer"],
+      args: ["--enable-features=SharedArrayBuffer", "--no-sandbox", "--disable-setuid-sandbox"],
     });
     const ctx = await this.browser.newContext({
       viewport: { width: 1600, height: 1200 },

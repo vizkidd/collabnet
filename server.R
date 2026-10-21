@@ -447,9 +447,9 @@ server <- function(input, output, session) {
         
         tags$h5(icon("info-circle"), " Supported Formats", style = "margin-top: 0;"),
         tags$p("Please upload a data file in one of the following formats: ", 
-               tags$strong(".csv, .tsv, .xlsx, or .xls")),
+               tags$strong(".csv, .tsv, .xlsx, .xls, .cnet, or .rds")),
         tags$p("Currently accepts files from these sources: ", 
-               tags$strong(tags$a("SCOPUS",href="https://www.scopus.com/pages/search/publications?type=advanced", target="_blank"),",", tags$a("GScholarLENS exported tables", href="https://project.iith.ac.in/sharmaglab/gscholarlens/", target="_blank"))),
+               tags$strong(tags$a("SCOPUS",href="https://www.scopus.com/pages/search/publications?type=advanced", target="_blank"),",", tags$a("GScholarLENS exported tables", href="https://project.iith.ac.in/sharmaglab/gscholarlens/", target="_blank"), ", or CollabNET saved sessions (.cnet)")),
         tags$hr(style = "margin: 15px 0;"),
         
         tags$strong("Required Columns:"),
@@ -484,7 +484,7 @@ server <- function(input, output, session) {
             id = "upload_btn",
             type = "file",
             multiple = FALSE,
-            accept = ".csv, .tsv, .xlsx, .xls", # OS-level restriction
+            accept = ".csv, .tsv, .xlsx, .xls, .cnet, .rds", # OS-level restriction
             style = "display: none;", # Hides the ugly native input, leaving only the label visible
             onchange = "
               document.getElementById('upload_text').innerText = ' Uploading...';
@@ -531,8 +531,10 @@ server <- function(input, output, session) {
         df <- switch(ext,
                      "csv"  = read.csv(file_path, stringsAsFactors = FALSE, check.names = FALSE),
                      "tsv"  = read.delim(file_path, sep = "\t", stringsAsFactors = FALSE, check.names = FALSE),
-                     "xlsx" = readxl::read_excel(file_path),
-                     "xls"  = readxl::read_excel(file_path),
+                     "xlsx" = as.data.frame(readxl::read_excel(file_path)),
+                     "xls"  = as.data.frame(readxl::read_excel(file_path)),
+                     "cnet" = as.data.frame(readRDS(file_path)),
+                     "rds"  = as.data.frame(readRDS(file_path)),
                      {
                        warning(paste("Unsupported file extension:", ext))
                        NULL 
@@ -746,7 +748,7 @@ server <- function(input, output, session) {
       "orcid" = c("orcid", "ORCiD", "Orcid", "ORCID"),
       "SCOPUS_ID" = c("SCOPUS_ID", "SCOPUS ID", "Scopus ID", "Author(s) ID"),
       "Citations" = c("Citations", "Cited by", "citedby-count"),
-      "User_Journal" = c("User_Journal", "Source title", "prism:publicationName"),
+      "User_Journal" = c("User_Journal", "Source title", "prism:publicationName", "Journal"),
       "doi" = c("doi", "DOI"),
       "Authors" = c("Authors", "author")
     )
@@ -2132,7 +2134,7 @@ server <- function(input, output, session) {
       session, "custom_venn_selector", 
       choices = unique_entities, 
       selected = valid_selection,
-      server = TRUE
+      server = FALSE
     )
   })
   
@@ -2681,7 +2683,7 @@ net_data_filtered_raw <- reactive({
     # Scenario A: Wiped or empty selector state
     if (is.null(input$custom_node_selector) || length(input$custom_node_selector) == 0 || all(input$custom_node_selector == "")) {
       proxy %>% visUnselectAll() 
-      updateSelectizeInput(session, "neighbourhood_nodes", choices = character(0), server = TRUE)
+      updateSelectizeInput(session, "neighbourhood_nodes", choices = character(0), server = FALSE)
       # Leave the slider disabled because there is no active target
       return()
     }
@@ -2731,7 +2733,7 @@ net_data_filtered_raw <- reactive({
       "neighbourhood_nodes", 
       selected = nodes_in_circle,
       choices = current_nodes$id,
-      server = TRUE
+      server = FALSE
     )
     
     # --- FIX 2: RENDER THE CIRCLES ---
@@ -3390,7 +3392,7 @@ net_data_filtered_raw <- reactive({
     
     updateSelectizeInput(session, "custom_node_selector", 
                          choices = c("Select keyword(s)..." = "", dropdown_choices),
-                         selected = current_selection, server = TRUE)
+                         selected = current_selection, server = FALSE)
     
   }, ignoreNULL = FALSE)
   
@@ -3413,7 +3415,7 @@ net_data_filtered_raw <- reactive({
     req(input$enable_network)
     # This captures the array of IDs sent from Javascript
     shiny::freezeReactiveValue(input, "custom_node_selector")
-    updateSelectizeInput(session, "custom_node_selector", selected = input$network_filtered_clicked, server = TRUE)
+    updateSelectizeInput(session, "custom_node_selector", selected = input$network_filtered_clicked, server = FALSE)
   }, ignoreNULL = FALSE, ignoreInit = TRUE)
   
   

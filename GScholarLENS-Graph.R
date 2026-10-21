@@ -407,7 +407,8 @@ build_collaboration_network <- function(
     compute_centrality = TRUE,
     layout_engine      = "auto",
     build_tooltips     = TRUE,
-    verbose            = FALSE
+    verbose            = FALSE,
+    ...
 ) {
 
   empty <- list(nodes = data.frame(), edges = data.frame(),
@@ -574,8 +575,7 @@ build_collaboration_network <- function(
   if (isTRUE(compute_centrality)) {
     coren <- igraph::coreness(g)
     eig <- tryCatch(
-      igraph::eigen_centrality(g, weights = igraph::E(g)$weight,
-                               scale = TRUE)$vector,
+      igraph::eigen_centrality(g, weights = igraph::E(g)$weight)$vector,
       error = function(err) rep(NA_real_, nv))
     pr <- tryCatch(
       igraph::page_rank(g, weights = igraph::E(g)$weight)$vector,
