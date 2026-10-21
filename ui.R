@@ -92,6 +92,7 @@ ui <- fluidPage(
       ")
     ),
     tags$script(src = "https://cdn.jsdelivr.net/npm/plotly.js-dist/plotly.min.js"),
+    tags$script(src = "js/collabnet-worker-pool.js"),
     tags$script(HTML("
       $(document).ready(function(){
         // Initialize all Bootstrap 3 tooltips on the page

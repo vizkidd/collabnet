@@ -2094,39 +2094,38 @@ server <- function(input, output, session) {
   # Venn diagram updates
   # =============================================================================
   observeEvent(list(
+    input$enable_venn,
     input$venn_col_filtered, 
-    glens_year_filtered_rx()
+    glens_year_filtered_rx(),
+    rv$detected_mv_cols
   ), {
-    req(input$enable_venn)
+    req(isTRUE(input$enable_venn))
     
     df <- glens_year_filtered_rx()
+    req(df, nrow(df) > 0)
+    
     col <- input$venn_col_filtered
-    delims <- rv$detected_mv_cols
-    
-    req(df, nrow(df) > 0, col, delims[[col]])
-    target_delim <- delims[[col]]
-    
-    # Standardize and split the column just like the Network Graph
-    temp_df <- df %>%
-      select(Entity = !!sym(col)) %>%
-      filter(!is.na(Entity), trimws(Entity) != "") %>%
-      mutate(Entity = as.character(Entity))
-    
-    if (!is.null(target_delim) && nchar(trimws(target_delim)) > 0) {
-      temp_df <- temp_df %>%
-        mutate(Entity = stringr::str_split(Entity, stringr::fixed(target_delim))) %>%
-        tidyr::unnest(Entity)
+    if (is.null(col) || !nzchar(col) || !(col %in% colnames(df))) {
+      col <- if ("Authors" %in% colnames(df)) "Authors" else colnames(df)[1]
     }
     
-    # Extract unique, cleaned entities to populate the dropdown
-    unique_entities <- temp_df %>%
-      mutate(Entity = stringr::str_squish(Entity)) %>%
-      filter(Entity != "") %>%
-      pull(Entity) %>%
-      unique() %>%
-      sort()
+    delims <- rv$detected_mv_cols
+    target_delim <- if (!is.null(delims) && !is.null(delims[[col]]) && nzchar(trimws(delims[[col]]))) delims[[col]] else ","
     
-    # Preserve current selection if the user changes other filters
+    raw <- as.character(df[[col]])
+    raw <- raw[!is.na(raw) & nzchar(trimws(raw))]
+    if (length(raw) == 0) {
+      updateSelectizeInput(session, "custom_venn_selector", choices = character(0), selected = character(0), server = FALSE)
+      return()
+    }
+    
+    # Use smart multi-value delimiter splitting (handles Scopus ';' vs CrossRef/ORCiD ',' seamlessly)
+    pieces <- cn_split_multivalue(raw, target_delim)
+    entities <- unlist(pieces, use.names = FALSE)
+    entities <- trimws(gsub("[[:space:]]+", " ", entities))
+    unique_entities <- sort(unique(entities[nzchar(entities)]))
+    
+    # Preserve current selection if valid
     current_selection <- input$custom_venn_selector
     valid_selection <- intersect(current_selection, unique_entities)
     
@@ -2136,7 +2135,7 @@ server <- function(input, output, session) {
       selected = valid_selection,
       server = FALSE
     )
-  })
+  }, ignoreInit = FALSE)
   
   
   # =========================================================================
@@ -2161,50 +2160,17 @@ server <- function(input, output, session) {
     target_delim <- if (!is.null(delims) && !is.null(delims[[col]]) && nzchar(trimws(delims[[col]]))) delims[[col]] else ","
     rv$is_glens_exec <- TRUE
     
-    temp_df <- df %>%
-      mutate(paper_id = row_number()) %>% 
-      select(paper_id, Entity = !!sym(col)) %>%
-      filter(!is.na(Entity), trimws(Entity) != "") %>%
-      mutate(Entity = as.character(Entity))
+    max_k <- if (!is.null(input$custom_max_keywords) && length(input$custom_max_keywords) >= 2) {
+      input$custom_max_keywords[2]
+    } else 100L
+
+    bounds <- cn_slider_bounds(df, col, target_delim, size_max = as.integer(max_k))
+    max_node_occurrences <- bounds$max_node_occurrence
+    max_edge_frequency <- bounds$max_edge_frequency
+    max_cluster_size <- bounds$max_cluster_size
     
-    # Use smart multi-value splitting (handles both ';' and ',' delimiters seamlessly)
-    pieces <- cn_split_multivalue(temp_df$Entity, target_delim)
-    temp_df <- data.frame(
-      paper_id = rep.int(temp_df$paper_id, lengths(pieces)),
-      Entity = unlist(pieces, use.names = FALSE),
-      stringsAsFactors = FALSE
-    )
-    
-    temp_df <- temp_df %>%
-      mutate(Entity = stringr::str_squish(Entity)) %>%
-      filter(Entity != "")
-    
-    # Calculate boundaries safely without triggering max() warnings
-    node_counts <- if (nrow(temp_df) > 0) temp_df %>% count(Entity) %>% pull(n) else integer(0)
-    max_node_occurrences <- if (length(node_counts) > 0) max(node_counts, na.rm = TRUE) else 1L
     if (is.infinite(max_node_occurrences) || max_node_occurrences < 1) max_node_occurrences <- 1L
-    
-    temp_edges <- if (nrow(temp_df) > 0) {
-      temp_df %>%
-        distinct(paper_id, Entity) %>%
-        inner_join(temp_df %>% distinct(paper_id, Entity), by = "paper_id", relationship = "many-to-many") %>%
-        filter(Entity.x < Entity.y)
-    } else {
-      data.frame(Entity.x = character(0), Entity.y = character(0), stringsAsFactors = FALSE)
-    }
-    
-    edge_counts <- if (nrow(temp_edges) > 0) temp_edges %>% count(Entity.x, Entity.y) %>% pull(n) else integer(0)
-    max_edge_frequency <- if (length(edge_counts) > 0) max(edge_counts, na.rm = TRUE) else 1L
     if (is.infinite(max_edge_frequency) || max_edge_frequency < 1) max_edge_frequency <- 1L
-    
-    max_cluster_size <- 2L
-    if (nrow(temp_edges) > 0) {
-      g_temp <- igraph::graph_from_data_frame(temp_edges[, c("Entity.x", "Entity.y")], directed = FALSE)
-      csizes <- igraph::components(g_temp)$csize
-      if (length(csizes) > 0) {
-        max_cluster_size <- max(csizes, na.rm = TRUE)
-      }
-    }
     if (is.infinite(max_cluster_size) || max_cluster_size < 2) max_cluster_size <- 2L
     
     # CRITICAL FIX: Freeze inputs so downstream data generation waits for updates to settle
@@ -2316,6 +2282,15 @@ server <- function(input, output, session) {
       shinyjs::hide("source_card")
     }
   })
+  
+  # --- Web Worker Pool Handshake ---
+  observeEvent(input$collabnet_pool_ready, {
+    pool_info <- input$collabnet_pool_ready
+    if (!is.null(pool_info)) {
+      message(sprintf("[CollabNET] JS Worker Pool active: %s workers on %s CPU cores", 
+                      pool_info$workers %||% 4, pool_info$cores %||% 4))
+    }
+  }, ignoreInit = FALSE)
   
   # ==============================================================================
   # DYNAMIC UI UPDATES 
@@ -2817,14 +2792,30 @@ net_data_filtered_raw <- reactive({
   
   debounced_venn_selector <- shiny::debounce(reactive({
     input$custom_venn_selector
-  }), millis = 1000) # Delays plot rendering for 500ms while user selects items
+  }), millis = 400)
   
   debounced_venn_col <- shiny::debounce(reactive({
     input$venn_col_filtered
-  }), millis = 1000)
+  }), millis = 400)
+
+  # Notify loading indicator when Overlap Analysis controls change
+  observeEvent(list(
+    input$enable_venn,
+    input$custom_venn_selector,
+    input$venn_col_filtered,
+    input$venn_theme_color
+  ), {
+    if (isTRUE(input$enable_venn) && length(input$custom_venn_selector) >= 2) {
+      rv$is_glens_exec <- TRUE
+    }
+  }, ignoreInit = TRUE)
 
   output$venn_upset_plot <- renderPlot({
-    req(input$enable_venn)
+    req(isTRUE(input$enable_venn))
+    
+    on.exit({
+      rv$is_glens_exec <- FALSE
+    }, add = TRUE)
     
     # Read from the debounced intermediate reactives
     selected_targets <- debounced_venn_selector()
@@ -2839,28 +2830,31 @@ net_data_filtered_raw <- reactive({
     }
     
     df <- glens_year_filtered_rx()
-    delims <- rv$detected_mv_cols
+    req(df, nrow(df) > 0)
     
-    req(df, nrow(df) > 0, col, delims[[col]])
-    target_delim <- delims[[col]]
-    
-    # Parse and clean the column
-    temp_df <- df %>%
-      mutate(paper_id = row_number()) %>% 
-      select(paper_id, Entity = !!sym(col)) %>%
-      filter(!is.na(Entity), trimws(Entity) != "") %>%
-      mutate(Entity = as.character(Entity))
-    
-    if (!is.null(target_delim) && nchar(trimws(target_delim)) > 0) {
-      temp_df <- temp_df %>%
-        mutate(Entity = stringr::str_split(Entity, stringr::fixed(target_delim))) %>%
-        tidyr::unnest(Entity)
+    if (is.null(col) || !nzchar(col) || !(col %in% colnames(df))) {
+      col <- if ("Authors" %in% colnames(df)) "Authors" else colnames(df)[1]
     }
     
-    # PERFORMANCE FIX: Strict filtration down to ONLY explicitly selected targets
-    temp_df <- temp_df %>%
-      mutate(Entity = stringr::str_squish(Entity)) %>%
-      filter(Entity %in% selected_targets)
+    delims <- rv$detected_mv_cols
+    target_delim <- if (!is.null(delims) && !is.null(delims[[col]]) && nzchar(trimws(delims[[col]]))) delims[[col]] else ","
+    
+    raw <- as.character(df[[col]])
+    pid <- seq_along(raw)
+    keep <- !is.na(raw) & nzchar(trimws(raw))
+    raw <- raw[keep]
+    pid <- pid[keep]
+    if (length(raw) == 0) return()
+    
+    # Smart multi-value delimiter splitting (handles Scopus ';' vs CrossRef/ORCiD ',' seamlessly)
+    pieces <- cn_split_multivalue(raw, target_delim)
+    pids <- rep.int(pid, lengths(pieces))
+    ents <- unlist(pieces, use.names = FALSE)
+    ents <- trimws(gsub("[[:space:]]+", " ", ents))
+    ok <- !is.na(ents) & nzchar(ents)
+    
+    temp_df <- data.frame(paper_id = pids[ok], Entity = ents[ok], stringsAsFactors = FALSE)
+    temp_df <- temp_df[temp_df$Entity %in% selected_targets, ]
     
     # Safety checkpoint in case selected keywords don't match data points
     if (length(unique(temp_df$Entity)) < 2) {
@@ -2899,7 +2893,11 @@ net_data_filtered_raw <- reactive({
   })
   
   output$venn_plot <- renderPlot({
-    req(input$enable_venn)
+    req(isTRUE(input$enable_venn))
+    
+    on.exit({
+      rv$is_glens_exec <- FALSE
+    }, add = TRUE)
     
     # Read from the debounced intermediate reactives
     selected_targets <- debounced_venn_selector()
@@ -2920,27 +2918,31 @@ net_data_filtered_raw <- reactive({
     }
     
     df <- glens_year_filtered_rx()
-    delims <- rv$detected_mv_cols
-    req(df, nrow(df) > 0, col, delims[[col]])
-    target_delim <- delims[[col]]
+    req(df, nrow(df) > 0)
     
-    # Extract the paper IDs and their associated entities
-    temp_df <- df %>%
-      mutate(paper_id = row_number()) %>%
-      select(paper_id, Entity = !!sym(col)) %>%
-      filter(!is.na(Entity), trimws(Entity) != "") %>%
-      mutate(Entity = as.character(Entity))
-    
-    if (!is.null(target_delim) && nchar(trimws(target_delim)) > 0) {
-      temp_df <- temp_df %>%
-        mutate(Entity = stringr::str_split(Entity, stringr::fixed(target_delim))) %>%
-        tidyr::unnest(Entity)
+    if (is.null(col) || !nzchar(col) || !(col %in% colnames(df))) {
+      col <- if ("Authors" %in% colnames(df)) "Authors" else colnames(df)[1]
     }
     
-    # Filter down to ONLY the targets the user selected in the dropdown
-    filtered_df <- temp_df %>%
-      mutate(Entity = stringr::str_squish(Entity)) %>%
-      filter(Entity %in% selected_targets)
+    delims <- rv$detected_mv_cols
+    target_delim <- if (!is.null(delims) && !is.null(delims[[col]]) && nzchar(trimws(delims[[col]]))) delims[[col]] else ","
+    
+    raw <- as.character(df[[col]])
+    pid <- seq_along(raw)
+    keep <- !is.na(raw) & nzchar(trimws(raw))
+    raw <- raw[keep]
+    pid <- pid[keep]
+    if (length(raw) == 0) return(NULL)
+    
+    # Smart multi-value delimiter splitting (handles Scopus ';' vs CrossRef/ORCiD ',' seamlessly)
+    pieces <- cn_split_multivalue(raw, target_delim)
+    pids <- rep.int(pid, lengths(pieces))
+    ents <- unlist(pieces, use.names = FALSE)
+    ents <- trimws(gsub("[[:space:]]+", " ", ents))
+    ok <- !is.na(ents) & nzchar(ents)
+    
+    temp_df <- data.frame(paper_id = pids[ok], Entity = ents[ok], stringsAsFactors = FALSE)
+    filtered_df <- temp_df[temp_df$Entity %in% selected_targets, ]
     
     venn_data <- split(filtered_df$paper_id, filtered_df$Entity)
     

@@ -242,11 +242,17 @@ server.registerTool(
     inputSchema: {
       timeout_ms: z.number().int().default(180000).describe("webR cold boot can take 60-120s."),
       headless: z.boolean().default(true),
+      url: z
+        .string()
+        .optional()
+        .describe(
+          "Target app URL. Defaults to local server, or can be set to 'https://vizkidd.github.io/collabnet/' to target the live deployed app.",
+        ),
     },
   },
-  async ({ timeout_ms, headless }) => {
+  async ({ timeout_ms, headless, url }) => {
     try {
-      const res = await UI.open({ timeoutMs: timeout_ms, headless });
+      const res = await UI.open({ timeoutMs: timeout_ms, headless, url });
       const logs = UI.drainLogs();
       const bad = logs.filter((l) =>
         ["error", "pageerror", "requestfailed"].includes(l.level),
@@ -256,6 +262,84 @@ server.registerTool(
       );
     } catch (e) {
       return text(`Failed to open: ${e.message}`);
+    }
+  },
+);
+
+server.registerTool(
+  "collabnet_upload_file",
+  {
+    title: "Upload data file into CollabNET",
+    description:
+      "Automates the full file upload flow in CollabNET (supports .csv, .tsv, .xlsx, .cnet, .rds). Uploads file, advances past row merge modal, confirms import, and waits for processing to settle.",
+    inputSchema: {
+      file_path: z.string().describe("Absolute or relative path to data file on local disk."),
+    },
+  },
+  async ({ file_path }) => {
+    try {
+      const res = await UI.uploadFile(file_path);
+      return json(res);
+    } catch (e) {
+      return text(`Upload error: ${e.message}`);
+    }
+  },
+);
+
+server.registerTool(
+  "collabnet_fetch_records",
+  {
+    title: "Fetch publications by ORCiD or DOI",
+    description:
+      "Inputs ORCiD(s) or DOI(s) into CollabNET, chooses fetch flow ('new' or 'merge'), triggers retrieval, and waits for data parsing to settle.",
+    inputSchema: {
+      orcid: z.string().optional().describe("One or more ORCiD identifiers separated by newline."),
+      doi: z.string().optional().describe("One or more DOIs separated by newline."),
+      flow: z.enum(["new", "merge"]).default("new").describe("Whether to create new dataset or merge with existing."),
+    },
+  },
+  async ({ orcid, doi, flow }) => {
+    try {
+      const res = await UI.fetchRecords({ orcid, doi, flow });
+      return json(res);
+    } catch (e) {
+      return text(`Fetch error: ${e.message}`);
+    }
+  },
+);
+
+server.registerTool(
+  "collabnet_get_metrics",
+  {
+    title: "Extract network metrics and bibliometrics",
+    description: "Extracts network summary metrics (nodes, edges, density, clustering, diameter) and bibliometrics table data from the live app.",
+    inputSchema: {},
+  },
+  async () => {
+    try {
+      const metrics = await UI.getNetworkMetrics();
+      return json(metrics);
+    } catch (e) {
+      return text(`Metrics error: ${e.message}`);
+    }
+  },
+);
+
+server.registerTool(
+  "collabnet_export_session",
+  {
+    title: "Export current session as .cnet file",
+    description: "Triggers the session export in CollabNET and downloads the resulting .cnet file.",
+    inputSchema: {
+      output_path: z.string().default(".mcp-artifacts/session.cnet").describe("Destination path for .cnet file."),
+    },
+  },
+  async ({ output_path }) => {
+    try {
+      const dest = await UI.exportSession(output_path);
+      return text(`Session exported successfully to: ${dest}`);
+    } catch (e) {
+      return text(`Export error: ${e.message}`);
     }
   },
 );
