@@ -7,7 +7,60 @@
 
 # collabnet_required_cols <- c("Citations",	"User_Journal",	"orcid",	"Name",	"JIF5Years",	"Qscore",	"JCR_Journal", "Title",	"Authors",	"Year",	"Source")
 collabnet_required_cols <- c("Citations", "User_Journal", "Title", "Authors")
-collabnet_optional_cols <- c("Qscore", "JIF5Years", "SCOPUS_ID", "doi", "orcid", "Year", "Source") #JCR_Journal #"Name"
+collabnet_optional_cols <- c("Qscore", "JIF5Years", "SCOPUS_ID", "doi", "orcid", "Year", "Source")
+
+# =============================================================================
+# CANONICAL DISPLAY-NAME MAP
+# Internal column name -> User-facing human-readable name.
+# Use cn_display_colnames() at every display boundary (DT tables, badges,
+# export headers, column selectors) so users never see programmer-style names.
+# =============================================================================
+collabnet_display_names <- c(
+  "Authors"               = "Authors",
+  "Title"                 = "Title",
+  "Year"                  = "Year",
+  "Citations"             = "Citations",
+  "Source"                = "Source",
+  "User_Journal"          = "Journal",
+  "doi"                   = "DOI",
+  "orcid"                 = "ORCID",
+  "SCOPUS_ID"             = "Scopus ID",
+  "Qscore"               = "Q Score",
+  "JIF5Years"             = "Impact Factor (5yr)",
+  "JCR_Journal"           = "JCR Journal",
+  "Author_Count"          = "Author Count",
+  "Adjusted_Citations"    = "Adjusted Citations",
+  "Adjustment_Weights"    = "Adjustment Weight",
+  "First_Author"          = "First Author",
+  "Second_Author"         = "Second Author",
+  "Co_Author"             = "Co-Author",
+  "Corresponding_Author"  = "Corresponding Author",
+  "Collaboration_Author"  = "Collaboration Author",
+  "matched_token"         = "Matched Token",
+  "token_count"           = "Token Count",
+  "position_rank"         = "Position Rank",
+  "label"                 = "Author Role",
+  "Publisher"             = "Publisher",
+  "Journal"               = "Journal"
+)
+
+# Helper: translate internal column names to display names for user-facing outputs
+cn_display_colnames <- function(internal_names) {
+  vapply(internal_names, function(nm) {
+    if (nm %in% names(collabnet_display_names)) collabnet_display_names[[nm]] else nm
+  }, character(1), USE.NAMES = FALSE)
+}
+
+# Reverse lookup: given a display name, return the internal name (first match)
+cn_internal_colname <- function(display_name) {
+  idx <- match(display_name, collabnet_display_names)
+  if (!is.na(idx)) names(collabnet_display_names)[idx] else display_name
+}
+
+# Vectorised reverse lookup
+cn_internal_colnames <- function(display_names) {
+  vapply(display_names, cn_internal_colname, character(1), USE.NAMES = FALSE)
+}
 
 # Helper to escape special regex characters from user inputs
 escape_regex_inline <- function(x) {

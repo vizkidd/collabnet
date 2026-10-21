@@ -630,14 +630,17 @@ server <- function(input, output, session) {
         final_name <- col
         
         if (!is.null(mapped_name) && trimws(mapped_name) != "" && trimws(mapped_name) != col) {
-          rename_map[[col]] <- trimws(mapped_name)
-          final_name <- trimws(mapped_name)
+          # Reverse-translate display names back to internal names
+          # e.g. "Journal" -> "User_Journal", "DOI" -> "doi", "ORCID" -> "orcid"
+          internal_name <- cn_internal_colname(trimws(mapped_name))
+          rename_map[[col]] <- internal_name
+          final_name <- internal_name
         }
         
         delim_val <- input[[paste0("map_delim_", safe_id)]]
         if (!is.null(delim_val) && trimws(delim_val) != "") {
           detected_mv_cols[[final_name]] <- trimws(delim_val)
-        } else if (grepl("^(authors|author\\(s\\) id|keywords|author keywords|index keywords)$", final_name, ignore.case = TRUE)) {
+        } else if (grepl("^(authors|author\\(s\\) id|keywords|author keywords|index keywords|scopus id|orcid)$", final_name, ignore.case = TRUE)) {
           detected_mv_cols[[final_name]] <- ","
         }
       }
@@ -755,10 +758,10 @@ server <- function(input, output, session) {
     target_mappings <- list(
       "orcid" = c("orcid", "ORCiD", "Orcid", "ORCID"),
       "SCOPUS_ID" = c("SCOPUS_ID", "SCOPUS ID", "Scopus ID", "Author(s) ID"),
-      "Citations" = c("Citations", "Cited by", "citedby-count"),
+      "Citations" = c("Citations", "Cited by", "Cited By", "citedby-count", "Times Cited", "Citation Count"),
       "User_Journal" = c("User_Journal", "Source title", "prism:publicationName", "Journal"),
       "doi" = c("doi", "DOI"),
-      "Authors" = c("Authors", "author")
+      "Authors" = c("Authors", "author", "Author(s)")
     )
     
     for(targ in names(target_mappings)) {
@@ -1038,19 +1041,26 @@ server <- function(input, output, session) {
     # 3. Render the panel
     if (length(author_list) > 1) {
       wellPanel(
-        tags$h5(icon("users-cog"), " Relationship Filter", class = "text-primary"),
-        tags$p("Filter the publication list based on how the lookup keywords interact.", class = "text-muted"),
+        tags$div(
+          style = "display: inline-flex; align-items: center; gap: 5px;",
+          tags$h5(icon("users-cog"), " Relationship Filter", class = "text-primary", style = "margin: 0;"),
+          icon("circle-question",
+               "data-toggle" = "tooltip",
+               style = "color: #007bc2; cursor: help;",
+               title = "Controls how multiple keywords combine: match papers containing ANY author (OR), ALL authors (AND), strictly one (XOR), etc.")
+        ),
+        tags$p("Filter the publication list based on how the lookup keywords interact:", class = "text-muted", style = "font-size: 12px; margin-top: 5px;"),
         
         radioButtons(
           inputId = "author_logic_gate",
           label = NULL,
           choices = c(
-            "Full Data" = "FULL",
-            "Co-patriot/Collaborator (OR)" = "OR",
-            "Companion (AND)"              = "AND",
-            "Rival (XOR)"                  = "XOR",
-            "Ignore (NOR)"                 = "NOR",
-            "Divide & Exclude (NAND)"      = "NAND"
+            "Full Data (Unfiltered)"               = "FULL",
+            "Co-patriot/Collaborator (OR — Any)"  = "OR",
+            "Companion (AND — All Co-authored)"    = "AND",
+            "Rival (XOR — Exactly One, No Overlap)"= "XOR",
+            "Ignore (NOR — Neither)"               = "NOR",
+            "Divide & Exclude (NAND — Exclude Shared)" = "NAND"
           ),
           selected = final_selected, # Use the preserved state here!
           width = "100%"
@@ -1090,14 +1100,17 @@ server <- function(input, output, session) {
       default_selected <- intersect(common_keys, c("doi", "DOI", "Title", "title", "orcid", "ORCID", "SCOPUS_ID", "Authors"))
       if (length(default_selected) == 0 && length(common_keys) > 0) default_selected <- common_keys[1]
       
+      # Show human-readable names in dropdown, but use internal names as values
+      merge_key_choices <- stats::setNames(common_keys, cn_display_colnames(common_keys))
+      
       tagList(
         tags$div(
           style = "margin-bottom: 15px; padding: 10px; border-left: 3px solid #17a2b8; background-color: #f8f9fa;",
           
           # Primary Key Selector
           selectizeInput("row_merge_keys", "Select Primary Key(s) to Join By:", 
-                         choices = common_keys, selected = default_selected, multiple = TRUE, width = "100%",
-                         options = list(placeholder = "Select one or more keys (e.g., orcid, Title)")),
+                         choices = merge_key_choices, selected = default_selected, multiple = TRUE, width = "100%",
+                         options = list(placeholder = "Select one or more keys (e.g., ORCID, Title)")),
           
           # NEW: Join Type Selector
           selectInput("join_type", "Select Join Type:", width = "100%",
@@ -1186,7 +1199,7 @@ server <- function(input, output, session) {
     target_mappings <- list(
       "orcid" = c("orcid", "ORCiD", "Orcid", "ORCID"),
       "SCOPUS_ID" = c("SCOPUS_ID", "SCOPUS ID", "Scopus ID", "Author(s) ID"),
-      "Citations" = c("Citations", "Cited by", "citedby-count"),
+      "Citations" = c("Citations", "Cited by", "Cited By", "citedby-count", "Times Cited", "Citation Count"),
       "User_Journal" = c("User_Journal", "Source title", "prism:publicationName", "Journal"),
       "doi" = c("doi", "DOI"),
       "Authors" = c("Authors", "author", "Author(s)"),
@@ -1216,7 +1229,8 @@ server <- function(input, output, session) {
       tags$div(
         style = "margin-top: 5px; margin-bottom: 10px; display: flex; flex-wrap: wrap;",
         lapply(collabnet_required_cols, function(col) {
-          tags$span(id = paste0("req-badge-", col), class = "clickable-badge", style = paste(base_badge_style, "background-color: #dc3545;"), col)
+          display_label <- cn_display_colnames(col)
+          tags$span(id = paste0("req-badge-", col), class = "clickable-badge", style = paste(base_badge_style, "background-color: #dc3545;"), display_label)
         })
       ),
       
@@ -1224,7 +1238,8 @@ server <- function(input, output, session) {
       tags$div(
         style = "margin-top: 5px; margin-bottom: 15px; display: flex; flex-wrap: wrap;",
         lapply(collabnet_optional_cols, function(col) {
-          tags$span(id = paste0("opt-badge-", col), class = "clickable-badge", style = paste(base_badge_style, "background-color: #6c757d;"), col)
+          display_label <- cn_display_colnames(col)
+          tags$span(id = paste0("opt-badge-", col), class = "clickable-badge", style = paste(base_badge_style, "background-color: #6c757d;"), display_label)
         })
       ),
       
@@ -1249,19 +1264,25 @@ server <- function(input, output, session) {
         }
       }
       
+      # Show user-friendly display name in the text field
+      prefill_display <- cn_display_colnames(prefill_name)
+      
       tags$div(
         class = "col-mapping-row",
         style = "display: flex; align-items: center; padding: 8px; border-bottom: 1px solid #eee; border-radius: 4px; transition: background-color 0.3s ease;",
         tags$div(style = "width: 5%;", checkboxInput(paste0("map_chk_", safe_id), "", value = TRUE)),
         tags$div(style = "width: 30%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;", tags$strong(col)),
         tags$div(style = "width: 10%; text-align: center;", icon("arrow-right")),
-        tags$div(style = "width: 35%;", textInput(paste0("map_name_", safe_id), "", value = prefill_name, width = "90%")),
-        tags$div(style = "width: 20%;", textInput(paste0("map_delim_", safe_id), "", value = if (grepl("^(authors|author\\(s\\) id|keywords|author keywords|index keywords)$", prefill_name, ignore.case = TRUE)) "," else "", placeholder = "Delim (e.g. ,)", width = "100%"))
+        tags$div(style = "width: 35%;", textInput(paste0("map_name_", safe_id), "", value = prefill_display, width = "90%")),
+        tags$div(style = "width: 20%;", textInput(paste0("map_delim_", safe_id), "", value = if (grepl("^(authors|author\\(s\\) id|keywords|author keywords|index keywords|scopus id|orcid)$", prefill_display, ignore.case = TRUE)) "," else "", placeholder = "Delim (e.g. ,)", width = "100%"))
       )
     })
     
-    js_req_array <- paste0("['", paste(collabnet_required_cols, collapse = "','"), "']")
-    js_opt_array <- paste0("['", paste(collabnet_optional_cols, collapse = "','"), "']")
+    # JS arrays use display names to match the text input values
+    js_req_display <- cn_display_colnames(collabnet_required_cols)
+    js_opt_display <- cn_display_colnames(collabnet_optional_cols)
+    js_req_array <- paste0("['", paste(js_req_display, collapse = "','"), "']")
+    js_opt_array <- paste0("['", paste(js_opt_display, collapse = "','"), "']")
     
     # 5. Javascript with Click Toggles
     js_script <- tags$script(HTML(paste0("
@@ -2361,17 +2382,21 @@ server <- function(input, output, session) {
     #   ))
     # }
     
+    # Translate internal column names to human-readable display names
+    display_names <- cn_display_colnames(colnames(df))
+    
     return(DT::datatable(
         df,
-        extensions = 'Buttons', # 1. Load the extension
+        colnames = display_names,
+        extensions = 'Buttons',
         options = list(
           scrollY = "600px",
           scrollX = TRUE,
           scrollCollapse = TRUE,
           paging = TRUE,
-          dom = 'Blfrtip',       # 2. Add 'B' to the layout (B = Buttons)
+          dom = 'Blfrtip',
           lengthMenu = list(c(10, 25, 50, 100, -1), c('10', '25', '50', '100', 'All')),
-          buttons = c('copy', 'csv', 'excel', 'pdf', 'print') # 3. Define buttons
+          buttons = c('copy', 'csv', 'excel', 'pdf', 'print')
         )
       ))
   }, server = FALSE)
@@ -2410,14 +2435,17 @@ server <- function(input, output, session) {
     active_cols <- names(rv$detected_mv_cols)
     if (length(active_cols) == 0) active_cols <- "Authors"
     
+    # Show human-readable names in dropdowns, use internal names as values
+    col_choices <- stats::setNames(active_cols, cn_display_colnames(active_cols))
+    
     # Update Filtered Network dropdown
     curr_filt <- input$net_col_filtered
     sel_filt <- if (isTruthy(curr_filt) && curr_filt %in% active_cols) curr_filt else active_cols[1]
-    updateSelectInput(session, "net_col_filtered", choices = active_cols, selected = sel_filt)
+    updateSelectInput(session, "net_col_filtered", choices = col_choices, selected = sel_filt)
     
     curr_venn <- input$venn_col_filtered
     sel_venn <- if (isTruthy(curr_venn) && curr_venn %in% active_cols) curr_venn else active_cols[1]
-    updateSelectInput(session, "venn_col_filtered", choices = active_cols, selected = sel_venn)
+    updateSelectInput(session, "venn_col_filtered", choices = col_choices, selected = sel_venn)
     
     # # Update Full Network dropdown
     # curr_full <- input$net_col_full
@@ -3522,10 +3550,20 @@ net_data_filtered_raw <- reactive({
         return(p("Import: No sources identified yet.", style = "color: #888;"))
       }
       
-      return(radioButtons("selected_source", label = NULL, 
-                          choices = available_sources, 
-                          selected = available_sources[1], 
-                          inline = FALSE))
+      return(tags$div(
+        tags$div(
+          style = "display: inline-flex; align-items: center; gap: 5px; margin-bottom: 5px;",
+          tags$b("Database Source:"),
+          icon("circle-question",
+               "data-toggle" = "tooltip",
+               style = "color: #007bc2; cursor: help;",
+               title = "Filter the analysis by publication source or indexed database.")
+        ),
+        radioButtons("selected_source", label = NULL, 
+                     choices = available_sources, 
+                     selected = available_sources[1], 
+                     inline = FALSE)
+      ))
     } else {
       # Note: It's best practice not to use shinyjs::hide() inside a renderUI.
       # Returning NULL is enough to naturally empty the UI element!
@@ -3663,7 +3701,9 @@ net_data_filtered_raw <- reactive({
       
       tags$div(style = "display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;",
                tags$h4(icon("cogs"), " Lookup Controls", style = "color: #e65100; margin-top: 0; margin-bottom: 0;"),
-               actionButton("reset_ext_controls", "Reset Defaults", icon = icon("undo"), class = "btn-danger", style = "white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 2px 8px; font-size: 0.8em;")
+               actionButton("reset_ext_controls", "Reset Defaults", icon = icon("undo"), class = "btn-danger", 
+                            style = "white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 2px 8px; font-size: 0.8em;",
+                            "data-toggle" = "tooltip", title = "Restore default delimiter and column settings")
       ),
       
       tags$p(style = "font-size: 0.9em; color: #555;", "Select columns for look-up and their delimiters (if any)."),
@@ -3741,8 +3781,26 @@ net_data_filtered_raw <- reactive({
       },
       
       # Use the preserved variable here
-      checkboxInput("ext_match", "Extended Keyword Matching", value = current_ext_match),
-      shinyjs::disabled(checkboxInput("ignore_case", "Ignore Case", value = TRUE)),
+      checkboxInput("ext_match", 
+                    label = tagList(
+                      "Extended Keyword Matching",
+                      tags$span(
+                        icon("circle-question"),
+                        "data-toggle" = "tooltip",
+                        title = "Allow partial or fuzzy matching for author names with initials or spelling differences.",
+                        style = "color: #007bc2; cursor: help; margin-left: 5px; display: inline-block;"
+                      )
+                    ), value = current_ext_match),
+      shinyjs::disabled(checkboxInput("ignore_case", 
+                                      label = tagList(
+                                        "Ignore Case",
+                                        tags$span(
+                                          icon("circle-question"),
+                                          "data-toggle" = "tooltip",
+                                          title = "Treat uppercase and lowercase letters identically during search matching.",
+                                          style = "color: #007bc2; cursor: help; margin-left: 5px; display: inline-block;"
+                                        )
+                                      ), value = TRUE)),
       
       tags$hr(style = "border-top: 1px solid #ffb74d; margin-top: 10px; margin-bottom: 10px;"),
       tags$div(
@@ -3912,11 +3970,14 @@ net_data_filtered_raw <- reactive({
     default_selected <- intersect(common_keys, c("doi", "DOI", "Title", "title", "orcid", "ORCID", "SCOPUS_ID", "Authors"))
     if (length(default_selected) == 0 && length(common_keys) > 0) default_selected <- common_keys[1]
     
+    # Show human-readable names in dropdown, but use internal names as values
+    fetch_merge_choices <- stats::setNames(common_keys, cn_display_colnames(common_keys))
+    
     tagList(
       tags$div(
         style = "margin-top: 15px; padding: 12px; border-left: 3px solid #17a2b8; background-color: #f8f9fa; border-radius: 4px;",
         selectizeInput("fetch_row_merge_keys", "Select Primary Key(s) to Join By:",
-                       choices = common_keys, selected = default_selected, multiple = TRUE, width = "100%",
+                       choices = fetch_merge_choices, selected = default_selected, multiple = TRUE, width = "100%",
                        options = list(placeholder = "Select one or more keys (e.g. DOI, Title)")),
         selectInput("fetch_join_type", "Select Join Type:", width = "100%",
                     choices = c(

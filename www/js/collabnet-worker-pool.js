@@ -325,6 +325,65 @@
       return merged;
     }
 
+    /**
+     * Power-On Self-Test (POST): Machine precision & thread warmup
+     */
+    async runPost(verbose = true) {
+      const startTime = performance.now();
+      const eps = Number.EPSILON;
+      const expectedEps = 2.220446049250313e-16;
+      const epsPass = Math.abs(eps - expectedEps) < 1e-12 &&
+                      ((1.0 + (eps / 2.0)) === 1.0) &&
+                      ((1.0 + eps) > 1.0);
+
+      // Float64Array and subnormal arithmetic sanity
+      const f64 = new Float64Array(2);
+      f64[0] = 1.0;
+      f64[1] = eps;
+      const f64Pass = (f64[0] + f64[1]) > 1.0;
+      const subnormalPass = Number.MIN_VALUE > 0 && isFinite(1 / Number.MAX_VALUE);
+
+      // Concurrent thread dispatch & warmup
+      const pings = [];
+      const pingStart = performance.now();
+      for (let i = 0; i < this.size; i++) {
+        pings.push(this.dispatch('ping', { threadId: i }));
+      }
+      const pingResponses = await Promise.all(pings);
+      const pingTotalMs = performance.now() - pingStart;
+      const avgPingMs = pingTotalMs / Math.max(1, this.size);
+
+      const allPassed = epsPass && f64Pass && subnormalPass && pingResponses.length === this.size;
+      const totalElapsed = performance.now() - startTime;
+
+      this.postDiagnostics = {
+        passed: allPassed,
+        elapsedMs: totalElapsed,
+        machinePrecision: {
+          epsilon: eps,
+          compliant: epsPass,
+          float64Compliant: f64Pass,
+          subnormalCompliant: subnormalPass
+        },
+        workers: {
+          size: this.size,
+          concurrency: navigator.hardwareConcurrency || 4,
+          avgRoundTripMs: avgPingMs,
+          allResponsive: pingResponses.length === this.size
+        },
+        timestamp: Date.now()
+      };
+
+      if (verbose) {
+        console.info(
+          `[CollabNET Client POST] Machine Prec: eps=${eps.toExponential(4)} (${epsPass ? 'PASS' : 'FAIL'}), ` +
+          `Workers: ${this.size} active (${avgPingMs.toFixed(2)}ms avg latency) -> ${allPassed ? 'OPERATIONAL' : 'DEGRADED'}`
+        );
+      }
+
+      return this.postDiagnostics;
+    }
+
     destroy() {
       for (const w of this.workers) {
         w.terminate();
@@ -341,43 +400,116 @@
 
   // Instantiate singleton instance
   window.collabNetPool = new WorkerPool();
+  // Warm up workers and machine precision in the background
+  window.collabNetPool.runPost().catch(err => {
+    console.warn('[CollabNET Client POST] Warmup warning:', err);
+  });
 
-  // Shiny message bindings
-  document.addEventListener('DOMContentLoaded', function() {
-    if (window.Shiny && Shiny.addCustomMessageHandler) {
-      // Receive task from Shiny R server
-      Shiny.addCustomMessageHandler('collabnet_pool_exec', async function(msg) {
-        const { taskId, action, data, options } = msg;
-        try {
-          let result;
-          if (action === 'tokenize') {
-            result = await window.collabNetPool.parallelTokenize(data, options?.delim || ',');
-          } else if (action === 'fetch_dois') {
-            result = await window.collabNetPool.parallelFetchDois(data, options?.timeoutMs || 15000);
-          } else {
-            result = await window.collabNetPool.dispatch(action, data);
-          }
+  // -------------------------------------------------------------------------
+  // Shiny bridge: safe accessor that works in both native Shiny and shinylive
+  // WASM where the Shiny object loads asynchronously inside an iframe.
+  // -------------------------------------------------------------------------
+  function _getShiny() {
+    // In shinylive, Shiny lives on the iframe's window but is also
+    // propagated to the parent. Try the direct reference first.
+    if (typeof Shiny !== 'undefined' && typeof Shiny.setInputValue === 'function') {
+      return Shiny;
+    }
+    if (window.Shiny && typeof window.Shiny.setInputValue === 'function') {
+      return window.Shiny;
+    }
+    return null;
+  }
 
-          Shiny.setInputValue('collabnet_pool_result', {
-            taskId: taskId,
-            success: true,
-            data: result
-          }, { priority: 'event' });
-        } catch (err) {
-          Shiny.setInputValue('collabnet_pool_result', {
-            taskId: taskId,
-            success: false,
-            error: err.message
-          }, { priority: 'event' });
+  function _safeSetInputValue(name, value, opts) {
+    var s = _getShiny();
+    if (s) {
+      s.setInputValue(name, value, opts || {});
+    } else {
+      console.warn('[CollabNET] Shiny.setInputValue not yet available; queuing "' + name + '".');
+      // Retry once after a short delay (Shiny may still be initialising)
+      setTimeout(function() {
+        var s2 = _getShiny();
+        if (s2) s2.setInputValue(name, value, opts || {});
+      }, 2000);
+    }
+  }
+
+  function _bindShinyHandlers() {
+    var S = _getShiny();
+    if (!S || typeof S.addCustomMessageHandler !== 'function') return false;
+
+    // Guard against double-binding
+    if (window._collabNetShinyBound) return true;
+    window._collabNetShinyBound = true;
+
+    // Receive task from Shiny R server
+    S.addCustomMessageHandler('collabnet_pool_exec', async function(msg) {
+      var taskId = msg.taskId, action = msg.action, data = msg.data, options = msg.options;
+      try {
+        var result;
+        if (action === 'tokenize') {
+          result = await window.collabNetPool.parallelTokenize(data, (options && options.delim) || ',');
+        } else if (action === 'fetch_dois') {
+          result = await window.collabNetPool.parallelFetchDois(data, (options && options.timeoutMs) || 15000);
+        } else {
+          result = await window.collabNetPool.dispatch(action, data);
         }
-      });
 
-      // Send worker pool readiness and core count to Shiny
-      Shiny.setInputValue('collabnet_pool_ready', {
+        _safeSetInputValue('collabnet_pool_result', {
+          taskId: taskId,
+          success: true,
+          data: result
+        }, { priority: 'event' });
+      } catch (err) {
+        _safeSetInputValue('collabnet_pool_result', {
+          taskId: taskId,
+          success: false,
+          error: err.message
+        }, { priority: 'event' });
+      }
+    });
+
+    // Send worker pool readiness, core count, and client-side POST diagnostics
+    window.collabNetPool.runPost().then(function(diag) {
+      _safeSetInputValue('collabnet_pool_ready', {
+        cores: navigator.hardwareConcurrency || 4,
+        workers: window.collabNetPool.size,
+        postDiagnostics: diag
+      });
+    }).catch(function() {
+      _safeSetInputValue('collabnet_pool_ready', {
         cores: navigator.hardwareConcurrency || 4,
         workers: window.collabNetPool.size
       });
-    }
-  });
+    });
+
+    console.info('[CollabNET] Shiny message handlers bound successfully.');
+    return true;
+  }
+
+  // Strategy 1: Try immediately (native Shiny, already loaded)
+  if (!_bindShinyHandlers()) {
+    // Strategy 2: Wait for DOMContentLoaded
+    document.addEventListener('DOMContentLoaded', function() {
+      if (!_bindShinyHandlers()) {
+        // Strategy 3: Listen for Shiny's own connected event (shinylive)
+        document.addEventListener('shiny:connected', function() {
+          _bindShinyHandlers();
+        });
+        // Strategy 4: Polling fallback for edge cases where events are missed
+        var _attempts = 0;
+        var _pollId = setInterval(function() {
+          _attempts++;
+          if (_bindShinyHandlers() || _attempts > 30) {
+            clearInterval(_pollId);
+            if (_attempts > 30 && !_getShiny()) {
+              console.warn('[CollabNET] Shiny object not found after 30 attempts; worker pool is standalone.');
+            }
+          }
+        }, 1000);
+      }
+    });
+  }
 
 })(window);

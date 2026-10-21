@@ -91,7 +91,7 @@ ui <- fluidPage(
         </div>
       ")
     ),
-    tags$script(src = "https://cdn.jsdelivr.net/npm/plotly.js-dist/plotly.min.js"),
+    tags$script(src = "js/plotly.min.js"),
     tags$script(src = "js/collabnet-worker-pool.js"),
     tags$script(HTML("
       $(document).ready(function(){
@@ -988,29 +988,28 @@ ui <- fluidPage(
         type = "button",
         class = "btn btn-default btn-outline-white action-button", 
         style = "margin-bottom: 0; font-weight: normal; cursor: pointer;",
+        "data-toggle" = "tooltip",
+        title = "Upload publication data (CSV/Excel) from Scopus, Web of Science, PubMed, Lens, or a saved .cnet session",
         tags$i(id = "preupload_icon", class = "fa fa-upload"),
         tags$span(id = "preupload_text", "") 
       ),
       tags$label(
         class = "btn btn-default btn-outline-white",
         style = "margin-bottom: 0; font-weight: normal; cursor: pointer;",
+        "data-toggle" = "tooltip",
+        title = "Export and save your current dataset, network, and analysis state as a portable .cnet file",
         icon("download", lib = "font-awesome"),
         tags$input(id="predownload_btn", type="button", class="action-button", style = "display: none;")
-        # downloadButton(
-        #   outputId = "download_btn",
-        #   label = "", 
-        #   icon = icon("download", lib = "font-awesome"),
-        #   class = "btn-default btn-outline-white",
-        #   style = "margin-bottom: 0; font-weight: normal; cursor: pointer;"
-        # )
       ),
       tags$label(
         class = "btn btn-default btn-outline-white",
         style = "margin-bottom: 0; font-weight: normal; cursor: pointer;",
+        "data-toggle" = "tooltip",
+        title = "Configure API keys for Scopus, Web of Science, Semantic Scholar, and OpenAlex",
         icon("key", lib = "font-awesome"),
         tags$input(id="keys_btn", type="button", class="action-button", style = "display: none;")
       ),
-      actionButton("theme_toggle", "🌙 Dark Mode", icon = icon("moon", lib = "font-awesome"), class = "btn-outline-white")
+      actionButton("theme_toggle", "🌙 Dark Mode", icon = icon("moon", lib = "font-awesome"), class = "btn-outline-white", "data-toggle" = "tooltip", title = "Switch between Light and Dark interface themes")
     )
   ),
   
@@ -1075,7 +1074,7 @@ ui <- fluidPage(
               )
           )),
           shinyjs::hidden(textAreaInput("scopusid_text", value = "", rows = 2, width = "100%", label = NULL)),
-          actionButton("submit_button", "Run CollabNET", icon = icon("play", lib = "font-awesome"), class = "btn-primary", style = "width: 100%; font-weight: bold; margin-top: 10px; background-color: #4B8BBE; border: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;")
+          actionButton("submit_button", "Run CollabNET", icon = icon("play", lib = "font-awesome"), class = "btn-primary", style = "width: 100%; font-weight: bold; margin-top: 10px; background-color: #4B8BBE; border: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;", "data-toggle" = "tooltip", title = "Fetch records, resolve metadata, and run network analysis")
         )
       ),
       tags$div(
@@ -1117,7 +1116,8 @@ ui <- fluidPage(
           uiOutput("dynamic_author_filter"),
           # The Toggle Lock Button
           actionButton("toggle_extended", "Show Lookup Controls", icon = icon("magnifying-glass"), 
-                       class = "btn-secondary", style = "margin-top: 10px; width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"),
+                       class = "btn-secondary", style = "margin-top: 10px; width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
+                       "data-toggle" = "tooltip", title = "Open advanced column delimiter settings and relationship filters"),
           shinyjs::hidden(
             tags$div(id = "extended_controls_container",
                      uiOutput("lookup_controls_panel")
@@ -1153,7 +1153,15 @@ ui <- fluidPage(
           # style = "margin-top: 15px;", 
           style = "display: none;",
           tags$br(),
-          shinyjs::hidden(sliderInput("year_slider", "Publication Years", min = 0, max = 0, value = c(0, 0), step = 1, round = TRUE, width = "100%"))
+          tags$div(
+            style = "display: inline-flex; align-items: center; gap: 5px; margin-bottom: 5px;",
+            tags$b("Publication Years:"),
+            icon("circle-question",
+                 "data-toggle" = "tooltip",
+                 style = "color: #007bc2; cursor: help;",
+                 title = "Filter the dataset to include only publications published within this year range.")
+          ),
+          shinyjs::hidden(sliderInput("year_slider", label = NULL, min = 0, max = 0, value = c(0, 0), step = 1, round = TRUE, width = "100%"))
         )
       )),
       
@@ -1205,18 +1213,20 @@ ui <- fluidPage(
                             overflow-y: auto;"
                           ),
                tags$div(style = "display: flex; justify-content: center; margin-bottom: 15px; padding-top: 10px;",
-                        
-                        shinyWidgets::actionBttn(
-                          inputId = "clear_log", 
-                          label = "Clear Log", 
-                          icon = icon("trash-can"),
-                          style = "minimal", 
-                          color = "danger",
-                          size = "xs",       # Options: "xs", "sm", "md" (default), "lg"
-                          no_outline = TRUE,
-                          block = FALSE      # Set to FALSE (or remove) to stop it from stretching
+                        tags$div(
+                          "data-toggle" = "tooltip",
+                          title = "Clear current log messages",
+                          shinyWidgets::actionBttn(
+                            inputId = "clear_log", 
+                            label = "Clear Log", 
+                            icon = icon("trash-can"),
+                            style = "minimal", 
+                            color = "danger",
+                            size = "xs",       # Options: "xs", "sm", "md" (default), "lg"
+                            no_outline = TRUE,
+                            block = FALSE      # Set to FALSE (or remove) to stop it from stretching
+                          )
                         )
-                        
                )
       )
     ),
@@ -1237,7 +1247,9 @@ ui <- fluidPage(
               type = "checkbox", 
               # checked = TRUE,
               class = "shiny-input-checkbox",
-              style = "width: 20px; height: 20px; cursor: pointer; margin: 0; accent-color: #4B8BBE;" 
+              style = "width: 20px; height: 20px; cursor: pointer; margin: 0; accent-color: #4B8BBE;",
+              "data-toggle" = "tooltip",
+              title = "Toggle display of summary metrics, author counts, and SH-Index"
             ),
             h3("Collaboration Metrics", style = "color: #4B8BBE; margin: 0; font-weight: bold; line-height: 1;", tags$i(class = "fa fa-users", style = "font-size: 0.9em; opacity: 0.85;")),
           ),
@@ -1286,7 +1298,9 @@ ui <- fluidPage(
               type = "checkbox", 
               # checked = TRUE,
               class = "shiny-input-checkbox",
-              style = "width: 20px; height: 20px; cursor: pointer; margin: 0; accent-color: #2E8B57;"
+              style = "width: 20px; height: 20px; cursor: pointer; margin: 0; accent-color: #2E8B57;",
+              "data-toggle" = "tooltip",
+              title = "Toggle display of publication timeline and citation distribution charts"
             ),
             h3("Publication & Citation Trends", style = "color: #2E8B57; margin: 0; font-weight: bold; line-height: 1;", tags$i(class = "fa fa-chart-line", style = "font-size: 0.9em; opacity: 0.85;")),
           ),
@@ -1334,7 +1348,9 @@ ui <- fluidPage(
               id = "enable_table", 
               type = "checkbox", 
               class = "shiny-input-checkbox", 
-              style = "width: 20px; height: 20px; cursor: pointer; margin: 0; accent-color: #D6A77A;" 
+              style = "width: 20px; height: 20px; cursor: pointer; margin: 0; accent-color: #D6A77A;",
+              "data-toggle" = "tooltip",
+              title = "Toggle display of the full searchable publication table"
             ),
             h3("Detailed Publication Record", style = "color: #D6A77A; margin: 0; font-weight: bold; line-height: 1;", tags$i(class = "fa fa-table-list", style = "font-size: 0.9em; opacity: 0.85;")),
           ),
@@ -1384,7 +1400,9 @@ ui <- fluidPage(
               id = "enable_network", 
               type = "checkbox", 
               class = "shiny-input-checkbox", 
-              style = "width: 20px; height: 20px; cursor: pointer; margin: 0; accent-color: #C96480;"
+              style = "width: 20px; height: 20px; cursor: pointer; margin: 0; accent-color: #C96480;",
+              "data-toggle" = "tooltip",
+              title = "Toggle display of the interactive co-authorship collaboration graph"
             ),
             h3("Network Graph - Filtered", style = "color: #C96480; margin: 0; font-weight: bold; line-height: 1;", tags$i(class = "fa fa-diagram-project", style = "font-size: 0.9em; opacity: 0.85;"))
           ),
@@ -1410,14 +1428,24 @@ ui <- fluidPage(
             tags$div(
               style = "display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; align-items: end; margin-top: 10px; margin-bottom: 10px; padding: 15px; background: #f8f9fa; border-radius: 6px; border: 1px solid #e9ecef;",
               
-              selectInput("net_col_filtered", "Choose column to visualize:", choices = NULL, width = "100%"),
-              selectizeInput("custom_node_selector", "Search/Select Keyword:", 
+              selectInput("net_col_filtered", 
+                          tags$span("Choose column to visualize:",
+                                    tags$i(class = "fa fa-info-circle", style = "color: #C96480; margin-left: 5px; cursor: help;",
+                                           title = "Choose which metadata column to extract network nodes from (e.g. Authors, Author Keywords, or Affiliations).")),
+                          choices = NULL, width = "100%"),
+              selectizeInput("custom_node_selector", 
+                             tags$span("Search/Select Keyword:",
+                                       tags$i(class = "fa fa-info-circle", style = "color: #C96480; margin-left: 5px; cursor: help;",
+                                              title = "Highlight and focus on specific authors or keywords in the graph.")),
                              multiple = TRUE,
                              choices = NULL, 
                              width = "100%", 
                              options = list(placeholder = 'Type a keyword...')),
 
-              selectInput("weight_scheme", "Edge weighting:",
+              selectInput("weight_scheme", 
+                          tags$span("Edge weighting:",
+                                    tags$i(class = "fa fa-info-circle", style = "color: #C96480; margin-left: 5px; cursor: help;",
+                                           title = "Method for weighting collaborations: Newman fractional (credit divided by k-1 co-authors), raw counts, or Jaccard overlap.")),
                           choices = c("Newman (1/(k-1)) — recommended" = "newman",
                                       "Raw co-occurrence count"        = "count",
                                       "Jaccard similarity"             = "jaccard"),
@@ -1435,7 +1463,10 @@ ui <- fluidPage(
                                       "Expand fully (slow)"  = "clique"),
                           selected = "star"),
               
-              selectInput("layout_engine", "Layout engine:",
+              selectInput("layout_engine", 
+                          tags$span("Layout engine:",
+                                    tags$i(class = "fa fa-info-circle", style = "color: #C96480; margin-left: 5px; cursor: help;",
+                                           title = "Graph layout algorithm: Fruchterman-Reingold (force-directed), DrL (fast for large networks), or Kamada-Kawai (geometric path distance).")),
                           choices = c("Automatic"                 = "auto",
                                       "Fruchterman-Reingold"      = "fr",
                                       "DrL (large graphs)"        = "drl",
@@ -1443,14 +1474,30 @@ ui <- fluidPage(
                           selected = "auto"),
               
               checkboxInput("use_backbone",
-                            tags$b("Extract statistical backbone (disparity filter)"),
+                            tags$span(tags$b("Extract statistical backbone (disparity filter)"),
+                                      tags$i(class = "fa fa-info-circle", style = "color: #C96480; margin-left: 5px; cursor: help;",
+                                             title = "Filters out non-significant edges using multiscale disparity analysis, keeping significant structural connections.")),
                             value = FALSE),
-              sliderInput("backbone_alpha", "Backbone significance (alpha):",
+              sliderInput("backbone_alpha", 
+                          tags$span("Backbone significance (alpha):",
+                                    tags$i(class = "fa fa-info-circle", style = "color: #C96480; margin-left: 5px; cursor: help;",
+                                           title = "Significance threshold (alpha). Lower values produce a sparser, strictly significant collaboration backbone.")),
                           min = 0.01, max = 0.5, value = 0.05, step = 0.01),
               
-              checkboxInput("detect_communities", tags$b("Detect communities (Louvain)"), value = TRUE),
-              checkboxInput("compute_centrality", tags$b("Compute centralities"), value = TRUE),
-              selectInput("node_size_metric", "Size Nodes By:",
+              checkboxInput("detect_communities", 
+                            tags$span(tags$b("Detect communities (Louvain)"),
+                                      tags$i(class = "fa fa-info-circle", style = "color: #C96480; margin-left: 5px; cursor: help;",
+                                             title = "Groups tightly connected researchers into collaborative sub-communities using multi-level modularity optimization.")),
+                            value = TRUE),
+              checkboxInput("compute_centrality", 
+                            tags$span(tags$b("Compute centralities"),
+                                      tags$i(class = "fa fa-info-circle", style = "color: #C96480; margin-left: 5px; cursor: help;",
+                                             title = "Calculates Betweenness, Closeness, PageRank, and Cut-Node metrics to identify key influencers and structural brokers.")),
+                            value = TRUE),
+              selectInput("node_size_metric", 
+                          tags$span("Size Nodes By:",
+                                    tags$i(class = "fa fa-info-circle", style = "color: #C96480; margin-left: 5px; cursor: help;",
+                                           title = "Controls circle diameter: Weighted Strength (total publications/collaborations), Degree (number of collaborators), or Betweenness (brokerage).")),
                           choices = c("Weighted Strength"        = "strength",
                                       "Degree"                   = "degree",
                                       "Betweenness Centrality"   = "betweenness",
@@ -1458,7 +1505,10 @@ ui <- fluidPage(
                                       "Harmonic Centrality"      = "harmonic",
                                       "PageRank"                 = "pagerank"),
                           selected = "strength"),
-              selectInput("node_color_metric", "Color Nodes By:",
+              selectInput("node_color_metric", 
+                          tags$span("Color Nodes By:",
+                                    tags$i(class = "fa fa-info-circle", style = "color: #C96480; margin-left: 5px; cursor: help;",
+                                           title = "Controls node palette: Research Community (Louvain), Target vs Associated, Critical Broker (cut-nodes that bridge clusters), or Centrality gradient.")),
                           choices = c("Queried Target vs Associated" = "group",
                                       "Community (Louvain)"         = "community",
                                       "Betweenness (Gradient)"      = "betweenness",
@@ -1467,9 +1517,16 @@ ui <- fluidPage(
                                       "Critical Brokers (Cut-Nodes)" = "cut_vertex",
                                       "k-core Centrality"           = "coreness"),
                           selected = "group"),
-              numericInput("max_render_edges", "Max edges to render:", value = 20000,
+              numericInput("max_render_edges", 
+                           tags$span("Max edges to render:",
+                                     tags$i(class = "fa fa-info-circle", style = "color: #C96480; margin-left: 5px; cursor: help;",
+                                            title = "Safety cap on displayed edge lines to keep browser physics rendering fast and responsive.")),
+                           value = 20000,
                            min = 500, max = 200000, step = 500),
-              radioButtons("graph_view", "View:",
+              radioButtons("graph_view", 
+                           tags$span("View:",
+                                     tags$i(class = "fa fa-info-circle", style = "color: #C96480; margin-left: 5px; cursor: help;",
+                                            title = "Switch between the full author-level network and a simplified community metagraph showing cluster interactions.")),
                            choices = c("Full network" = "full",
                                        "Community metagraph" = "communities"),
                            selected = "full", inline = TRUE),
@@ -1523,9 +1580,15 @@ ui <- fluidPage(
                        )
               ),
               sliderInput("cluster_size_range", 
-                          label = "Cluster Size (Min/Max Nodes per Group):",
+                          label = tags$span("Cluster Size (Min/Max Nodes per Group):",
+                                            tags$i(class = "fa fa-info-circle", style = "color: #C96480; margin-left: 5px; cursor: help;",
+                                                   title = "Filter displayed clusters so only research groups with author count in this range appear.")),
                           min = 1, max = 500, value = c(1, 500)),
-              checkboxInput("prune_leaves", tags$b("Trim Leaf Nodes (Degree = 1)"), value = FALSE),
+              checkboxInput("prune_leaves", 
+                            tags$span(tags$b("Trim Leaf Nodes (Degree = 1)"),
+                                      tags$i(class = "fa fa-info-circle", style = "color: #C96480; margin-left: 5px; cursor: help;",
+                                             title = "Hides peripheral authors who have only one collaborator, decluttering the network core.")),
+                            value = FALSE),
               tags$div(
                 style = "margin-top: 10px; margin-bottom: 10px; width: 100%;",
                 
@@ -1586,7 +1649,11 @@ ui <- fluidPage(
                 max = 500,
                 step = 1
               ),
-              shinyjs::disabled(sliderInput("neighbourhood_slider", "Neighbourhood %:", min = 0, max = 100, value = 0, round = F, width = "100%"))
+              shinyjs::disabled(sliderInput("neighbourhood_slider", 
+                                            tags$span("Neighbourhood %:",
+                                                      tags$i(class = "fa fa-info-circle", style = "color: #C96480; margin-left: 5px; cursor: help;",
+                                                             title = "Expand or narrow the visible neighborhood percentage around the selected focus authors.")),
+                                            min = 0, max = 100, value = 0, round = F, width = "100%"))
             ),
             
             # Full-width container specifically for the selectize input to prevent squishing
@@ -1595,7 +1662,9 @@ ui <- fluidPage(
               shinyjs::disabled(
                 selectizeInput(
                   "neighbourhood_nodes", 
-                  "Neighbourhood Nodes:", 
+                  tags$span("Neighbourhood Nodes:",
+                            tags$i(class = "fa fa-info-circle", style = "color: #C96480; margin-left: 5px; cursor: help;",
+                                   title = "Select one or more key authors to isolate and highlight their immediate collaboration circle.")),
                   multiple = TRUE,
                   choices = NULL, 
                   width = "100%", 
@@ -1650,9 +1719,13 @@ ui <- fluidPage(
                   tags$div(
                     style = "padding: 15px 5px;",
                     h4("Ego & Brokerage Metrics"),
+                    tags$p(style = "color: #666; font-size: 13px;",
+                           "Analyzes individual author neighborhood networks (ego networks), structural constraint, effective network size, and Burt's structural holes."),
                     tableOutput("ego_metrics_table"),
                     hr(),
                     h4("Bibliometrics"),
+                    tags$p(style = "color: #666; font-size: 13px;",
+                           "Displays publication counts, citation impact metrics, and collaboration rates across indexed records."),
                     tableOutput("bibliometrics_table")
                   )
                 )
@@ -1676,7 +1749,9 @@ ui <- fluidPage(
               id = "enable_venn", 
               type = "checkbox", 
               class = "shiny-input-checkbox", 
-              style = "width: 20px; height: 20px; cursor: pointer; margin: 0; accent-color: #391463;"
+              style = "width: 20px; height: 20px; cursor: pointer; margin: 0; accent-color: #391463;",
+              "data-toggle" = "tooltip",
+              title = "Toggle display of Venn and UpSet diagrams showing shared publications"
             ),
             h3("Overlap Analysis", style = "color: #391463; margin: 0; font-weight: bold; line-height: 1;", tags$i(class = "fa fa-chart-pie", style = "font-size: 0.9em; opacity: 0.85;"))
           ),
@@ -1698,13 +1773,25 @@ ui <- fluidPage(
             hr(),
             tags$div(
               style = "display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; align-items: end; margin-top: 10px; margin-bottom: 10px; padding: 15px; background: #f8f9fa; border-radius: 6px; border: 1px solid #e9ecef;",
-              selectInput("venn_col_filtered", "Choose column to visualize:", choices = NULL, width = "100%"),
-              selectizeInput("custom_venn_selector", "Search/Select Keyword:", 
+              selectInput("venn_col_filtered", 
+                          tags$span("Choose column to visualize:",
+                                    tags$i(class = "fa fa-info-circle", style = "color: #391463; margin-left: 5px; cursor: help;",
+                                           title = "Select the column containing items to compare for overlap (e.g. Authors or Author Keywords).")),
+                          choices = NULL, width = "100%"),
+              selectizeInput("custom_venn_selector", 
+                             tags$span("Search/Select Keyword:",
+                                       tags$i(class = "fa fa-info-circle", style = "color: #391463; margin-left: 5px; cursor: help;",
+                                              title = "Select 2 to 5 specific authors or topics to compare their shared publications in the Venn diagram.")),
                              multiple = TRUE,
                              choices = NULL, 
                              width = "100%", 
                              options = list(placeholder = 'Type a keyword...')),
-              colourpicker::colourInput("venn_theme_color", "Pick base theme color:", value="#391463")
+              tags$div(
+                tags$span("Pick base theme color:",
+                          tags$i(class = "fa fa-info-circle", style = "color: #391463; margin-left: 5px; cursor: help;",
+                                 title = "Base color palette used to shade the Venn diagram and UpSet intersection bars.")),
+                colourpicker::colourInput("venn_theme_color", label = NULL, value="#391463")
+              )
             ),
             tags$div(
               style = "width: 100%; display: flex; justify-content: center; align-items: center;",
