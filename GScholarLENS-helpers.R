@@ -181,11 +181,9 @@ detect_vpn <- function(rv, output) {
 
 #Flow functions
 extend_input_table <- function(rv, df, author_match_regex, target_variants_norm) {
-  print("extend_input_table(rv):")
-  print("author_match_regex:")
-  print(author_match_regex)
-  print("target_variants_norm:")
-  print(target_variants_norm)
+  cn_log_debug("extend_input_table(rv): df rows=%d, author_regex='%s'", 
+               if (is.null(df)) 0L else nrow(df), 
+               paste(author_match_regex, collapse="; "))
   if (nrow(df) <= 0) {
     rv$log_text <- paste(rv$log_text, paste("No data to extend."), sep="<br>")
     return(df)
@@ -214,8 +212,7 @@ extend_input_table <- function(rv, df, author_match_regex, target_variants_norm)
   kw_list <- unique(c(raw_kws, rv$author_match_regex, generic_kws))
   kw_list <- kw_list[!is.na(kw_list) & trimws(kw_list) != ""]
   
-  print("kw_list:")
-  print(kw_list)
+  cn_log_debug("extend_input_table: kw_list count=%d", length(kw_list))
   
   # --- 3. BYPASS LOGIC: No Keywords Provided ---
   if (length(kw_list) == 0) {
@@ -324,7 +321,7 @@ extend_input_table <- function(rv, df, author_match_regex, target_variants_norm)
   
   if(nrow(glens_extended_table) <= 0) {
     rv$log_text <- paste(rv$log_text, "Warning: No matches found during table extension.", sep="<br>")
-    print("Warning: No matches found during table extension.")
+    cn_log_warn("No matches found during table extension.")
     return(glens_extended_table) 
   }
   
@@ -799,7 +796,7 @@ fetch_journal_metrics_openalex <- function(journal_names, rv, api_key = NULL, se
   
   # 2. Optimized Fetch from OpenAlex
   if (length(names_to_fetch) > 0) {
-    cat("Querying OpenAlex API for", length(names_to_fetch), "journals...\n")
+    cn_log_info("Querying OpenAlex API for %d journals...", length(names_to_fetch))
     
     resolved_key <- if (!is.null(api_key) && api_key != "") {
       api_key
@@ -892,7 +889,7 @@ fetch_journal_metrics_openalex <- function(journal_names, rv, api_key = NULL, se
 
 #' Overhauled Match Journals Pipeline (API Driven)
 match_journals <- function(rv, df, openalex_key=NULL, session = NULL){
-  print("match_journals(rv): Starting API matching engine...")
+  cn_log_info("match_journals(rv): Starting API matching engine...")
   
   # 1. Validation Pre-Flight Checklist
   need_cols <- c("Title","Authors","Adjusted_Citations","First_Author","Second_Author","Co_Author","Corresponding_Author")
@@ -944,7 +941,7 @@ match_journals <- function(rv, df, openalex_key=NULL, session = NULL){
     dplyr::distinct()
   
   n_unmatched <- length(which(df$Qscore == "Unranked"))
-  cat("Matching process finished. Total unranked entries:", n_unmatched, "\n")
+  cn_log_info("Journal matching finished. Total unranked entries: %d", n_unmatched)
   
   return(df)
 }

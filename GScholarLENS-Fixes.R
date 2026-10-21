@@ -471,3 +471,135 @@ safe_marker_size <- function(x, base = 15, spread = 10, lo = 6, hi = 40) {
   z[!is.finite(z)] <- 0
   pmin(pmax(base + z * spread, lo), hi)
 }
+
+
+# =============================================================================
+# STRUCTURED LOGGING SYSTEM
+# =============================================================================
+
+cn_log_debug <- function(fmt, ...) {
+  if (isTRUE(getOption("collabnet.debug", FALSE)) || identical(Sys.getenv("COLLABNET_DEBUG"), "1")) {
+    msg <- if (missing(...)) fmt else sprintf(fmt, ...)
+    message(paste0("[CollabNET DEBUG] ", msg))
+  }
+}
+
+cn_log_info <- function(fmt, ...) {
+  msg <- if (missing(...)) fmt else sprintf(fmt, ...)
+  message(paste0("[CollabNET] ", msg))
+}
+
+cn_log_warn <- function(fmt, ...) {
+  msg <- if (missing(...)) fmt else sprintf(fmt, ...)
+  warning(paste0("[CollabNET] ", msg), call. = FALSE)
+}
+
+cn_log_error <- function(fmt, ...) {
+  msg <- if (missing(...)) fmt else sprintf(fmt, ...)
+  stop(paste0("[CollabNET ERROR] ", msg), call. = FALSE)
+}
+
+
+# =============================================================================
+# POST (POWER-ON SELF-TEST) & MACHINE PRECISION WARMUP SUITE
+# =============================================================================
+
+collabnet_run_post <- function(verbose = TRUE) {
+  results <- list()
+  pass_all <- TRUE
+
+  # 1. Floating-point Machine Precision (double.eps)
+  eps <- .Machine$double.eps
+  eps_expected <- 2.220446049250313e-16
+  eps_ratio <- abs(eps - eps_expected) / eps_expected
+  eps_pass <- (eps_ratio < 1e-12) && ((1.0 + (eps / 2.0)) == 1.0) && ((1.0 + eps) > 1.0)
+  results$double_eps <- list(
+    name = "Floating-point Machine Precision (double.eps)",
+    value = eps,
+    expected = eps_expected,
+    passed = eps_pass,
+    detail = if (eps_pass) "IEEE 754 compliant (53-bit significand)" else "Anomalous floating-point behavior"
+  )
+  if (!eps_pass) pass_all <- FALSE
+
+  # 2. Machine Representation Limits
+  d_xmin <- .Machine$double.xmin
+  d_xmax <- .Machine$double.xmax
+  d_digits <- .Machine$double.digits
+  int_max <- .Machine$integer.max
+  limits_pass <- (d_digits == 53L) && (int_max == 2147483647L) && (d_xmin > 0) && is.finite(d_xmax)
+  results$machine_limits <- list(
+    name = "Machine Representation Limits",
+    value = list(digits = d_digits, xmin = d_xmin, xmax = d_xmax, int_max = int_max),
+    passed = limits_pass,
+    detail = sprintf("Significand: %d-bit, Int Max: %d", d_digits, int_max)
+  )
+  if (!limits_pass) pass_all <- FALSE
+
+  # 3. Linear Algebra Matrix Solver Warmup
+  # Solves M * x = b for a positive-definite matrix and verifies residual norm
+  M <- matrix(c(4, 1, 2, 1, 5, 3, 2, 3, 6), nrow = 3, ncol = 3)
+  b <- c(1, 2, 3)
+  x <- solve(M, b)
+  residual <- max(abs(M %*% x - b))
+  linalg_pass <- residual < 1e-12
+  results$linear_algebra <- list(
+    name = "Linear Algebra Matrix Solver Warmup",
+    residual = residual,
+    passed = linalg_pass,
+    detail = sprintf("Max residual norm ||M*x - b||: %.4e (tolerance: < 1e-12)", residual)
+  )
+  if (!linalg_pass) pass_all <- FALSE
+
+  # 4. Spectral Graph Theory Warmup (Eigenvalues of K3 Triangle Graph)
+  # Theoretical eigenvalues of K3 adjacency: 2, -1, -1
+  adj_k3 <- matrix(c(0, 1, 1, 1, 0, 1, 1, 1, 0), nrow = 3, ncol = 3)
+  eig_k3 <- sort(Re(eigen(adj_k3, symmetric = TRUE, only.values = TRUE)$values), decreasing = TRUE)
+  eig_expected <- c(2, -1, -1)
+  eig_dev <- max(abs(eig_k3 - eig_expected))
+  eig_pass <- eig_dev < 1e-12
+  results$spectral_graph <- list(
+    name = "Spectral Graph Theory Warmup (K3 Adjacency)",
+    eigenvalues = eig_k3,
+    max_deviation = eig_dev,
+    passed = eig_pass,
+    detail = sprintf("K3 eigenvalue deviation: %.4e (tolerance: < 1e-12)", eig_dev)
+  )
+  if (!eig_pass) pass_all <- FALSE
+
+  # 5. Runtime Architecture
+  is_wasm <- grepl("wasm", Sys.info()[["machine"]], ignore.case = TRUE) ||
+             identical(Sys.info()[["sysname"]], "Emscripten") ||
+             "webr" %in% loadedNamespaces()
+  ptr_size <- .Machine$sizeof.pointer * 8L
+  results$architecture <- list(
+    name = "Runtime Architecture",
+    is_wasm = is_wasm,
+    pointer_bits = ptr_size,
+    sysname = Sys.info()[["sysname"]],
+    r_version = R.version.string,
+    passed = TRUE,
+    detail = sprintf("%s (%d-bit architecture) | %s",
+                     if (is_wasm) "WebAssembly / WebR" else "Native Desktop R",
+                     ptr_size, R.version.string)
+  )
+
+  results$all_passed <- pass_all
+  results$timestamp <- Sys.time()
+
+  if (verbose) {
+    message("\n=======================================================")
+    message("   CollabNET Pre-Flight Operational Self-Test (POST)   ")
+    message("=======================================================")
+    message(sprintf("[POST] Runtime       : %s", results$architecture$detail))
+    message(sprintf("[POST] Machine Prec  : double.eps = %.4e [%s]", eps, if (eps_pass) "PASS" else "FAIL"))
+    message(sprintf("[POST] Representation: 53-bit float, 32-bit int [%s]", if (limits_pass) "PASS" else "FAIL"))
+    message(sprintf("[POST] Linear Algebra: Matrix residual = %.4e [%s]", residual, if (linalg_pass) "PASS" else "FAIL"))
+    message(sprintf("[POST] Spectral Graph: K3 eigen error = %.4e [%s]", eig_dev, if (eig_pass) "PASS" else "FAIL"))
+    message(sprintf("[POST] Overall Status: %s", if (pass_all) "ALL CHECKS PASSED (OPERATIONAL)" else "DEGRADED PRECISION DETECTED"))
+    message("=======================================================\n")
+  }
+
+  return(invisible(results))
+}
+

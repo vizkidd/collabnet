@@ -19,10 +19,6 @@ make_agg <- function(df, pos_col, pos_label) {
     mutate(Qscore = as.character(Qscore),
            Qscore = ifelse(is.na(Qscore) | Qscore == "", "NA", Qscore))
   
-  # DEBUG: CHECKING whether QScore shows NA strings when unavailable
-  test_df <- df %>% filter(is.na(.data[[pos_col]]) | as.numeric(.data[[pos_col]]) != 1)
-  print(test_df$Qscore)
-  
   # 2. PROCEED WITH AGGREGATION
   return(
     df %>%
@@ -39,7 +35,7 @@ make_agg <- function(df, pos_col, pos_label) {
 }
 
 plot_glens_table <- function(rv,df,session){
-  print("plot_glens_table():")
+  cn_log_debug("plot_glens_table(): invoked with %d rows", if (is.null(df)) 0L else nrow(df))
   if(is.null(df) || nrow(df) <= 0 || !all(c("First_Author", "Second_Author", "Co_Author", "Corresponding_Author", "Adjusted_Citations") %in% colnames(df)) ){
     rv$log_text <- paste(rv$log_text, "plot_glens_table(): Warning: No data available for these filters!", sep="<br>")
     warning("plot_glens_table(): Warning: No data available for these filters!")
@@ -130,10 +126,6 @@ plot_glens_table <- function(rv,df,session){
     ungroup() %>%
     mutate(Position = factor(Position, levels = all_positions))
   
-  print(agg_all)
-  # print("QPUBS & QCITES")
-  # print(agg_all$Total_Q_Pubs)
-  # print(agg_all$Total_Q_Cites)
   # ---- animate update via plotlyProxy (Counts) ----
   acounts_proxy <- plotlyProxy("acounts_plot", session)
   # acounts_proxy_data <- lapply(all_quartiles, function(q) {
@@ -471,10 +463,7 @@ render_skeleton_plots <- function(rv, df, output){
   #       barmode = "stack", xaxis = list(title = "", tickangle = 15), yaxis = list(title = ""),
   #       showlegend = FALSE, transition = list(duration = 1000, easing = "ease-in-out")
   #     )
-  # })
-  print(paste("full_grid:", nrow(full_grid)))
-  # print(agg_all$Total_Position)
-  print(str(agg_all))
+  cn_log_debug("plot_glens_table: full_grid rows=%d", nrow(full_grid))
   output$acounts_plot <- renderPlotly({
     plot_ly(
       data = agg_all, 
@@ -520,8 +509,6 @@ render_skeleton_plots <- function(rv, df, output){
   #       barmode = "stack", xaxis = list(title = "", tickangle = 15), yaxis = list(title = ""),
   #       showlegend = FALSE, transition = list(duration = 1000, easing = "ease-in-out")
   #     )
-  # })
-  print(agg_all$Total_QCitations)
   output$ccounts_plot <- renderPlotly({
     plot_ly(
       data = agg_all, 
