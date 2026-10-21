@@ -27,16 +27,27 @@ helper_scripts <- c(
 )
 
 # cat("WASM <- TRUE", file="staging_app/app.R")
-cat(unlist(lapply(c(helper_scripts, app_files), function(x){
+# Read and concatenate helper scripts and app files
+worker_js_path <- file.path("www", "js", "collabnet-worker-pool.js")
+worker_js_content <- if (file.exists(worker_js_path)) paste(readLines(worker_js_path, warn = FALSE), collapse = "\n") else ""
+
+app_content_lines <- unlist(lapply(c(helper_scripts, app_files), function(x){
   lines <- readLines(x)
   lines <- grep(pattern = "source\\(.*\\)", x = lines, value = TRUE, invert = TRUE)
   lines <- grep(pattern = "require\\(httr2\\)", x = lines, value = TRUE, invert = TRUE)
+  if (nzchar(worker_js_content)) {
+    worker_js_json <- jsonlite::toJSON(worker_js_content, auto_unbox = TRUE)
+    lines <- gsub('tags\\$script\\(src = "js/collabnet-worker-pool\\.js"\\)',
+                  sprintf('tags$script(HTML(%s))', worker_js_json), lines)
+  }
   return(lines)
-})), file="staging_app/app.R", sep="\n")
+}))
+
+cat(app_content_lines, file="staging_app/app.R", sep="\n")
 
 fs::dir_copy("www/","staging_app/")
 # fs::file_copy(c(app_files, helper_scripts), "staging_app/")
-#fs::file_copy("2024-JCR_IMPACT_FACTOR.xlsx", "staging_app/")
+fs::file_copy("2024-JCR_IMPACT_FACTOR.xlsx", "staging_app/")
 
 # rwasm::add_pkg("/media/everest/disk01/vishvesh/QuickBLAST/", repo_dir = "./repo") 
 
@@ -153,7 +164,7 @@ if (file.exists("inject_packages.py")) {
 #   "Cross-Origin-Embedder-Policy" = "require-corp"
 # )) #host = "0.0.0.0"
 
-# httpuv::runStaticServer("./wasm_build/", headers = list()) #host = "0.0.0.0"
+httpuv::runStaticServer("./wasm_build/", headers = list()) #host = "0.0.0.0"
 
 # # httpuv::runServer(
 # #   host = "127.0.0.1", port = 7446,
