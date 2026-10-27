@@ -87,7 +87,6 @@ jobs:
           )
         shell: Rscript {0}
     
-      # --- NEW STEP: FETCH AND INJECT LATEST WEBR OVERRIDE ---
       - name: Update webR to Latest GitHub Release
         env:
           # GitHub Actions provides this token automatically. We use it
@@ -120,7 +119,6 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           rm -rf "$TMP_DIR"
 
-      - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: '3.13' 
