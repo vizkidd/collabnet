@@ -1190,6 +1190,252 @@ server <- function(input, output, session) {
       updateActionButton(session, "theme_toggle", label = "🌙 Dark Mode", icon = icon("moon", lib = "font-awesome"))
     }
   })
+
+  # --- README / OVERVIEW MODAL ---
+  observeEvent(input$readme_btn, {
+    showModal(modalDialog(
+      title = tags$div(
+        style = "display: flex; align-items: center; gap: 10px;",
+        tags$span(style = "font-size: 1.4em; color: #4B8BBE;", icon("circle-info", lib = "font-awesome")),
+        tags$h3("CollabNET: Project Overview & Architecture", style = "margin: 0; font-weight: 700; color: #2c3e50;")
+      ),
+      size = "l",
+      easyClose = TRUE,
+      fade = TRUE,
+      footer = modalButton("Close"),
+      tags$div(
+        style = "max-height: 70vh; overflow-y: auto; padding: 15px 20px; line-height: 1.6;",
+        tags$div(
+          class = "alert alert-info",
+          style = "border-left: 4px solid #17a2b8;",
+          tags$b("Client-Side WebAssembly Bibliometrics: "),
+          "CollabNET executes 100% inside your web browser via WebAssembly (Shinylive / webR) and a concurrent multi-threaded Web Worker pool. No research data or API keys leave your machine."
+        ),
+        tags$h4(icon("star", lib = "font-awesome"), " Core Capabilities", style = "color: #2E8B57; font-weight: bold; margin-top: 15px;"),
+        tags$ul(
+          tags$li(tags$b("Live Bibliometric Ingestion: "), "Instant multi-threaded resolution of publications via ORCID (v3.0), Scopus Author/Document Search, OpenAlex, and Crossref."),
+          tags$li(tags$b("Newman Fractional Weighting: "), "Co-authorship edge weights scale inversely with author team sizes: ", tags$code("w_ij = sum(1 / (N_p - 1))"), " avoiding hyperauthorship distortions."),
+          tags$li(tags$b("Graph Centrality Suite: "), "Full topology metrics including Degree, Betweenness, Closeness, Eigenvector Centrality, PageRank, and k-Core decomposition."),
+          tags$li(tags$b("Hamiltonian Cycle Diagnostics: "), "Formal graph-theoretic verification of Dirac's and Ore's sufficient conditions for traceable collaboration loops."),
+          tags$li(tags$b("Propositional Logic Gates: "), "Filter collaboration subnetworks using OR, AND, XOR, NOR, NAND, and FULL (unfiltered) cohort combinations."),
+          tags$li(tags$b("Session Portability: "), "Save and restore complete analytical states with portable ", tags$code(".cnet"), " binary session files.")
+        ),
+        tags$hr(),
+        tags$h4(icon("cubes", lib = "font-awesome"), " System Architecture", style = "color: #4B8BBE; font-weight: bold;"),
+        tags$p("CollabNET couples a sandboxed R WebAssembly runtime with a browser-native Web Worker Pool:"),
+        tags$div(
+          style = "background: #f8f9fa; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px; font-family: monospace; font-size: 13px;",
+          "Browser Window -> webR Shinylive (Graph Theory, Reactive UI, visNetwork)",
+          tags$br(),
+          "              -> JS Worker Pool (Multi-threaded tokenization, Newman weighting, parallel DOI fetch)"
+        ),
+        tags$hr(),
+        tags$p(style = "font-size: 13px; color: #6c757d; margin-top: 15px;",
+          "CollabNET is open source under the MIT License. Live deployment: ",
+          tags$a(href = "https://vizkidd.github.io/collabnet/", target = "_blank", "https://vizkidd.github.io/collabnet/")
+        )
+      )
+    ))
+  })
+
+  # --- USER MANUAL MODAL ---
+  observeEvent(input$manual_btn, {
+    showModal(modalDialog(
+      title = tags$div(
+        style = "display: flex; align-items: center; gap: 10px;",
+        tags$span(style = "font-size: 1.4em; color: #2E8B57;", icon("book-open", lib = "font-awesome")),
+        tags$h3("CollabNET: User Manual & Analytical Formulations", style = "margin: 0; font-weight: 700; color: #2c3e50;")
+      ),
+      size = "l",
+      easyClose = TRUE,
+      fade = TRUE,
+      footer = modalButton("Close"),
+      tags$div(
+        style = "max-height: 72vh; overflow-y: auto; padding: 15px 20px; line-height: 1.6;",
+        
+        tags$h4("1. Dashboard Architecture: Left vs. Right", style = "color: #4B8BBE; font-weight: bold;"),
+        tags$p("The dashboard is structured around two distinct operational zones:"),
+        tags$ul(
+          tags$li(tags$b("Left Controls Sidebar: "), "All ingestion inputs (ORCID, Scopus, DOIs), keyword lookups, relationship logic gates, column delimiter controls, year range sliders, and edge weight thresholds."),
+          tags$li(tags$b("Right Analytical Workspace: "), "Seven specialized output tabs: Interactive Collaboration Network, Publication & Citation Trends, Centrality Leaderboard, Centrality Map, Overlap Analysis (Venn/UpSet), Hamiltonian Diagnostics, and Publication Data Table.")
+        ),
+        
+        tags$hr(),
+        tags$h4("2. Data Ingestion & Live Fetching", style = "color: #4B8BBE; font-weight: bold;"),
+        tags$ul(
+          tags$li(tags$b("ORCiD: "), "Accepts standard 16-character identifiers (e.g., ", tags$code("0000-0002-8060-444X"), "), one per line. Trailing check digits 'X' or 'x' are validated and normalized automatically."),
+          tags$li(tags$b("Scopus Author ID: "), "Accepts numeric IDs (e.g., ", tags$code("57871875700"), "). If an Elsevier Scopus API key is configured, ORCIDs can be mapped to Scopus Author IDs automatically."),
+          tags$li(tags$b("DOIs: "), "Accepts Digital Object Identifiers (e.g., ", tags$code("10.1016/j.materresbull.2025.113811"), "). Resolves via OpenAlex with automatic exponential backoff retry on HTTP 429 and seamless failover to Crossref."),
+          tags$li(tags$b("File Upload Wizard: "), "Upload CSV/Excel files from Scopus, Web of Science, PubMed, Lens.org, or saved .cnet sessions. Step 1 maps columns and delimiters; Step 2 manages Append, Merge, or New dataset creation.")
+        ),
+
+        tags$hr(),
+        tags$h4("3. Propositional Relationship Gates", style = "color: #4B8BBE; font-weight: bold;"),
+        tags$p("When multiple lookup keywords are provided, select how publications are filtered:"),
+        tags$table(
+          class = "table table-striped table-bordered",
+          style = "font-size: 13px;",
+          tags$thead(
+            tags$tr(tags$th("Gate"), tags$th("Name"), tags$th("Mathematical Condition"), tags$th("Analytical Objective"))
+          ),
+          tags$tbody(
+            tags$tr(tags$td(tags$b("FULL")), tags$td("Full Data (Unfiltered)"), tags$td("Retain all rows"), tags$td("Full cohort benchmark; target authors annotated without dropping other papers.")),
+            tags$tr(tags$td(tags$b("OR")), tags$td("Co-patriot / Collaborator"), tags$td("Count(matches) >= 1"), tags$td("Aggregates the complete collaborative reach of any focal entity.")),
+            tags$tr(tags$td(tags$b("AND")), tags$td("Companion"), tags$td("Count(matches) == N"), tags$td("Pinpoints direct joint collaborations between all focal researchers.")),
+            tags$tr(tags$td(tags$b("XOR")), tags$td("Rival"), tags$td("Count(matches) == 1"), tags$td("Isolates publications produced by strictly one author without overlap.")),
+            tags$tr(tags$td(tags$b("NOR")), tags$td("Ignore"), tags$td("Count(matches) == 0"), tags$td("Explores peripheral co-authors while excluding the main focal PIs.")),
+            tags$tr(tags$td(tags$b("NAND")), tags$td("Divide & Exclude"), tags$td("Count(matches) < N"), tags$td("Excludes joint flagship papers to inspect branch research lines."))
+          )
+        ),
+
+        tags$hr(),
+        tags$h4("4. Network Science Metrics & Formulations", style = "color: #4B8BBE; font-weight: bold;"),
+        tags$ul(
+          tags$li(tags$b("Newman Fractional Weighting: "), tags$br(),
+            tags$code("w_ij = sum_{p in P_ij} [ 1 / (N_p - 1) ]"),
+            tags$br(), "Ensures that a 2-author publication provides weight 1.0, while a 100-author paper contributes fractional weight 1/99 per edge."
+          ),
+          tags$li(tags$b("Degree & Weighted Strength: "), "Degree counts unique collaborators; Strength sums fractional Newman edge weights."),
+          tags$li(tags$b("Betweenness Centrality: "), "Measures information brokerage and gatekeeping along shortest collaboration paths."),
+          tags$li(tags$b("Closeness Centrality: "), "Measures geodesic proximity of an author to all reachable network peers."),
+          tags$li(tags$b("Eigenvector Centrality & PageRank: "), "Measures prestige by scoring connections to other well-connected researchers."),
+          tags$li(tags$b("Cut-Vertices (Articulation Points): "), "Critical nodes whose removal fragments a connected collaboration component.")
+        ),
+
+        tags$hr(),
+        tags$h4("5. Hamiltonian Cycle Diagnostics", style = "color: #4B8BBE; font-weight: bold;"),
+        tags$ul(
+          tags$li(tags$b("Dirac's Theorem: "), "If every node in a connected component of size n >= 3 has degree >= n/2, the component contains a Hamiltonian cycle."),
+          tags$li(tags$b("Ore's Theorem: "), "If for every pair of non-adjacent nodes u, v, deg(u) + deg(v) >= n, the component contains a Hamiltonian cycle.")
+        ),
+
+        tags$hr(),
+        tags$h4("6. Session Persistence (.cnet) & Table Exports", style = "color: #4B8BBE; font-weight: bold;"),
+        tags$p("Click ", tags$b("Download"), " in the top header to save your active dataset, mappings, and network layout into a portable ", tags$code(".cnet"), " session file. Use the DataTables export buttons on the Publication Data tab to download formatted tables in CSV, Excel, or PDF format.")
+      )
+    ))
+  })
+
+  # --- INTERACTIVE LIVE TUTORIAL MODAL ---
+  observeEvent(input$tutorial_btn, {
+    showModal(modalDialog(
+      title = tags$div(
+        style = "display: flex; align-items: center; gap: 10px;",
+        tags$span(style = "font-size: 1.4em; color: #f39c12;", icon("chalkboard-user", lib = "font-awesome")),
+        tags$h3("🎓 CollabNET Interactive Tutorial", style = "margin: 0; font-weight: 700; color: #2c3e50;")
+      ),
+      size = "l",
+      easyClose = TRUE,
+      fade = TRUE,
+      footer = tagList(
+        modalButton("Done")
+      ),
+      tags$div(
+        style = "max-height: 72vh; overflow-y: auto; padding: 10px 15px;",
+        
+        tabsetPanel(
+          id = "tutorial_tabset",
+          
+          tabPanel(
+            title = tags$span(icon("compass"), " 1. Overview"),
+            tags$div(
+              style = "padding: 20px 10px; line-height: 1.7;",
+              tags$h4("Welcome to CollabNET!", style = "color: #4B8BBE; font-weight: bold;"),
+              tags$p("CollabNET uses a clean, intuitive layout designed for fast, deep bibliometric exploration:"),
+              tags$div(
+                style = "display: flex; gap: 20px; margin: 20px 0;",
+                tags$div(
+                  style = "flex: 1; background: #eef6fc; border-left: 4px solid #4B8BBE; padding: 15px; border-radius: 6px;",
+                  tags$h5(icon("sliders"), " LEFT SIDEBAR (Inputs & Controls)", style = "color: #4B8BBE; font-weight: bold;"),
+                  tags$ul(
+                    tags$li("Data Ingestion (ORCID, Scopus ID, DOIs)"),
+                    tags$li("Lookup Keywords (Author search)"),
+                    tags$li("Relationship Filter (Logic Gates)"),
+                    tags$li("Year Range & Edge Weight Sliders"),
+                    tags$li("Delimiter & Column Mapping toggles")
+                  )
+                ),
+                tags$div(
+                  style = "flex: 1; background: #eef9f2; border-left: 4px solid #2E8B57; padding: 15px; border-radius: 6px;",
+                  tags$h5(icon("chart-pie"), " RIGHT WORKSPACE (Visualizations & Data)", style = "color: #2E8B57; font-weight: bold;"),
+                  tags$ul(
+                    tags$li("Collaboration Network (Physics graph)"),
+                    tags$li("Publication & Citation Trends (Q1-Q4)"),
+                    tags$li("Centrality Leaderboards & Scatter Map"),
+                    tags$li("Overlap Analysis (Venn & UpSet plots)"),
+                    tags$li("Hamiltonian Diagnostics & Publication Data")
+                  )
+                )
+              )
+            )
+          ),
+          
+          tabPanel(
+            title = tags$span(icon("cloud-arrow-down"), " 2. Ingestion & Fetching"),
+            tags$div(
+              style = "padding: 20px 10px; line-height: 1.7;",
+              tags$h4("Step 1: Ingesting Academic Data", style = "color: #4B8BBE; font-weight: bold;"),
+              tags$p("You can supply data in three convenient ways:"),
+              tags$ol(
+                tags$li(tags$b("Live ORCiD Fetch: "), "Enter author ORCIDs in the left panel (e.g. ", tags$code("0000-0002-8060-444X"), " or Nobel laureates like ", tags$code("0000-0003-2287-2195"), "). Click ", tags$b("Submit / Fetch Data"), "."),
+                tags$li(tags$b("Upload CSV or Excel: "), "Click the ", tags$b("Upload"), " button in the top navigation to load exported Scopus, WoS, PubMed, or Lens records."),
+                tags$li(tags$b("Restore Session (.cnet): "), "Upload a saved ", tags$code(".cnet"), " file to instantly restore your entire research session.")
+              ),
+              tags$div(
+                class = "alert alert-warning",
+                style = "margin-top: 15px;",
+                tags$b("Pro Tip: "), "To query Scopus directly, click the ", tags$b("Key icon"), " in the top-right header and paste your Elsevier API Key. It is encrypted in browser memory and never sent to any server."
+              )
+            )
+          ),
+
+          tabPanel(
+            title = tags$span(icon("filter"), " 3. Lookup & Logic Gates"),
+            tags$div(
+              style = "padding: 20px 10px; line-height: 1.7;",
+              tags$h4("Step 2: Focal Authors & Relationship Gates", style = "color: #4B8BBE; font-weight: bold;"),
+              tags$p("In the ", tags$b("Lookup Controls"), " card, type target author names line-by-line (e.g., ", tags$code("Demis Hassabis"), ", ", tags$code("John Jumper"), ")."),
+              tags$p("Then select a ", tags$b("Relationship Filter"), " logic gate:"),
+              tags$ul(
+                tags$li(tags$b("Full Data (Unfiltered): "), "Keep every paper in the dataset; focal authors are highlighted in the network."),
+                tags$li(tags$b("OR (Collaborator): "), "Show publications with at least one target author."),
+                tags$li(tags$b("AND (Companion): "), "Show only co-authored publications where ALL target authors collaborated together."),
+                tags$li(tags$b("XOR (Rival): "), "Show publications where strictly one target author is present (isolated contributions).")
+              )
+            )
+          ),
+
+          tabPanel(
+            title = tags$span(icon("network-wired"), " 4. Network & Sliders"),
+            tags$div(
+              style = "padding: 20px 10px; line-height: 1.7;",
+              tags$h4("Step 3: Interacting with the Collaboration Graph", style = "color: #4B8BBE; font-weight: bold;"),
+              tags$ul(
+                tags$li(tags$b("Zoom & Pan: "), "Scroll mouse wheel to zoom; click and drag canvas to pan."),
+                tags$li(tags$b("Inspect Collaborator: "), "Click any author node to inspect their publication connections and highlight neighbors."),
+                tags$li(tags$b("Edge Weight Slider: "), "Drag the slider in the left sidebar to hide low-weight casual co-authorships and isolate tight research clusters."),
+                tags$li(tags$b("Cut-Vertices Button: "), "Click ", tags$b("Highlight Cut-Vertices"), " to flag bridge researchers whose removal would sever collaboration channels."),
+                tags$li(tags$b("Freeze Physics: "), "Click ", tags$b("Lock Layout (Freeze Physics)"), " to stop force-directed movement once you are satisfied with node positions.")
+              )
+            )
+          ),
+
+          tabPanel(
+            title = tags$span(icon("floppy-disk"), " 5. Exporting & Sessions"),
+            tags$div(
+              style = "padding: 20px 10px; line-height: 1.7;",
+              tags$h4("Step 4: Exporting Results & Sessions", style = "color: #4B8BBE; font-weight: bold;"),
+              tags$ul(
+                tags$li(tags$b("Save Session (.cnet): "), "Click the ", tags$b("Download"), " button in the top navigation to export a binary snapshot of your current session. You can reload it anytime via Upload."),
+                tags$li(tags$b("Export Tabular Data: "), "Switch to the ", tags$b("Publication Data"), " tab and use the ", tags$code("CSV"), ", ", tags$code("Excel"), ", or ", tags$code("PDF"), " buttons to export clean publication tables with human-readable headers."),
+                tags$li(tags$b("Export Graph Images: "), "Use the visNetwork camera tool or your browser screenshot to export presentation-ready co-authorship figures.")
+              )
+            )
+          )
+        )
+      )
+    ))
+  })
   
   # --- Column Mapping UI Generation ---
   output$column_mapping_ui <- renderUI({
@@ -1318,7 +1564,7 @@ server <- function(input, output, session) {
       });
       
       required.forEach(function(col) {
-         var badge = $('#req-badge-' + col);
+         var badge = $(document.getElementById('req-badge-' + col));
          if(foundReq.includes(col)) {
             badge.css('background-color', '#28a745');
          } else {
@@ -1327,7 +1573,7 @@ server <- function(input, output, session) {
       });
       
       optional.forEach(function(col) {
-         var badge = $('#opt-badge-' + col);
+         var badge = $(document.getElementById('opt-badge-' + col));
          if(foundOpt.includes(col)) {
             badge.css({'background-color': '#ffc107', 'color': '#212529'});
          } else {
@@ -2059,12 +2305,8 @@ server <- function(input, output, session) {
     
     rv$is_glens_exec <- TRUE
     
-    if(!shiny::isTruthy(input$author_list)){
-      lapply(c("acounts_plot", "ccounts_plot", "cdist_plot", "aperc_plot", "cperc_plot"), shinyjs::hide)
-    }else{
-      lapply(c("acounts_plot", "ccounts_plot", "cdist_plot", "aperc_plot", "cperc_plot"), shinyjs::show)  
-    }
-    
+    # Show plots and summary table whenever dataset has valid rows
+    lapply(c("acounts_plot", "ccounts_plot", "cdist_plot", "aperc_plot", "cperc_plot"), shinyjs::show)
     shinyjs::show("summary_table")
     
     if ("token_count" %in% colnames(df)) {
@@ -3882,12 +4124,13 @@ net_data_filtered_raw <- reactive({
         shinyjs::show("summary_table")
         shinyjs::show("lookup_controls_panel")
         
+        shinyWidgets::updateProgressBar(session, id = "prog_analysis", value = 100, title = "Analysis Complete: 100%", status = "success")
         rv$log_text <- paste(rv$log_text, "<span style='color: green;'>✓ Run complete.</span>", sep="<br>")
         try({ if (fs::file_exists("run.lock")) fs::file_delete("run.lock") }, silent = TRUE)
         
         rv$is_cancelled <- FALSE
         rv$is_glens_exec <- FALSE
-        shinyjs::hide("progress_overlay")
+        shinyjs::delay(800, shinyjs::hide("progress_overlay"))
         shinyjs::enable("submit_button")
       }
       
@@ -4158,8 +4401,10 @@ net_data_filtered_raw <- reactive({
       }
 
       cn_log_debug("submit_btn: extending input table")
+      shinyWidgets::updateProgressBar(session, id = "prog_analysis", value = 35, title = "Extending Tables: 35%", status = "info")
       # --- 1. THE HEAVY LIFTING (Part 1: R Formatting) ---
       extended_df <- extend_input_table(rv, raw_df, rv$author_match_regex, rv$target_variants_norm)
+      shinyWidgets::updateProgressBar(session, id = "prog_analysis", value = 75, title = "Journal Matching & Metrics: 75%", status = "info")
       
       # Extract journals and append Name_norm column
       target_journal_col <- if ("User_Journal" %in% names(extended_df)) extended_df$User_Journal else extended_df$Journal
@@ -4291,6 +4536,7 @@ net_data_filtered_raw <- reactive({
       }
       orcid_list <- stringr::str_trim(str_split(input$orcid_text, "\n")[[1]])
       orcid_list <- orcid_list[nzchar(orcid_list)]
+      orcid_list <- toupper(orcid_list)
       scopus_list <- stringr::str_trim(str_split(input$scopusid_text, "\n")[[1]])
       scopus_list <- scopus_list[nzchar(scopus_list)]
       cn_log_debug("submit_button: orcid_list count=%d, scopus_list count=%d", 
@@ -4300,11 +4546,11 @@ net_data_filtered_raw <- reactive({
         rv$log_text <- paste(rv$log_text, "Empty ORC-ID input.", sep="<br>")
       } 
       
-      if(length(orcid_list) > 0 && !all(grepl("^[0-9-]+$", orcid_list, perl=TRUE))){
-        showNotification(paste("Error:", "ORCiD can have only numbers and '-'."), type = "error", duration = 5)
+      # Standard ORCID validation: 16 characters in 4 groups, last char can be 0-9 or X
+      if(length(orcid_list) > 0 && !all(grepl("^[0-9-Xx]+$", orcid_list, perl=TRUE))){
+        showNotification(paste("Error:", "ORCiD can contain only numbers, '-', and checksum 'X' (e.g. 0000-0002-8060-444X)."), type = "error", duration = 5)
         rv$log_text <- paste(rv$log_text, "<span style='color: red;'>Invalid characters in ORCiD</span>", sep="<br>")
         shinyjs::enable(id = "submit_button")
-        # shinyjs::show(id="year_slider")
         shinyjs::hide("progress_overlay")
         return()
       }
@@ -5318,7 +5564,7 @@ net_data_filtered_raw <- reactive({
           
           pct <- round((rv$doi_processed / max(1, rv$doi_total)) * 100)
           # Update progress bar for the instantly processed invalid ones
-          shinyWidgets::updateProgressBar(session, id = "prog_doi", title = sprintf("DOI: %d%% (%d/%d)", pct, rv$doi_processed, rv$doi_total),, value = rv$doi_processed, total = max(1, rv$doi_total))
+          shinyWidgets::updateProgressBar(session, id = "prog_doi", title = sprintf("DOI: %d%% (%d/%d)", pct, rv$doi_processed, rv$doi_total), value = rv$doi_processed, total = max(1, rv$doi_total))
           
           # Check if we are miraculously done instantly
           if (rv$js_expected == 0) {

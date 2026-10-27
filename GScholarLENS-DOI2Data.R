@@ -135,14 +135,14 @@ extract_ris <- function(doi_or_url,
   # 1) Try doi.org content negotiation
   doi_url <- paste0("https://doi.org/", doi_enc)
   ris_text <- NULL
-  ris_text <- tryCatch(get_with_ris_accept(doi_url), error = function(e) e)
+  ris_text <- tryCatch(get_with_ris_accept(doi_url), error = function(e) {e})
   # message(paste("RIS TEXT 1:", ris_text))
   
   # 2) Fallback: CrossRef transform endpoint: /works/{doi}/transform/application/x-research-info-systems
   if (is.null(ris_text)) {
     crossref_url <- paste0("https://api.crossref.org/works/", doi_enc,
                            "/transform/application/x-research-info-systems")
-    ris_text <- tryCatch(get_with_ris_accept(crossref_url), error = function(e) e)
+    ris_text <- tryCatch(get_with_ris_accept(crossref_url), error = function(e) {e})
   }
   # message(paste("RIS TEXT 2:", ris_text))
   

@@ -268,11 +268,19 @@ ui <- fluidPage(
         --bg-color: #f8f9fa;
         --card-bg: #ffffff;
         --text-color: #2c3e50;
+        --border-color: #e2e8f0;
+        --input-bg: #ffffff;
+        --input-text: #2c3e50;
+        --modal-bg: #ffffff;
       }
       .dark-mode {
         --bg-color: #121212;
         --card-bg: #1e1e1e;
-        --text-color: #ffffff;
+        --text-color: #e2e8f0;
+        --border-color: #334155;
+        --input-bg: #27272a;
+        --input-text: #f4f4f5;
+        --modal-bg: #1f1f23;
       }
 
       body { background-color: var(--bg-color) !important; color: var(--text-color) !important; transition: all 0.3s ease; }
@@ -280,13 +288,148 @@ ui <- fluidPage(
       .custom-card { 
         background-color: var(--card-bg) !important; 
         color: var(--text-color) !important; 
-        transition: background-color 0.3s ease;
+        border-color: var(--border-color) !important;
+        transition: background-color 0.3s ease, color 0.3s ease;
       }
 
-      /* --- TABLE PROTECTION --- */
-      .dark-mode table, .dark-mode .table, .dark-mode td, .dark-mode th, .dark-mode .dataTables_wrapper {
-        background-color: white !important; 
-        color: #333333 !important;
+      /* Dark mode inputs, selects, textareas */
+      .dark-mode input[type='text'], 
+      .dark-mode input[type='number'], 
+      .dark-mode input[type='search'], 
+      .dark-mode textarea, 
+      .dark-mode select, 
+      .dark-mode .form-control {
+        background-color: var(--input-bg) !important;
+        color: var(--input-text) !important;
+        border-color: var(--border-color) !important;
+      }
+
+      .dark-mode .selectize-input {
+        background-color: var(--input-bg) !important;
+        color: var(--input-text) !important;
+        border-color: var(--border-color) !important;
+      }
+
+      .dark-mode .selectize-dropdown {
+        background-color: var(--input-bg) !important;
+        color: var(--input-text) !important;
+        border-color: var(--border-color) !important;
+      }
+
+      .dark-mode .selectize-dropdown .option {
+        color: var(--input-text) !important;
+      }
+
+      .dark-mode .selectize-dropdown .active {
+        background-color: #3f3f46 !important;
+        color: #ffffff !important;
+      }
+
+      /* Dark mode modals */
+      .dark-mode .modal-content {
+        background-color: var(--modal-bg) !important;
+        color: var(--text-color) !important;
+        border-color: var(--border-color) !important;
+      }
+
+      .dark-mode .modal-header, .dark-mode .modal-footer {
+        border-color: var(--border-color) !important;
+      }
+
+      /* Dark mode tables & DataTables */
+      .dark-mode .table, 
+      .dark-mode table.dataTable, 
+      .dark-mode .dataTables_wrapper {
+        background-color: #1e1e1e !important;
+        color: #e4e4e7 !important;
+      }
+
+      .dark-mode table.dataTable thead th, 
+      .dark-mode table.dataTable thead td,
+      .dark-mode .table > thead > tr > th {
+        background-color: #27272a !important;
+        color: #f4f4f5 !important;
+        border-bottom-color: #3f3f46 !important;
+      }
+
+      .dark-mode table.dataTable tbody tr {
+        background-color: #1e1e1e !important;
+        color: #e4e4e7 !important;
+      }
+
+      .dark-mode table.dataTable.stripe tbody tr.odd,
+      .dark-mode table.dataTable.display tbody tr.odd {
+        background-color: #242427 !important;
+      }
+
+      .dark-mode table.dataTable tbody tr:hover {
+        background-color: #2e2e33 !important;
+      }
+
+      .dark-mode table.dataTable td, 
+      .dark-mode table.dataTable th,
+      .dark-mode .table > tbody > tr > td {
+        border-color: #334155 !important;
+        color: #e4e4e7 !important;
+      }
+
+      .dark-mode .dataTables_info,
+      .dark-mode .dataTables_length,
+      .dark-mode .dataTables_filter {
+        color: #a1a1aa !important;
+      }
+
+      .dark-mode .dataTables_filter input {
+        background-color: #27272a !important;
+        color: #f4f4f5 !important;
+        border-color: #3f3f46 !important;
+      }
+
+      .dark-mode .dataTables_paginate .paginate_button {
+        color: #a1a1aa !important;
+      }
+
+      .dark-mode .dataTables_paginate .paginate_button.current {
+        background: #3f3f46 !important;
+        color: #ffffff !important;
+        border-color: #52525b !important;
+      }
+
+      /* Dark mode panels, wells & tabs */
+      .dark-mode .well {
+        background-color: #27272a !important;
+        border-color: #3f3f46 !important;
+        color: #e4e4e7 !important;
+      }
+
+      .dark-mode .nav-tabs {
+        border-bottom-color: #3f3f46 !important;
+      }
+
+      .dark-mode .nav-tabs > li > a {
+        color: #a1a1aa !important;
+      }
+
+      .dark-mode .nav-tabs > li.active > a,
+      .dark-mode .nav-tabs > li.active > a:focus,
+      .dark-mode .nav-tabs > li.active > a:hover {
+        background-color: #1e1e1e !important;
+        color: #ffffff !important;
+        border-color: #3f3f46 #3f3f46 transparent !important;
+      }
+
+      .dark-mode .col-mapping-row {
+        border-bottom-color: #2d3748 !important;
+      }
+
+      .dark-mode .network-container,
+      .dark-mode #network_filtered,
+      .dark-mode #vis_net_container {
+        background-color: #18181b !important;
+      }
+
+      .dark-mode .text-muted {
+        color: #94a3b8 !important;
       }
       
       /* --- HEADER ALIGNMENT --- */
@@ -1009,7 +1152,10 @@ ui <- fluidPage(
         icon("key", lib = "font-awesome"),
         tags$input(id="keys_btn", type="button", class="action-button", style = "display: none;")
       ),
-      actionButton("theme_toggle", "🌙 Dark Mode", icon = icon("moon", lib = "font-awesome"), class = "btn-outline-white", "data-toggle" = "tooltip", title = "Switch between Light and Dark interface themes")
+      actionButton("theme_toggle", "🌙 Dark Mode", icon = icon("moon", lib = "font-awesome"), class = "btn-outline-white", "data-toggle" = "tooltip", title = "Switch between Light and Dark interface themes"),
+      actionButton("tutorial_btn", "🎓 Tutorial", icon = icon("chalkboard-user", lib = "font-awesome"), class = "btn-outline-white", "data-toggle" = "tooltip", title = "Launch interactive live tutorial explaining fetching, lookup controls, and charts"),
+      actionButton("readme_btn", "ℹ️ Readme", icon = icon("circle-info", lib = "font-awesome"), class = "btn-outline-white", "data-toggle" = "tooltip", title = "View project overview, architecture, and features"),
+      actionButton("manual_btn", "📖 Manual", icon = icon("book-open", lib = "font-awesome"), class = "btn-outline-white", "data-toggle" = "tooltip", title = "Open full-length user manual, formulas, and analytical guides")
     )
   ),
   
@@ -1108,9 +1254,16 @@ ui <- fluidPage(
           ),
           textAreaInput("author_list_text",  value = "", rows = 2, width = "100%", label = NULL),
           tags$script(HTML("
-            $(document).on('blur', '#author_list_text', function() {
-              // Creates a new reactive input called 'input$author_list'
-              Shiny.setInputValue('author_list', $(this).val());
+            var _authorListTimer = null;
+            function _syncAuthorList() {
+              if (window.Shiny && typeof Shiny.setInputValue === 'function') {
+                Shiny.setInputValue('author_list', $('#author_list_text').val());
+              }
+            }
+            $(document).on('blur change', '#author_list_text', _syncAuthorList);
+            $(document).on('input', '#author_list_text', function() {
+              clearTimeout(_authorListTimer);
+              _authorListTimer = setTimeout(_syncAuthorList, 400);
             });
           ")),
           uiOutput("dynamic_author_filter"),
@@ -1849,6 +2002,10 @@ ui <- fluidPage(
               tags$div(id = "journal_bar_container", class = "api-progress-wrapper",
                        tags$label("Journal Matcher", class = "api-progress-label"),
                        shinyWidgets::progressBar(id = "prog_journal", title = "0%", value = 0, total = 100, status = "warning")
+              ),
+              tags$div(id = "analysis_bar_container", class = "api-progress-wrapper",
+                       tags$label("Processing & Graph Analysis", class = "api-progress-label"),
+                       shinyWidgets::progressBar(id = "prog_analysis", title = "0%", value = 0, total = 100, status = "success")
               )
               # tags$div(id = "wos_bar_container", class = "api-progress-wrapper",
               #          tags$label("Web of Science API", class = "api-progress-label"),

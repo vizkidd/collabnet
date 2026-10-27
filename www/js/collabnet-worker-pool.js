@@ -101,40 +101,105 @@
             // payload: { dois: string[], timeoutMs: number }
             const { dois, timeoutMs = 15000 } = payload;
             const results = [];
+            const sleep = ms => new Promise(r => setTimeout(r, ms));
 
             for (let d = 0; d < dois.length; d++) {
               const rawDoi = dois[d].trim().replace(/^https?:\\/\\/(dx\\.)?doi\\.org\\//i, '');
               if (!rawDoi) continue;
 
-              try {
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-                const url = 'https://api.openalex.org/works/https://doi.org/' + encodeURIComponent(rawDoi);
-                
-                const resp = await fetch(url, { signal: controller.signal });
-                clearTimeout(timeoutId);
+              let fetchedOk = false;
+              let lastStatus = 0;
+              let lastError = null;
 
-                if (resp.ok) {
-                  const data = await resp.json();
-                  const authors = (data.authorships || [])
-                    .map(a => a.author ? a.author.display_name : null)
-                    .filter(Boolean)
-                    .join('; ');
+              // Step 1: OpenAlex with 429 / transient retry & backoff
+              const openAlexUrl = 'https://api.openalex.org/works/https://doi.org/' + encodeURIComponent(rawDoi);
+              for (let attempt = 0; attempt < 3 && !fetchedOk; attempt++) {
+                try {
+                  const controller = new AbortController();
+                  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+                  const resp = await fetch(openAlexUrl, { signal: controller.signal });
+                  clearTimeout(timeoutId);
+                  lastStatus = resp.status;
 
-                  results.push({
-                    doi: rawDoi,
-                    success: true,
-                    title: data.title || '',
-                    authors: authors,
-                    year: data.publication_year || null,
-                    citations: data.cited_by_count || 0,
-                    source: data.primary_location?.source?.display_name || ''
-                  });
-                } else {
-                  results.push({ doi: rawDoi, success: false, status: resp.status });
+                  if (resp.ok) {
+                    const data = await resp.json();
+                    const authors = (data.authorships || [])
+                      .map(a => a.author ? a.author.display_name : null)
+                      .filter(Boolean)
+                      .join('; ');
+
+                    results.push({
+                      doi: rawDoi,
+                      success: true,
+                      title: data.title || '',
+                      authors: authors,
+                      year: data.publication_year || null,
+                      citations: data.cited_by_count || 0,
+                      source: data.primary_location?.source?.display_name || ''
+                    });
+                    fetchedOk = true;
+                    break;
+                  } else if (resp.status === 429 || resp.status >= 500) {
+                    const retrySec = parseInt(resp.headers?.get('retry-after') || '0', 10);
+                    const backoff = retrySec > 0 ? (retrySec + 1) * 1000 : Math.min(1000 * Math.pow(2, attempt), 4000);
+                    await sleep(backoff);
+                  } else {
+                    // Non-retryable HTTP error (e.g. 404) -> break to Crossref fallback
+                    break;
+                  }
+                } catch (err) {
+                  lastError = err.message;
+                  await sleep(500 * (attempt + 1));
                 }
-              } catch (err) {
-                results.push({ doi: rawDoi, success: false, error: err.message });
+              }
+
+              // Step 2: Crossref Fallback if OpenAlex failed or was rate-limited
+              if (!fetchedOk) {
+                try {
+                  const crossrefUrl = 'https://api.crossref.org/works/' + encodeURIComponent(rawDoi);
+                  const controller = new AbortController();
+                  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+                  const resp = await fetch(crossrefUrl, {
+                    headers: { 'User-Agent': 'CollabNET/1.0 (https://vizkidd.github.io/collabnet/)' },
+                    signal: controller.signal
+                  });
+                  clearTimeout(timeoutId);
+                  lastStatus = resp.status;
+
+                  if (resp.ok) {
+                    const crData = await resp.json();
+                    const msg = crData.message || {};
+                    const authors = (msg.author || [])
+                      .map(a => a.family ? (a.given ? a.family + ', ' + a.given : a.family) : (a.name || ''))
+                      .filter(Boolean)
+                      .join('; ');
+                    const year = msg['published-print']?.['date-parts']?.[0]?.[0] ||
+                                 msg['published-online']?.['date-parts']?.[0]?.[0] ||
+                                 msg.created?.['date-parts']?.[0]?.[0] || null;
+
+                    results.push({
+                      doi: rawDoi,
+                      success: true,
+                      title: Array.isArray(msg.title) ? (msg.title[0] || '') : (msg.title || ''),
+                      authors: authors,
+                      year: year ? parseInt(year, 10) : null,
+                      citations: msg['is-referenced-by-count'] || 0,
+                      source: Array.isArray(msg['container-title']) ? (msg['container-title'][0] || '') : (msg['container-title'] || '')
+                    });
+                    fetchedOk = true;
+                  }
+                } catch (crErr) {
+                  lastError = crErr.message;
+                }
+              }
+
+              if (!fetchedOk) {
+                results.push({ doi: rawDoi, success: false, status: lastStatus, error: lastError || 'All resolvers failed' });
+              }
+
+              // Friendly pacing delay between sequential requests in the worker
+              if (d < dois.length - 1) {
+                await sleep(50);
               }
             }
 

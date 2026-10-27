@@ -153,9 +153,10 @@ get_scopus_data_id <- function(scopus_id, api_key = NULL, queue = NULL){
     if (!is.null(queue)) {
       ids_processed <- min(ids_processed + length(chunk), total_ids)
       
-      # Pass the signal, then package the variables into a list for 'obj'
+      # Pass the signal and msg (payload) so ipc::Producer$fire does not error on missing msg
       queue$producer$fire(
         signal = "update_progress", 
+        msg = list(current = ids_processed, total = total_ids),
         obj = list(current = ids_processed, total = total_ids)
       )
     }

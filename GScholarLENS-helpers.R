@@ -311,11 +311,13 @@ extend_input_table <- function(rv, df, author_match_regex, target_variants_norm)
   }
   
   # --- 4. EXTENDED MATCHING ---
+  is_full_data <- identical(rv$author_logic_gate, "FULL")
+
   glens_extended_table <- df %>%
     rowwise() %>%
     mutate(
       dec = list({
-        best_match <- list(label = "Not_found", matched_token = NA)
+        best_match <- list(label = "Not_found", matched_token = NA_character_, token_count = 0L)
         
         for (col in valid_search_cols) {
           val <- get(col)
@@ -346,7 +348,7 @@ extend_input_table <- function(rv, df, author_match_regex, target_variants_norm)
                 )
                 
                 if (is_match) {
-                  best_match <- list(label = "Generic_Match", matched_token = kw)
+                  best_match <- list(label = "Generic_Match", matched_token = kw, token_count = 1L)
                   match_found <- TRUE
                   break
                 }
@@ -357,12 +359,17 @@ extend_input_table <- function(rv, df, author_match_regex, target_variants_norm)
         }
         best_match
       }),
-      label = dec$label,
-      matched_token = dec$matched_token,
-      token_count = dec$token_count
+      label = as.character(if (is.null(dec$label) || is.na(dec$label)) "Not_found" else dec$label),
+      matched_token = as.character(if (is.null(dec$matched_token)) NA_character_ else dec$matched_token),
+      token_count = as.integer(if (is.null(dec$token_count) || length(dec$token_count) == 0 || is.na(dec$token_count)) 0L else dec$token_count)
     ) %>%
-    ungroup() %>%
-    filter(label != "Not_found") %>%
+    ungroup()
+
+  if (!is_full_data) {
+    glens_extended_table <- glens_extended_table %>% filter(label != "Not_found")
+  }
+
+  glens_extended_table <- glens_extended_table %>%
     mutate(
       First_Author = as.integer(label == "First_Author"),
       Second_Author = as.integer(label == "Second_Author"),

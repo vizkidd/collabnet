@@ -14,6 +14,13 @@ suppressPackageStartupMessages(require(visNetwork))
 # ---------------------------
 # We'll produce a long table with columns: Position, Quartile, Count, SumCitations
 make_agg <- function(df, pos_col, pos_label) {
+  if (is.null(df) || nrow(df) == 0 || !pos_col %in% colnames(df)) {
+    return(tibble(Qscore = character(0), Count = integer(0), SumCitations = numeric(0), Position = character(0)))
+  }
+  # Defensive: ensure Qscore and Citations exist
+  if (!"Qscore" %in% colnames(df)) df$Qscore <- "NA"
+  if (!"Citations" %in% colnames(df)) df$Citations <- 0
+  
   # 1. Standardize Qscore to character and replace true NAs with the string "NA"
   df <- df %>%
     mutate(Qscore = as.character(Qscore),
@@ -36,11 +43,9 @@ make_agg <- function(df, pos_col, pos_label) {
 
 plot_glens_table <- function(rv,df,session){
   cn_log_debug("plot_glens_table(): invoked with %d rows", if (is.null(df)) 0L else nrow(df))
-  if(is.null(df) || nrow(df) <= 0 || !all(c("First_Author", "Second_Author", "Co_Author", "Corresponding_Author", "Adjusted_Citations") %in% colnames(df)) ){
+  if(is.null(df) || nrow(df) <= 0){
     rv$log_text <- paste(rv$log_text, "plot_glens_table(): Warning: No data available for these filters!", sep="<br>")
-    warning("plot_glens_table(): Warning: No data available for these filters!")
-    # shinyjs::hide("sh_index")
-    # shinyjs::hide("summary_table")
+    cn_log_warn("plot_glens_table(): Warning: No data available for these filters!")
     shinyjs::hide("acounts_plot")
     shinyjs::hide("ccounts_plot")
     shinyjs::hide("cdist_plot")
@@ -49,6 +54,16 @@ plot_glens_table <- function(rv,df,session){
     shinyjs::hide("network_filtered")
     return() # Stop execution here
   }
+
+  # Ensure required columns exist gracefully
+  for (col in c("First_Author", "Second_Author", "Co_Author", "Corresponding_Author")) {
+    if (!col %in% colnames(df)) df[[col]] <- 0L
+  }
+  if (!"Adjusted_Citations" %in% colnames(df)) {
+    df$Adjusted_Citations <- if ("Citations" %in% colnames(df)) suppressWarnings(as.numeric(df$Citations)) else 0.0
+  }
+  if (!"Citations" %in% colnames(df)) df$Citations <- 0.0
+  if (!"Qscore" %in% colnames(df)) df$Qscore <- "NA"
   
   # Show the safe plots (Counts are safe even if 0)
   shinyjs::show("acounts_plot")
@@ -397,6 +412,16 @@ render_skeleton_plots <- function(rv, df, output){
       arrange(Qscore, Position)
     
   } else {
+    # Ensure required columns exist gracefully
+    for (col in c("First_Author", "Second_Author", "Co_Author", "Corresponding_Author")) {
+      if (!col %in% colnames(df)) df[[col]] <- 0L
+    }
+    if (!"Adjusted_Citations" %in% colnames(df)) {
+      df$Adjusted_Citations <- if ("Citations" %in% colnames(df)) suppressWarnings(as.numeric(df$Citations)) else 0.0
+    }
+    if (!"Citations" %in% colnames(df)) df$Citations <- 0.0
+    if (!"Qscore" %in% colnames(df)) df$Qscore <- "NA"
+
     # Normal data processing
     df_ordered_debug <- df %>%
       mutate(position_rank = case_when(

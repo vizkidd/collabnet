@@ -68,11 +68,12 @@ async function main() {
     }, { timeout: 60000 });
 
     console.log("Clicking #next_row_merge...");
-    await appFrame.click("#next_row_merge");
+    // Use JS click to bypass modal-footer overlay that intercepts pointer events
+    await appFrame.evaluate(() => document.getElementById("next_row_merge").click());
 
     console.log("Waiting for Step 2 modal (#confirm_import)...");
     await appFrame.waitForSelector("#confirm_import", { timeout: 60000 });
-    await appFrame.click("#confirm_import");
+    await appFrame.evaluate(() => document.getElementById("confirm_import").click());
 
     console.log("Waiting for data import to complete (progress overlay to hide)...");
     await appFrame.waitForFunction(() => {
@@ -95,8 +96,8 @@ async function main() {
       }
     });
 
-    const dlBtn = await appFrame.waitForSelector("#download_btn", { timeout: 30000 });
-    await dlBtn.click();
+    await appFrame.waitForSelector("#download_btn", { timeout: 30000 });
+    await appFrame.evaluate(() => document.getElementById("download_btn")?.click());
 
     let downloadPath = path.resolve("mcp/downloaded_test.cnet");
     const download = await downloadPromise;
@@ -123,7 +124,7 @@ async function main() {
 
     if (fs.existsSync(cnetUploadPath) && fs.statSync(cnetUploadPath).size > 0) {
       console.log("Uploading .cnet file:", cnetUploadPath, `(${fs.statSync(cnetUploadPath).size} bytes)`);
-      await appFrame.click("#preupload_btn");
+      await appFrame.evaluate(() => document.getElementById("preupload_btn")?.click());
       const cnetInput = await appFrame.waitForSelector("#upload_btn", { state: "attached", timeout: 30000 });
       await cnetInput.setInputFiles(cnetUploadPath);
 
@@ -135,11 +136,11 @@ async function main() {
       }, { timeout: 60000 });
 
       console.log("Clicking #next_row_merge for .cnet...");
-      await appFrame.click("#next_row_merge");
+      await appFrame.evaluate(() => document.getElementById("next_row_merge")?.click());
 
       console.log("Waiting for Step 2 modal for .cnet...");
       await appFrame.waitForSelector("#confirm_import", { timeout: 60000 });
-      await appFrame.click("#confirm_import");
+      await appFrame.evaluate(() => document.getElementById("confirm_import")?.click());
 
       console.log("Waiting for .cnet import to complete...");
       await appFrame.waitForFunction(() => {

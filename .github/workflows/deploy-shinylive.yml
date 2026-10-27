@@ -34,12 +34,12 @@ jobs:
             libarchive-dev \
             libxml2-dev
         # This runs directly in the Ubuntu Linux terminal shell
-        
+
       - name: Setup R Environment
         uses: r-lib/actions/setup-r@v2
         with:
           use-public-rspm: true # Leverages pre-compiled Linux binary speeds
-      
+
       - name: Install Build Toolchain Dependencies
         env:
           # Injects the automatic token so 'remotes' isn't rate-limited
@@ -49,7 +49,7 @@ jobs:
           # Pull the absolute latest Shinylive build which contains the updated webR bindings
           remotes::install_github("posit-dev/r-shinylive")
         shell: Rscript {0}
-        
+
       - name: Install Build Toolchain Dependencies
         run: |
           install.packages(c("fs", "shinylive"), repos = "https://cran.rstudio.com")
@@ -77,9 +77,6 @@ jobs:
           if(fs::dir_exists("www/")) {
             fs::dir_copy("www/", "staging_app/")
           }
-          if(fs::file_exists("2024-JCR_IMPACT_FACTOR.xlsx")) {
-            fs::file_copy("2024-JCR_IMPACT_FACTOR.xlsx", "staging_app/")
-          }
 
           # 4. Compile the target bundle out to static WebAssembly chunks
           shinylive::export(
@@ -89,44 +86,50 @@ jobs:
             quiet = FALSE
           )
         shell: Rscript {0}
+    
+      # --- NEW STEP: FETCH AND INJECT LATEST WEBR OVERRIDE ---
+      - name: Update webR to Latest GitHub Release
+        env:
+          # GitHub Actions provides this token automatically. We use it
+          # so the 'gh' CLI doesn't hit unauthenticated rate limits.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Fetching the latest webR release from GitHub..."
+          TMP_DIR=$(mktemp -d)
+          cd $TMP_DIR
 
-      # # --- NEW STEP: FETCH AND INJECT LATEST WEBR OVERRIDE ---
-      # - name: Update webR to Latest GitHub Release
-      #   env:
-      #     # GitHub Actions provides this token automatically. We use it 
-      #     # so the 'gh' CLI doesn't hit unauthenticated rate limits.
-      #     GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
-      #   run: |
-      #     echo "Fetching the latest webR release from GitHub..."
-      #     TMP_DIR=$(mktemp -d)
-      #     cd $TMP_DIR
-      #     
-      #     # Download the latest tarball via GitHub CLI
-      #     gh release download -R r-wasm/webr --pattern "webr-*.tar.gz" --clobber
-      #     
-      #     echo "Extracting webR archive..."
-      #     ARCHIVE_FILE=$(ls webr-*.tar.gz)
-      #     tar -xzf "$ARCHIVE_FILE"
-      #     
-      #     # Locate the extracted contents
-      #     EXTRACTED_DIR=$(find . -maxdepth 1 -type d -name "webr*" ! -name "." | head -n 1)
-      #     
-      #     echo "Injecting latest webR into Shinylive build..."
-      #     # We use $GITHUB_WORKSPACE to ensure we are pointing at the correct absolute path
-      #     if [ -n "$EXTRACTED_DIR" ]; then
-      #         rsync -av "$EXTRACTED_DIR/" "$GITHUB_WORKSPACE/wasm_build/shinylive/webr/"
-      #     else
-      #         rsync -av --exclude="*.tar.gz" ./ "$GITHUB_WORKSPACE/wasm_build/shinylive/webr/"
-      #     fi
-      #     
-      #     echo "Cleaning up temporary files..."
-      #     cd "$GITHUB_WORKSPACE"
-      #     rm -rf "$TMP_DIR"
+          # Download the latest tarball via GitHub CLI
+          gh release download -R r-wasm/webr --pattern "webr-*.tar.gz" --clobber
+
+          echo "Extracting webR archive..."
+          ARCHIVE_FILE=$(ls webr-*.tar.gz)
+          tar -xzf "$ARCHIVE_FILE"
+
+          # Locate the extracted contents
+          EXTRACTED_DIR=$(find . -maxdepth 1 -type d -name "webr*" ! -name "." | head -n 1)
+
+          echo "Injecting latest webR into Shinylive build..."
+          # We use $GITHUB_WORKSPACE to ensure we are pointing at the correct absolute path
+          if [ -n "$EXTRACTED_DIR" ]; then
+              rsync -av "$EXTRACTED_DIR/" "$GITHUB_WORKSPACE/wasm_build/shinylive/webr/"
+          else
+              rsync -av --exclude="*.tar.gz" ./ "$GITHUB_WORKSPACE/wasm_build/shinylive/webr/"
+          fi
+
+          echo "Cleaning up temporary files..."
+          cd "$GITHUB_WORKSPACE"
+          rm -rf "$TMP_DIR"
+
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13' 
+      - run: python inject_packages.py
 
       - name: Upload Static Web Site Artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: 'wasm_build' # Configured to target your script's output destination
+          path: "wasm_build" # Configured to target your script's output destination
           retention-days: 1
 
       - name: Deploy Directly to GitHub Pages
