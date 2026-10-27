@@ -55,38 +55,41 @@ jobs:
           install.packages(c("fs", "shinylive"), repos = "https://cran.rstudio.com")
         shell: Rscript {0}
 
+      # - name: Execute buildWASM Bundling Pipeline
+      #   run: |
+      #     # 1. Create clean workspace staging environments
+      #     if(fs::dir_exists("wasm_build")) fs::dir_delete("wasm_build")
+      #     if(fs::dir_exists("staging_app")) fs::dir_delete("staging_app")
+      #     fs::dir_create("staging_app")
+
+      #     # 2. Identify application layouts and dynamic source components
+      #     app_files <- c("ui.R", "server.R", "app.R")
+      #     # Filter files to only grab what is present in the workspace
+      #     app_files <- app_files[file.exists(app_files)]
+      #     helper_scripts <- list.files(pattern = "GScholarLENS.*\\.R")
+
+      #     # Flatten, reverse-strip source connections, and merge into app.R
+      #     cat(unlist(lapply(c(helper_scripts, app_files), function(x){
+      #       return(grep(pattern = "source\\(.*\\)", x = readLines(x), value = TRUE, invert = TRUE))
+      #     })), file="staging_app/app.R", sep="\n")
+
+      #     # 3. Pull required asset files and global web layout assets
+      #     if(fs::dir_exists("www/")) {
+      #       fs::dir_copy("www/", "staging_app/")
+      #     }
+
+      #     # 4. Compile the target bundle out to static WebAssembly chunks
+      #     shinylive::export(
+      #       appdir = "./staging_app/",
+      #       destdir = "./wasm_build/",
+      #       wasm_packages = TRUE,
+      #       quiet = FALSE
+      #     )
+      #   shell: Rscript {0}
+
       - name: Execute buildWASM Bundling Pipeline
-        run: |
-          # 1. Create clean workspace staging environments
-          if(fs::dir_exists("wasm_build")) fs::dir_delete("wasm_build")
-          if(fs::dir_exists("staging_app")) fs::dir_delete("staging_app")
-          fs::dir_create("staging_app")
+        shell: Rscript buildWASM.R
 
-          # 2. Identify application layouts and dynamic source components
-          app_files <- c("ui.R", "server.R", "app.R")
-          # Filter files to only grab what is present in the workspace
-          app_files <- app_files[file.exists(app_files)]
-          helper_scripts <- list.files(pattern = "GScholarLENS.*\\.R")
-
-          # Flatten, reverse-strip source connections, and merge into app.R
-          cat(unlist(lapply(c(helper_scripts, app_files), function(x){
-            return(grep(pattern = "source\\(.*\\)", x = readLines(x), value = TRUE, invert = TRUE))
-          })), file="staging_app/app.R", sep="\n")
-
-          # 3. Pull required asset files and global web layout assets
-          if(fs::dir_exists("www/")) {
-            fs::dir_copy("www/", "staging_app/")
-          }
-
-          # 4. Compile the target bundle out to static WebAssembly chunks
-          shinylive::export(
-            appdir = "./staging_app/", 
-            destdir = "./wasm_build/", 
-            wasm_packages = TRUE, 
-            quiet = FALSE
-          )
-        shell: Rscript {0}
-    
       - name: Update webR to Latest GitHub Release
         env:
           # GitHub Actions provides this token automatically. We use it
@@ -119,10 +122,10 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           rm -rf "$TMP_DIR"
 
-      - uses: actions/setup-python@v7
-        with:
-          python-version: '3.13' 
-      - run: python inject_packages.py
+      # - uses: actions/setup-python@v7
+      #   with:
+      #     python-version: '3.13'
+      # - run: python inject_packages.py
 
       - name: Upload Static Web Site Artifact
         uses: actions/upload-pages-artifact@v3

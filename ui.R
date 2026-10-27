@@ -1152,10 +1152,18 @@ ui <- fluidPage(
         icon("key", lib = "font-awesome"),
         tags$input(id="keys_btn", type="button", class="action-button", style = "display: none;")
       ),
-      actionButton("theme_toggle", "🌙 Dark Mode", icon = icon("moon", lib = "font-awesome"), class = "btn-outline-white", "data-toggle" = "tooltip", title = "Switch between Light and Dark interface themes"),
-      actionButton("tutorial_btn", "🎓 Tutorial", icon = icon("chalkboard-user", lib = "font-awesome"), class = "btn-outline-white", "data-toggle" = "tooltip", title = "Launch interactive live tutorial explaining fetching, lookup controls, and charts"),
-      actionButton("readme_btn", "ℹ️ Readme", icon = icon("circle-info", lib = "font-awesome"), class = "btn-outline-white", "data-toggle" = "tooltip", title = "View project overview, architecture, and features"),
-      actionButton("manual_btn", "📖 Manual", icon = icon("book-open", lib = "font-awesome"), class = "btn-outline-white", "data-toggle" = "tooltip", title = "Open full-length user manual, formulas, and analytical guides")
+      # tags$label(
+      #   class = "btn btn-default btn-outline-white",
+      #   style = "margin-bottom: 0; font-weight: normal; cursor: pointer;",
+      #   "data-toggle" = "tooltip",
+      #   title = "Switch between Light and Dark interface themes",
+      #   icon("moon", lib = "font-awesome"),
+      #   tags$input(id="theme_toggle", type="button", class="action-button", style = "display: none;")
+      # ),
+      actionButton("tutorial_btn", "Tutorial", icon = icon("chalkboard-user", lib = "font-awesome"), class = "btn-outline-white", "data-toggle" = "tooltip", title = "Launch interactive live tutorial explaining fetching, lookup controls, and charts"),
+      actionButton("readme_btn", "ℹReadme", icon = icon("circle-info", lib = "font-awesome"), class = "btn-outline-white", "data-toggle" = "tooltip", title = "View project overview, architecture, and features"),
+      actionButton("manual_btn", "Manual", icon = icon("book-open", lib = "font-awesome"), class = "btn-outline-white", "data-toggle" = "tooltip", title = "Open full-length user manual, formulas, and analytical guides"),
+      actionButton("theme_toggle", "Dark Mode", icon = icon("moon", lib = "font-awesome"), class = "btn-outline-white", "data-toggle" = "tooltip", title = "Switch between Light and Dark interface themes")
     )
   ),
   
@@ -1489,7 +1497,7 @@ ui <- fluidPage(
       # 5) Detailed Publication Record
       tags$div(
         class = "custom-card",
-        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #D6A77A; margin-bottom: 25px;",
+        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #D4853A; margin-bottom: 25px;",
         tags$div(
           class = "custom-card-header",
           style = "display: flex; justify-content: space-between; align-items: center; cursor: pointer; user-select: none; margin-bottom: 0;",
@@ -1501,18 +1509,18 @@ ui <- fluidPage(
               id = "enable_table", 
               type = "checkbox", 
               class = "shiny-input-checkbox", 
-              style = "width: 20px; height: 20px; cursor: pointer; margin: 0; accent-color: #D6A77A;",
+              style = "width: 20px; height: 20px; cursor: pointer; margin: 0; accent-color: #D4853A;",
               "data-toggle" = "tooltip",
               title = "Toggle display of the full searchable publication table"
             ),
-            h3("Detailed Publication Record", style = "color: #D6A77A; margin: 0; font-weight: bold; line-height: 1;", tags$i(class = "fa fa-table-list", style = "font-size: 0.9em; opacity: 0.85;")),
+            h3("Detailed Publication Record", style = "color: #D4853A; margin: 0; font-weight: bold; line-height: 1;", tags$i(class = "fa fa-table-list", style = "font-size: 0.9em; opacity: 0.85;")),
           ),
           
           # Right Side: Fixed Toggle Button
           tags$button(
             type = "button", 
             class = "btn-minimize", 
-            style = "background: transparent; border: none; font-size: 1.6em; line-height: 1; cursor: pointer; color: #D6A77A; padding: 0 5px;",
+            style = "background: transparent; border: none; font-size: 1.6em; line-height: 1; cursor: pointer; color: #D4853A; padding: 0 5px;",
             HTML("&plus;")
           )
         ),
@@ -1889,7 +1897,7 @@ ui <- fluidPage(
       ),
       tags$div(
         class = "custom-card",
-        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #391463; margin-bottom: 25px;",
+        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #741fd6; margin-bottom: 25px;",
         
         tags$div(
           class = "custom-card-header",
@@ -1902,18 +1910,18 @@ ui <- fluidPage(
               id = "enable_venn", 
               type = "checkbox", 
               class = "shiny-input-checkbox", 
-              style = "width: 20px; height: 20px; cursor: pointer; margin: 0; accent-color: #391463;",
+              style = "width: 20px; height: 20px; cursor: pointer; margin: 0; accent-color: #741fd6;",
               "data-toggle" = "tooltip",
               title = "Toggle display of Venn and UpSet diagrams showing shared publications"
             ),
-            h3("Overlap Analysis", style = "color: #391463; margin: 0; font-weight: bold; line-height: 1;", tags$i(class = "fa fa-chart-pie", style = "font-size: 0.9em; opacity: 0.85;"))
+            h3("Overlap Analysis", style = "color: #741fd6; margin: 0; font-weight: bold; line-height: 1;", tags$i(class = "fa fa-chart-pie", style = "font-size: 0.9em; opacity: 0.85;"))
           ),
           
           # Right Side: Fixed Toggle Button
           tags$button(
             type = "button", 
             class = "btn-minimize", 
-            style = "background: transparent; border: none; font-size: 1.6em; line-height: 1; cursor: pointer; color: #391463; padding: 0 5px;",
+            style = "background: transparent; border: none; font-size: 1.6em; line-height: 1; cursor: pointer; color: #741fd6; padding: 0 5px;",
             HTML("&plus;")
           )
         ),
@@ -1928,12 +1936,12 @@ ui <- fluidPage(
               style = "display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; align-items: end; margin-top: 10px; margin-bottom: 10px; padding: 15px; background: #f8f9fa; border-radius: 6px; border: 1px solid #e9ecef;",
               selectInput("venn_col_filtered", 
                           tags$span("Choose column to visualize:",
-                                    tags$i(class = "fa fa-info-circle", style = "color: #391463; margin-left: 5px; cursor: help;",
+                                    tags$i(class = "fa fa-info-circle", style = "color: #741fd6; margin-left: 5px; cursor: help;",
                                            title = "Select the column containing items to compare for overlap (e.g. Authors or Author Keywords).")),
                           choices = NULL, width = "100%"),
               selectizeInput("custom_venn_selector", 
                              tags$span("Search/Select Keyword:",
-                                       tags$i(class = "fa fa-info-circle", style = "color: #391463; margin-left: 5px; cursor: help;",
+                                       tags$i(class = "fa fa-info-circle", style = "color: #741fd6; margin-left: 5px; cursor: help;",
                                               title = "Select 2 to 5 specific authors or topics to compare their shared publications in the Venn diagram.")),
                              multiple = TRUE,
                              choices = NULL, 
@@ -1941,9 +1949,9 @@ ui <- fluidPage(
                              options = list(placeholder = 'Type a keyword...')),
               tags$div(
                 tags$span("Pick base theme color:",
-                          tags$i(class = "fa fa-info-circle", style = "color: #391463; margin-left: 5px; cursor: help;",
+                          tags$i(class = "fa fa-info-circle", style = "color: #741fd6; margin-left: 5px; cursor: help;",
                                  title = "Base color palette used to shade the Venn diagram and UpSet intersection bars.")),
-                colourpicker::colourInput("venn_theme_color", label = NULL, value="#391463")
+                colourpicker::colourInput("venn_theme_color", label = NULL, value="#741fd6")
               )
             ),
             tags$div(

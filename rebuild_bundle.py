@@ -2,7 +2,7 @@ import os
 import re
 import json
 
-base_dir = "/home/linuxusb/Downloads/collabnet-main-mcp/collabnet-main"
+base_dir = "./"
 
 helper_scripts = [
     "GScholarLENS-DOI2Data.R",
@@ -29,16 +29,16 @@ for fname in all_files:
     fpath = os.path.join(base_dir, fname)
     with open(fpath, "r", encoding="utf-8") as f:
         for line in f:
-            # Strip source(...) calls
-            if re.search(r"^\s*source\s*\(", line):
-                continue
-            # Strip require(httr2) to prevent rlang version conflict in WebR
-            if re.search(r"require\s*\(\s*httr2\s*\)", line):
-                continue
-            if 'tags$script(src = "js/collabnet-worker-pool.js")' in line:
-                if worker_js_content:
-                    combined_lines.append(f'    tags$script(HTML({json.dumps(worker_js_content)})),\n')
-                    continue
+            # # Strip source(...) calls
+            # if re.search(r"^\s*source\s*\(", line):
+            #     continue
+            # # Strip require(httr2) to prevent rlang version conflict in WebR
+            # if re.search(r"require\s*\(\s*httr2\s*\)", line):
+            #     continue
+            # if 'tags$script(src = "js/collabnet-worker-pool.js")' in line:
+            #     if worker_js_content:
+            #         combined_lines.append(f'    tags$script(HTML({json.dumps(worker_js_content)})),\n')
+            #         continue
             combined_lines.append(line)
 
 combined_text = "".join(combined_lines)

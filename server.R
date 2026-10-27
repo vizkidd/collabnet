@@ -1185,9 +1185,9 @@ server <- function(input, output, session) {
     
     # Update button label and icon
     if (input$theme_toggle %% 2 == 1) {
-      updateActionButton(session, "theme_toggle", label = "☀️ Light Mode", icon = icon("sun", lib = "font-awesome"))
+      updateActionButton(session, "theme_toggle", label = "Light Mode", icon = icon("sun", lib = "font-awesome"))
     } else {
-      updateActionButton(session, "theme_toggle", label = "🌙 Dark Mode", icon = icon("moon", lib = "font-awesome"))
+      updateActionButton(session, "theme_toggle", label = "Dark Mode", icon = icon("moon", lib = "font-awesome"))
     }
   })
 
