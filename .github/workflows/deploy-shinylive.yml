@@ -88,8 +88,7 @@ jobs:
       #   shell: Rscript {0}
 
       - name: Execute buildWASM Bundling Pipeline
-        run:
-        shell: Rscript buildWASM.R
+        run: Rscript buildWASM.R
 
       - name: Update webR to Latest GitHub Release
         env:
