@@ -29,9 +29,9 @@ for fname in all_files:
     fpath = os.path.join(base_dir, fname)
     with open(fpath, "r", encoding="utf-8") as f:
         for line in f:
-            # # Strip source(...) calls
-            # if re.search(r"^\s*source\s*\(", line):
-            #     continue
+            # Strip source(...) calls
+            if re.search(r"^\s*source\s*\(", line):
+                continue
             # # Strip require(httr2) to prevent rlang version conflict in WebR
             # if re.search(r"require\s*\(\s*httr2\s*\)", line):
             #     continue

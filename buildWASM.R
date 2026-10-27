@@ -33,7 +33,7 @@ helper_scripts <- c(
 
 app_content_lines <- unlist(lapply(c(helper_scripts, app_files), function(x){
   lines <- readLines(x)
-  # lines <- grep(pattern = "source\\(.*\\)", x = lines, value = TRUE, invert = TRUE)
+  lines <- grep(pattern = "source\\(.*\\)", x = lines, value = TRUE, invert = TRUE)
   # lines <- grep(pattern = "require\\(httr2\\)", x = lines, value = TRUE, invert = TRUE)
   # if (nzchar(worker_js_content)) {
   #   worker_js_json <- jsonlite::toJSON(worker_js_content, auto_unbox = TRUE)
@@ -55,24 +55,24 @@ fs::dir_copy("www/","staging_app/")
 
 shinylive::export(appdir = "./staging_app/", destdir = "./wasm_build/", wasm_packages=T, quiet=F)
 
-# -----------------------------------------------------------------------------
-# 3. FAST COLD-START OPTIMIZATION: Inject packages into library.data.gz
-# -----------------------------------------------------------------------------
-# Pre-bakes all packages from wasm_build/shinylive/webr/packages/ directly into
-# the WebR virtual filesystem (library.data.gz & library.js.metadata).
-# This avoids downloading ~60 .tgz packages via HTTP on cold start, dropping boot
-# time from >90s to <5s and enabling full offline operation.
-message("\n=== Injecting downloaded packages into library.data.gz (VFS pre-bake) ===")
-if (file.exists("inject_packages.py")) {
-  inject_status <- system("python3 inject_packages.py wasm_build")
-  if (inject_status == 0) {
-    message("Successfully pre-baked packages into library.data.gz!")
-  } else {
-    warning("Package injection script returned non-zero exit code: ", inject_status)
-  }
-} else {
-  message("inject_packages.py not found in working directory; skipping VFS injection.")
-}
+# # -----------------------------------------------------------------------------
+# # 3. FAST COLD-START OPTIMIZATION: Inject packages into library.data.gz
+# # -----------------------------------------------------------------------------
+# # Pre-bakes all packages from wasm_build/shinylive/webr/packages/ directly into
+# # the WebR virtual filesystem (library.data.gz & library.js.metadata).
+# # This avoids downloading ~60 .tgz packages via HTTP on cold start, dropping boot
+# # time from >90s to <5s and enabling full offline operation.
+# message("\n=== Injecting downloaded packages into library.data.gz (VFS pre-bake) ===")
+# if (file.exists("inject_packages.py")) {
+#   inject_status <- system("python3 inject_packages.py wasm_build")
+#   if (inject_status == 0) {
+#     message("Successfully pre-baked packages into library.data.gz!")
+#   } else {
+#     warning("Package injection script returned non-zero exit code: ", inject_status)
+#   }
+# } else {
+#   message("inject_packages.py not found in working directory; skipping VFS injection.")
+# }
 
 
 #Download and install the latest version of webR from github
