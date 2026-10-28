@@ -183,6 +183,7 @@ source("GScholarLENS-PlotGLENS.R", local = TRUE)
 source("GScholarLENS-helpers.R",local=TRUE)
 source("GScholarLENS-Graph.R", local = TRUE)
 source("GScholarLENS-Fixes.R", local = TRUE)
+source("GScholarLENS-MCP.R", local = TRUE)
 
 server <- function(input, output, session) {
   rv <- reactiveValues(
@@ -201,7 +202,7 @@ server <- function(input, output, session) {
     sh_index = 0,
     is_glens_exec = F,
     is_cancelled = F,
-    extended_controls = F,
+    extended_controls = T,
     auto_refresh_lookup = T,
     ext_match = T,
     ignore_case = T,
@@ -218,6 +219,7 @@ server <- function(input, output, session) {
     has_key_crossref = F,
     post_diagnostics = NULL
   )
+  glens_env$rv <- rv
   
   # --- App Boot Operational Pre-flight Self-Test (POST) & Machine Precision ---
   post_results <- tryCatch(collabnet_run_post(verbose = TRUE), error = function(e) {
@@ -307,6 +309,40 @@ server <- function(input, output, session) {
     return(HTML(rv$log_text))
   })
   
+
+  # Publish the checkbox's consent state to JavaScript. The R-side check below
+  # remains authoritative even if browser JS is modified.
+  shiny::observeEvent(input$collabnet_mcp_enabled, {
+    session$sendCustomMessage("collabnet_mcp_enabled", list(enabled = isTRUE(input$collabnet_mcp_enabled)))
+  }, ignoreNULL = FALSE)
+
+  # One request in, one response out. The handler is intentionally synchronous:
+  # it only runs read-only calculations on this Shiny session's reactive values.
+  shiny::observeEvent(input$collabnet_mcp_request, {
+    req_data <- shiny::isolate(input$collabnet_mcp_request)
+    request_id <- tryCatch(as.character(req_data$id)[1L], error = function(e) "")
+    if (!nzchar(request_id)) return()
+
+    response <- tryCatch({
+      if (!isTRUE(shiny::isolate(input$collabnet_mcp_enabled))) {
+        stop("AI read access is disabled. Enable the CollabNET browser MCP checkbox first.", call. = FALSE)
+      }
+      tool_name <- as.character(req_data$tool)[1L]
+      if (is.na(tool_name) || !nzchar(tool_name) || length(tool_name) != 1L) stop("A valid tool name is required.", call. = FALSE)
+      args <- req_data$arguments
+      if (is.null(args) || !is.list(args)) args <- list()
+      result <- mcp_dispatch_tool(tool_name, args)
+      list(id = request_id, ok = TRUE, result = result)
+    }, error = function(e) {
+      list(id = request_id, ok = FALSE,
+          error = list(code = "TOOL_ERROR", message = conditionMessage(e)))
+    })
+
+    # All responses are bounded at the tool level. Never send the igraph object,
+    # Shiny reactive environment, raw application environment, or credentials.
+    session$sendCustomMessage("collabnet_mcp_response", response)
+  }, ignoreInit = TRUE)
+
   observeEvent(input$browser_stored_keys, {
     keys <- input$browser_stored_keys
     
@@ -950,7 +986,7 @@ server <- function(input, output, session) {
     
     cn_log_debug("confirm_import: extending input table with %d rows", nrow(raw_df))
     # --- 1. THE HEAVY LIFTING (Part 1: R Formatting) ---
-    extended_df <- extend_input_table(rv, raw_df, rv$author_match_regex, rv$target_variants_norm)
+    extended_df <- extend_input_table(rv, raw_df, rv$author_match_regex, rv$target_variants_norm, keep_all = TRUE)
     
     # Extract journals and append Name_norm column
     target_journal_col <- if ("User_Journal" %in% names(extended_df)) extended_df$User_Journal else extended_df$Journal
@@ -1071,6 +1107,9 @@ server <- function(input, output, session) {
     }
   })
   
+  observeEvent(input$author_logic_gate, {
+    rv$author_logic_gate <- input$author_logic_gate
+  }, ignoreNULL = FALSE)
   
   output$row_merge_ui <- renderUI({
     # if (is.null(rv$glens_etable_final) || ncol(rv$glens_etable_final) == 0) {
@@ -2189,7 +2228,8 @@ server <- function(input, output, session) {
   debounced_inputs <- raw_lookup_inputs %>% debounce(1000)
   
   active_filters <- reactive({
-    if (isTRUE(input$auto_refresh_lookup)) {
+    is_auto <- if (is.null(input$auto_refresh_lookup)) TRUE else isTRUE(input$auto_refresh_lookup)
+    if (is_auto) {
       # AUTO MODE: React to every change in the debounced inputs
       debounced_inputs()
     } else {
@@ -2216,7 +2256,7 @@ server <- function(input, output, session) {
     
     # if(isFALSE(rv$is_glens_exec)){
       # --- A. SOURCE FILTER ---
-      if (!is.null(filters$source) && "Source" %in% colnames(df)) {
+      if (!is.null(filters$source) && nzchar(filters$source) && filters$source != "All" && "Source" %in% colnames(df)) {
         df <- df %>% filter(Source == filters$source)
       }
       
@@ -2284,15 +2324,17 @@ server <- function(input, output, session) {
     
     cn_log_debug("glens_year_filtered_rx: extending table with author_list count=%d", length(rv$author_list))
     # --- D. CALCULATE CITATION WEIGHTS ---
-    if(!all(c("matched_token","token_count","First_Author","Second_Author","Co_Author","Corresponding_Author") %in% colnames(df))){
+    needs_extension <- !all(c("matched_token","token_count","First_Author","Second_Author","Co_Author","Corresponding_Author") %in% colnames(df)) ||
+                       (length(rv$author_list) > 0)
+    if (needs_extension) {
       df <- isolate(extend_input_table(rv, df, rv$author_match_regex, rv$target_variants_norm))
     }
     
     return(df)
   })
   
-  # This observer handles all visual side-effects
-  observeEvent(glens_year_filtered_rx(), {
+  # This observer handles all visual side-effects and plot updates
+  observeEvent(list(glens_year_filtered_rx(), input$enable_plots), {
     df <- glens_year_filtered_rx()
     cn_log_debug("glens_year_filtered_rx observer: %d rows", if (is.null(df)) 0L else nrow(df))
     # 1. Handle Visibility
@@ -2300,6 +2342,14 @@ server <- function(input, output, session) {
       shinyjs::hide("summary_table")
       # Hide plot containers
       lapply(c("acounts_plot", "ccounts_plot", "cdist_plot", "aperc_plot", "cperc_plot"), shinyjs::hide)
+      # Visual feedback: if no rows matched, all lookup keywords have 0 matches (red)
+      if (!is.null(rv$author_list) && length(rv$author_list) > 0) {
+        kw_statuses <- lapply(rv$author_list, function(kw) {
+          list(keyword = kw, count = 0L, found = FALSE)
+        })
+        session$sendCustomMessage("keyword_match_status", list(results = kw_statuses))
+      }
+      rv$is_glens_exec <- FALSE
       return()
     }
     
@@ -2309,33 +2359,39 @@ server <- function(input, output, session) {
     lapply(c("acounts_plot", "ccounts_plot", "cdist_plot", "aperc_plot", "cperc_plot"), shinyjs::show)
     shinyjs::show("summary_table")
     
-    if ("token_count" %in% colnames(df)) {
-      tc_vals <- na.omit(df$token_count)
-      if (length(tc_vals) > 0 && any(is.finite(tc_vals))) {
-        updateSliderInput(
-          session, 
-          "custom_max_keywords", 
-          min = min(tc_vals), 
-          max = max(tc_vals)
-        )
-      }
+    # 2. KEYWORD VISUAL STATUS: Check match counts for each lookup keyword
+    if (!is.null(rv$author_list) && length(rv$author_list) > 0) {
+      kw_statuses <- lapply(rv$author_list, function(kw) {
+        cnt <- 0L
+        if ("matched_token" %in% colnames(df)) {
+          cnt <- sum(!is.na(df$matched_token) & tolower(df$matched_token) == tolower(kw))
+        }
+        if (cnt == 0L && "Authors" %in% colnames(df)) {
+          rgx <- paste0("\\b", escape_regex(kw), "\\b")
+          cnt <- sum(grepl(rgx, df$Authors, ignore.case = TRUE, perl = TRUE))
+        }
+        list(keyword = kw, count = as.integer(cnt), found = cnt > 0L)
+      })
+      session$sendCustomMessage("keyword_match_status", list(results = kw_statuses))
+    } else {
+      session$sendCustomMessage("keyword_match_status", list(results = list()))
     }
+    
     rv$is_glens_exec <- FALSE
     
     # 3. UPDATE THE PLOTS
     # We use try() because if the skeleton isn't fully rendered in the UI yet, 
     # the proxy might throw a temporary error.
-    try({
-      req(input$enable_plots)
-      rv$is_glens_exec <- TRUE
+    if (isTRUE(input$enable_plots)) {
+      try({
+        rv$is_glens_exec <- TRUE
         cn_log_debug("Updating plots via Proxy...")
         plot_glens_table(rv, df, session)
-      # }else{
-      #   render_skeleton_plots(rv, df, output)
-      # }
-    }, silent = TRUE)
-    rv$is_glens_exec <- FALSE
-  })
+      }, silent = TRUE)
+      rv$is_glens_exec <- FALSE
+    }
+  }, ignoreInit = TRUE)
+  glens_env$glens_year_filtered_rx <- glens_year_filtered_rx
   
   # =============================================================================
   # Venn diagram updates
@@ -2425,6 +2481,13 @@ server <- function(input, output, session) {
     shiny::freezeReactiveValue(input, "edge_freq_range")
     shiny::freezeReactiveValue(input, "cluster_size_range")
     
+    # Ensure custom_max_keywords recovers if it was previously clamped
+    curr_max_k <- if (!is.null(input$custom_max_keywords) && length(input$custom_max_keywords) >= 2) input$custom_max_keywords[2] else 500L
+    if (curr_max_k < 2L) {
+      shiny::freezeReactiveValue(input, "custom_max_keywords")
+      updateSliderInput(session, "custom_max_keywords", min = 1, max = max(500L, bounds$max_paper_size), value = c(1, max(500L, bounds$max_paper_size)))
+    }
+    
     # Update inputs with fixed defaults
     updateSliderInput(session, "node_freq_range", min = 1, max = max_node_occurrences, value = c(1, max_node_occurrences))
     updateSliderInput(session, "edge_freq_range", min = 0, max = max_edge_frequency, value = c(1, max_edge_frequency)) 
@@ -2510,6 +2573,7 @@ server <- function(input, output, session) {
         
         shinyjs::show("timeline_card") # Show outer card
         shinyjs::show("year_slider")   # Show inner slider
+        shinyjs::runjs("$('#timeline_card .custom-card-content').show(); $('#timeline_card .btn-minimize').html('&minus;');")
       } else {
         shinyjs::hide("timeline_card")
       }
@@ -2522,6 +2586,7 @@ server <- function(input, output, session) {
       available_sources <- as.character(na.omit(unique(df$Source)))
       if(length(available_sources) > 0) {
         shinyjs::show("source_card")
+        shinyjs::runjs("$('#source_card .custom-card-content').show(); $('#source_card .btn-minimize').html('&minus;');")
       } else {
         shinyjs::hide("source_card")
       }
@@ -2717,7 +2782,10 @@ net_data_filtered_raw <- reactive({
         input$custom_max_keywords, input$cluster_size_range)
 
     df  <- glens_year_filtered_rx()
-    req(df, nrow(df) > 0)
+    if (is.null(df) || nrow(df) == 0) {
+      return(list(nodes = data.frame(), edges = data.frame(),
+                  graph = NULL, stats = list()))
+    }
     col <- input$net_col_filtered %||% "Authors"
     if (!nzchar(col) || !(col %in% colnames(df))) {
       col <- if ("Authors" %in% colnames(df)) "Authors" else colnames(df)[1]
@@ -2749,6 +2817,7 @@ net_data_filtered_raw <- reactive({
   })
 
   net_data_filtered_debounced <- net_data_filtered_raw %>% debounce(600)
+  glens_env$net_data_filtered_debounced <- net_data_filtered_debounced
 
   observeEvent(list(input$node_freq_range, input$edge_freq_range,
                     input$cluster_size_range, input$custom_max_keywords,
@@ -3787,9 +3856,17 @@ net_data_filtered_raw <- reactive({
     if("Source" %in% colnames(df)){
       # Safely extract sources and strip out NAs
       available_sources <- as.character(na.omit(unique(df$Source)))
+      available_sources <- available_sources[nzchar(trimws(available_sources))]
       
       if (length(available_sources) == 0) {
         return(p("Import: No sources identified yet.", style = "color: #888;"))
+      }
+      
+      choices <- c("All", available_sources)
+      current_selected <- if (!is.null(input$selected_source) && input$selected_source %in% choices) {
+        input$selected_source
+      } else {
+        "All"
       }
       
       return(tags$div(
@@ -3802,8 +3879,8 @@ net_data_filtered_raw <- reactive({
                title = "Filter the analysis by publication source or indexed database.")
         ),
         radioButtons("selected_source", label = NULL, 
-                     choices = available_sources, 
-                     selected = available_sources[1], 
+                     choices = choices, 
+                     selected = current_selected, 
                      inline = FALSE)
       ))
     } else {
@@ -4084,10 +4161,17 @@ net_data_filtered_raw <- reactive({
       
     } else {
       matched_df <- extended_df
-      if (!"Name_norm" %in% names(matched_df)) matched_df$Name_norm <- "Unknown"
-      matched_df$JCR_Journal <- matched_df$Name_norm
-      matched_df$Qscore <- "NA"
-      matched_df$JIF5Years <- "0"
+      if (nrow(matched_df) > 0) {
+        if (!"Name_norm" %in% names(matched_df)) matched_df$Name_norm <- "Unknown"
+        matched_df$JCR_Journal <- matched_df$Name_norm
+        matched_df$Qscore <- "NA"
+        matched_df$JIF5Years <- "0"
+      } else {
+        if (!"Name_norm" %in% names(matched_df)) matched_df$Name_norm <- character(0)
+        matched_df$JCR_Journal <- character(0)
+        matched_df$Qscore <- character(0)
+        matched_df$JIF5Years <- character(0)
+      }
     }
     
     # Sanitize NAs
@@ -4188,12 +4272,14 @@ net_data_filtered_raw <- reactive({
         rv$manual_submit <- if(is.null(rv$manual_submit)) 1 else rv$manual_submit + 1
       }
       
+      shinyWidgets::updateProgressBar(session, id = "prog_analysis", value = 100, title = "Analysis Complete: 100%", status = "success")
+      
       rv$imported_data_list <- NULL
       rv$intermediate_merged_df <- NULL
       rv$saved_col_import_type <- NULL
       rv$log_text <- paste(rv$log_text, paste("Post-Import Total:",nrow(rv$glens_full_table),"lines..."),sep="<br>")
       
-      shinyjs::hide("progress_overlay")
+      shinyjs::delay(800, shinyjs::hide("progress_overlay"))
       shinyjs::show("orcid_bar_container")
       shinyjs::show("scopus_bar_container")
     }
@@ -4892,13 +4978,17 @@ net_data_filtered_raw <- reactive({
                 }
               }
               
+              title_val <- xtext_safe(w, ".//*[local-name()='title']/*[local-name()='title']")
+              if (is.na(title_val)) title_val <- xtext_safe(w, ".//*[local-name()='title']")
+              
               tibble::tibble(
                 source_name = xtext_safe(w, ".//*[local-name()='source-name']"),
-                title = xtext_safe(w, ".//*[local-name()='title']"),
+                title = title_val,
                 external_id_value = ext_id_val,
                 external_id_url = ext_id_url,
                 journal_title = xtext_safe(w, ".//*[local-name()='journal-title']"),
                 work_type = xtext_safe(w, ".//*[local-name()='type']"),
+                pub_year = xtext_safe(w, ".//*[local-name()='publication-date']/*[local-name()='year']"),
                 orcid = paste0("https://orcid.org/", clean_orcid)
               )
             })
@@ -5472,12 +5562,15 @@ net_data_filtered_raw <- reactive({
             if (!"external_id_url" %in% names(orcid_combo)) orcid_combo$external_id_url <- NA_character_
             if (!"external_id_value" %in% names(orcid_combo)) orcid_combo$external_id_value <- NA_character_
             if (!"orcid" %in% names(orcid_combo)) orcid_combo$orcid <- NA_character_
+            if (!"title" %in% names(orcid_combo)) orcid_combo$title <- NA_character_
+            if (!"journal_title" %in% names(orcid_combo)) orcid_combo$journal_title <- NA_character_
+            if (!"pub_year" %in% names(orcid_combo)) orcid_combo$pub_year <- NA_character_
             
             missing_url <- is.na(orcid_combo$external_id_url)
             orcid_combo[missing_url, "external_id_url"] <- orcid_combo[missing_url, "external_id_value"]
             
             doi_df <- orcid_combo %>% 
-              dplyr::select(external_id_url, external_id_value, orcid) %>% 
+              dplyr::select(external_id_url, external_id_value, orcid, title, journal_title, pub_year) %>% 
               dplyr::rename(doi_url=external_id_url, doi=external_id_value)
           }
           
@@ -5496,10 +5589,10 @@ net_data_filtered_raw <- reactive({
             }
           } else {
             if (length(doi_ui_lines) > 0) {
-              doi_df <- data.frame(doi=doi_ui_lines, orcid=NA_character_, doi_url=doi_ui_lines, stringsAsFactors=FALSE)
+              doi_df <- data.frame(doi=doi_ui_lines, orcid=NA_character_, doi_url=doi_ui_lines, title=NA_character_, journal_title=NA_character_, pub_year=NA_character_, stringsAsFactors=FALSE)
             } else {
               # Truly empty dataframe safe fallback
-              doi_df <- data.frame(doi=character(0), orcid=character(0), doi_url=character(0), stringsAsFactors=FALSE)
+              doi_df <- data.frame(doi=character(0), orcid=character(0), doi_url=character(0), title=character(0), journal_title=character(0), pub_year=character(0), stringsAsFactors=FALSE)
             }
           }
           
@@ -5533,7 +5626,20 @@ net_data_filtered_raw <- reactive({
           # 3. INSTANTLY PROCESS INVALID DOIs (No JS needed)
           if (nrow(invalid_dois) > 0) {
             for (i in seq_len(nrow(invalid_dois))) {
-              meta_df <- prepare_doi_metadata(invalid_dois$clean_id[i], invalid_dois$orcid[i], rv, id_type = invalid_dois$id_type[i])
+              f_title <- if ("title" %in% names(invalid_dois)) invalid_dois$title[i] else NULL
+              f_journal <- if ("journal_title" %in% names(invalid_dois)) invalid_dois$journal_title[i] else NULL
+              f_year <- if ("pub_year" %in% names(invalid_dois)) invalid_dois$pub_year[i] else NULL
+              meta_df <- tryCatch({
+                prepare_doi_metadata(
+                  invalid_dois$clean_id[i], 
+                  invalid_dois$orcid[i], 
+                  rv, 
+                  id_type = invalid_dois$id_type[i],
+                  fallback_title = f_title,
+                  fallback_journal = f_journal,
+                  fallback_year = f_year
+                )
+              }, error = function(e) { NULL })
               if (!is.null(meta_df)) {
                 meta_df$Citations <- 0
                 rv$final_results[[paste0("inv_", i)]] <- meta_df
@@ -5548,8 +5654,23 @@ net_data_filtered_raw <- reactive({
             for (i in seq_len(nrow_valid_dois)) {
               doi_target <- valid_dois[i, ]
               req_id <- paste0(rv$current_run_id, "_req_", i) 
+              f_title <- if ("title" %in% names(doi_target)) doi_target[["title"]] else NULL
+              f_journal <- if ("journal_title" %in% names(doi_target)) doi_target[["journal_title"]] else NULL
+              f_year <- if ("pub_year" %in% names(doi_target)) doi_target[["pub_year"]] else NULL
               
-              meta_df <- prepare_doi_metadata(doi_target[["doi"]], doi_target[["orcid"]], rv)
+              meta_df <- tryCatch({
+                prepare_doi_metadata(
+                  doi_target[["doi"]], 
+                  doi_target[["orcid"]], 
+                  rv,
+                  fallback_title = f_title,
+                  fallback_journal = f_journal,
+                  fallback_year = f_year
+                )
+              }, error = function(e) {
+                cn_log_warn("prepare_doi_metadata failed for %s: %s", doi_target[["doi"]], conditionMessage(e))
+                NULL
+              })
               pct <- round((i / max(1, nrow_valid_dois)) * 100)
               shinyWidgets::updateProgressBar(session, id = "prog_doi", title= sprintf("Submitting DOI: %d%% (%d/%d)", pct, i, nrow_valid_dois), value = i, total = max(1, nrow_valid_dois))
               if (!is.null(meta_df)) {
@@ -5642,6 +5763,8 @@ net_data_filtered_raw <- reactive({
   # Tell Shiny to render this UI in the background even while the parent div is hidden.
   outputOptions(output, "lookup_controls_panel", suspendWhenHidden = FALSE)
   outputOptions(output, "extended_table", suspendWhenHidden = FALSE)
+  outputOptions(output, "dynamic_source_ui", suspendWhenHidden = FALSE)
+  outputOptions(output, "dynamic_author_filter", suspendWhenHidden = FALSE)
   
   outputOptions(output, "sh_index", suspendWhenHidden = FALSE)
   outputOptions(output, "summary_table", suspendWhenHidden = FALSE)

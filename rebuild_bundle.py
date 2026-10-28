@@ -13,7 +13,8 @@ helper_scripts = [
     "GScholarLENS-PlotGLENS.R",
     "GScholarLENS-Graph.R",
     "GScholarLENS-helpers.R",
-    "GScholarLENS-Fixes.R"
+    "GScholarLENS-Fixes.R",
+    "GScholarLENS-MCP.R"
 ]
 app_files = ["ui.R", "server.R", "app.R"]
 all_files = helper_scripts + app_files

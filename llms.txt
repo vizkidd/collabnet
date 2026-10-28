@@ -1,0 +1,45 @@
+# CollabNET
+
+> CollabNET: Browser-native scientific collaboration network analysis, ego metrics, and bibliometric graph mining powered entirely client-side via WebAssembly (webR / Shinylive).
+
+CollabNET is an AI-friendly, client-side bibliometric research engine and graph mining suite. It runs zero-setup in standard web browsers using webR (R compiled to WebAssembly) and Web Workers, analyzing co-authorship networks, community modularity, network cut-vertices, and author-level metrics without server-side computation.
+
+Detailed documentation, function schemas, and MCP specifications: [llms-full.txt](llms-full.txt)
+
+## Quick Start & Web Access
+
+- Live Application: https://vizkidd.github.io/collabnet/
+- Source Repository: https://github.com/vizkidd/collabnet
+- Local Development: `Rscript -e "shinylive::run('wasm_build', port = 8080)"`
+
+## Core Capabilities
+
+1. **Live Data Ingestion**:
+   - Ingest from ORCID (v3.0 REST API), Elsevier Scopus (Author & Document Search), OpenAlex, and Crossref.
+   - Direct CSV upload (supporting Scopus exports, Web of Science, and custom delimiters).
+   - Session import/export via compressed `.cnet` (gzip RDS v3) format.
+
+2. **Graph Theory & Collaboration Network Metrics**:
+   - **Newman Weighted Co-authorship Projection**: Hyper-edge folding with inverse-degree weighting $w_{ij} = \sum_{p} \frac{1}{n_p - 1}$.
+   - **Disparity Filter Backbone Extraction**: Significance filter extracting multiscale backbones from dense networks at significance level $\alpha$.
+   - **Community Detection**: Multi-resolution Louvain modularity clustering and community-collapsed macro views.
+   - **Centrality Metrics**: Degree, eigenvector, betweenness, closeness, harmonic centrality, and PageRank.
+   - **Topology Diagnostics**: Articulation points (cut-vertices), bridge edges, biconnected components, and Hamiltonian path/cycle heuristics.
+
+3. **Ego Metrics & Bibliometrics**:
+   - Hirsch $h$-index, Egghe $g$-index, $i10$-index, and author position ranking (First, Second, Corresponding, Co-author).
+   - Journal Citation Reports (JCR) impact factors, 5-year JIF, and quartile rankings (Q1-Q4).
+   - Relationship filtering logic gates: OR (union), AND (intersection), XOR (rival/exclusive), NOR, and NAND.
+
+## File Manifest & Data Formats
+
+- `.cnet`: CollabNET compressed session archive (gzip compressed RDS format containing publication tables, detected multi-value delimiters, and cached metrics).
+- `scopus_export_*.csv`: Standard Elsevier Scopus CSV export containing `Authors`, `Title`, `Year`, `Source title`, `DOI`, and `Cited by`.
+
+## Model Context Protocol (MCP)
+
+CollabNET includes a Model Context Protocol server exposing tab-local and test-harness R execution tools via stdio:
+- `r_eval`: Evaluate R expressions directly in the webR WebAssembly runtime.
+- `r_load_collabnet`: Source and verify CollabNET graph engines and algorithms.
+- `r_benchmark_network`: Benchmark graph construction, memory consumption, and execution time.
+- `app_open`: Headless Playwright browser automation for testing UI responsiveness and live WebAssembly state.

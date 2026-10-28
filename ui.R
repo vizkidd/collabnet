@@ -106,6 +106,7 @@ ui <- fluidPage(
       var _glensHasData = false;
       var _glensServerBusy = false;
       var _glensBusyTimer = null;
+      var _glensSafetyTimer = null;
 
       function updateGlensBusyState() {
         var overlay = document.getElementById('progress_overlay');
@@ -132,10 +133,24 @@ ui <- fluidPage(
               _glensBusyTimer = null;
             }, 120);
           }
+          if (!_glensSafetyTimer) {
+            _glensSafetyTimer = setTimeout(function() {
+              if (_glensServerBusy) {
+                console.warn('Watchdog timeout: clearing stuck analysis indicator.');
+                _glensServerBusy = false;
+                $('#glens_global_loading').removeClass('active');
+              }
+              _glensSafetyTimer = null;
+            }, 6000);
+          }
         } else {
           if (_glensBusyTimer) {
             clearTimeout(_glensBusyTimer);
             _glensBusyTimer = null;
+          }
+          if (_glensSafetyTimer) {
+            clearTimeout(_glensSafetyTimer);
+            _glensSafetyTimer = null;
           }
           $('#glens_global_loading').removeClass('active');
         }
@@ -909,64 +924,74 @@ ui <- fluidPage(
       });
     ")),
     tags$script(HTML("
-    window.fetchAllCitationCounts = async function(doi, sources, keys, inputId, requestId) {
-      try {
-        let reqIndex = 0;
-        if (requestId) {
-          let parts = requestId.split('_');
-          reqIndex = parseInt(parts[parts.length - 1]) || 0;
-        }
-        await new Promise(r => setTimeout(r, reqIndex * 400)); 
+    var _citationQueue = [];
+    var _activeCitationFetches = 0;
+    var _maxCitationConcurrency = 6;
 
-        const safeDoi = encodeURI(doi).replace(/#/g, '%23');
-        let results = {};
-
-        const fetchSource = async (apiName) => {
-          let url, headers = { 'Accept': 'application/json' };
-          if (apiName === 'crossref') {
-            url = `https://api.crossref.org/works/${safeDoi}`;
-            if (keys.crossref) headers['Crossref-Plus-API-Token'] = keys.crossref;
-          } else if (apiName === 'opencitations') {
-            url = `https://api.opencitations.net/index/v1/citation-count/${safeDoi}`;
-            if (keys.opencitations) headers['authorization'] = keys.opencitations;
-          } else if (apiName === 'semanticscholar') {
-            url = `https://api.semanticscholar.org/graph/v1/paper/DOI:${safeDoi}?fields=citationCount`;
-            if (keys.semanticscholar) headers['Authorization'] = `Bearer ${keys.semanticscholar}`;
-          }
-
-          let count = null, maxRetries = 3, waitTime = 2000;
-          for (let i = 0; i < maxRetries; i++) {
-            try {
-              let res = await fetch(url, { headers });
-              if (res.ok) {
-                let data = await res.json();
-                if (apiName === 'crossref') count = data.message?.['is-referenced-by-count'];
-                else if (apiName === 'opencitations') count = Array.isArray(data) ? data[0]?.count : data?.count;
-                else if (apiName === 'semanticscholar') count = data.citationCount;
-                break; 
-              }
-              if (res.status === 429) {
-                let retryAfter = res.headers.get('retry-after');
-                waitTime = retryAfter ? (parseInt(retryAfter) + 1) * 1000 : waitTime * 1.5;
-              } else if (res.status >= 400 && res.status < 500) { break; }
-            } catch (e) { console.warn(`Fetch error for ${apiName}`); }
-            if (i < maxRetries - 1 && count === null) await new Promise(r => setTimeout(r, waitTime));
-          }
-          return count !== null ? parseInt(count) : null;
-        };
-
-        const promises = sources.map(async (source) => { results[source] = await fetchSource(source); });
-        await Promise.all(promises);
-
-        Shiny.setInputValue(inputId, { doi: doi, counts: results, requestId: requestId }, {priority: 'event'});
-        
-      } catch (err) {
-        console.error('Critical Failure on DOI:', doi, err);
-        // THE SAFETY NET: ALWAYS return to R so the pipeline doesn't hang!
-        Shiny.setInputValue(inputId, { doi: doi, counts: {}, requestId: requestId }, {priority: 'event'});
+    function _processCitationQueue() {
+      while (_activeCitationFetches < _maxCitationConcurrency && _citationQueue.length > 0) {
+        var task = _citationQueue.shift();
+        _activeCitationFetches++;
+        task().finally(function() {
+          _activeCitationFetches--;
+          _processCitationQueue();
+        });
       }
+    }
+
+    window.fetchAllCitationCounts = function(doi, sources, keys, inputId, requestId) {
+      _citationQueue.push(async function() {
+        try {
+          const safeDoi = encodeURI(doi).replace(/#/g, '%23');
+          let results = {};
+
+          const fetchSource = async (apiName) => {
+            let url, headers = { 'Accept': 'application/json' };
+            if (apiName === 'crossref') {
+              url = `https://api.crossref.org/works/${safeDoi}`;
+              if (keys.crossref) headers['Crossref-Plus-API-Token'] = keys.crossref;
+            } else if (apiName === 'opencitations') {
+              url = `https://api.opencitations.net/index/v1/citation-count/${safeDoi}`;
+              if (keys.opencitations) headers['authorization'] = keys.opencitations;
+            } else if (apiName === 'semanticscholar') {
+              url = `https://api.semanticscholar.org/graph/v1/paper/DOI:${safeDoi}?fields=citationCount`;
+              if (keys.semanticscholar) headers['Authorization'] = `Bearer ${keys.semanticscholar}`;
+            }
+
+            let count = null, maxRetries = 3, waitTime = 1500;
+            for (let i = 0; i < maxRetries; i++) {
+              try {
+                let res = await fetch(url, { headers });
+                if (res.ok) {
+                  let data = await res.json();
+                  if (apiName === 'crossref') count = data.message?.['is-referenced-by-count'];
+                  else if (apiName === 'opencitations') count = Array.isArray(data) ? data[0]?.count : data?.count;
+                  else if (apiName === 'semanticscholar') count = data.citationCount;
+                  break; 
+                }
+                if (res.status === 429) {
+                  let retryAfter = res.headers.get('retry-after');
+                  waitTime = retryAfter ? (parseInt(retryAfter) + 1) * 1000 : waitTime * 1.5;
+                } else if (res.status >= 400 && res.status < 500) { break; }
+              } catch (e) { console.warn(`Fetch error for ${apiName}`); }
+              if (i < maxRetries - 1 && count === null) await new Promise(r => setTimeout(r, waitTime));
+            }
+            return count !== null ? parseInt(count) : null;
+          };
+
+          const promises = sources.map(async (source) => { results[source] = await fetchSource(source); });
+          await Promise.all(promises);
+
+          Shiny.setInputValue(inputId, { doi: doi, counts: results, requestId: requestId }, {priority: 'event'});
+          
+        } catch (err) {
+          console.error('Critical Failure on DOI:', doi, err);
+          Shiny.setInputValue(inputId, { doi: doi, counts: {}, requestId: requestId }, {priority: 'event'});
+        }
+      });
+      _processCitationQueue();
     };
-  ")),
+    ")),
     tags$script(HTML("
       window.fetchOpenAlexJournals = async function(journals, apiKey, mailKey, inputId) {
         try {
@@ -1242,13 +1267,12 @@ ui <- fluidPage(
             type = "button", 
             class = "btn-minimize", 
             style = "background: transparent; border: none; font-size: 1.6em; line-height: 1; cursor: pointer; padding: 0 5px;",
-            HTML("&plus;")
+            HTML("&minus;")
           ),
         ),
         tags$div(
           class = "custom-card-content",
-          # style = "margin-top: 15px;", 
-          style = "display: none;",
+          style = "display: block;",
           tags$br(),
           div(
             style = "display: inline-flex; align-items: center; gap: 5px;",
@@ -1261,27 +1285,220 @@ ui <- fluidPage(
             )
           ),
           textAreaInput("author_list_text",  value = "", rows = 2, width = "100%", label = NULL),
+          tags$div(id = "keyword_tags_container", style = "margin-top: 6px; margin-bottom: 6px; min-height: 24px;"),
           tags$script(HTML("
             var _authorListTimer = null;
+            var _lastTypingTime = 0;
+            var _isUserTyping = false;
+
             function _syncAuthorList() {
+              var now = Date.now();
+              // If user typed within the last 850ms, wait until they completely finish typing
+              if (now - _lastTypingTime < 850) {
+                clearTimeout(_authorListTimer);
+                _authorListTimer = setTimeout(_syncAuthorList, 850 - (now - _lastTypingTime));
+                return;
+              }
+              _isUserTyping = false;
               if (window.Shiny && typeof Shiny.setInputValue === 'function') {
-                Shiny.setInputValue('author_list', $('#author_list_text').val());
+                Shiny.setInputValue('author_list', $('#author_list_text').val(), { priority: 'event' });
               }
             }
-            $(document).on('blur change', '#author_list_text', _syncAuthorList);
-            $(document).on('input', '#author_list_text', function() {
+
+            $(document).on('input keydown', '#author_list_text', function() {
+              _lastTypingTime = Date.now();
+              _isUserTyping = true;
+              // Newly typed or edited keywords: immediately render text in standard black and neutral focus border
+              $('#author_list_text').css({
+                'color': '#212529',
+                'border-color': '#4B8BBE',
+                'box-shadow': '0 0 5px rgba(75, 139, 190, 0.4)'
+              });
+              
+              // Indicate active typing in the status badge bar
+              $('#keyword_tags_container').html('<span style=\"font-size: 11px; color: #6c757d; font-style: italic;\"><i class=\"fa fa-pencil\"></i> Typing...</span>');
+              
               clearTimeout(_authorListTimer);
-              _authorListTimer = setTimeout(_syncAuthorList, 400);
+              _authorListTimer = setTimeout(_syncAuthorList, 900);
             });
+
+            $(document).on('blur', '#author_list_text', function() {
+              clearTimeout(_authorListTimer);
+              _syncAuthorList();
+            });
+
+            function _registerKeywordHandler() {
+              if (window.Shiny && typeof Shiny.addCustomMessageHandler === 'function') {
+                Shiny.addCustomMessageHandler('keyword_match_status', function(msg) {
+                  _isUserTyping = false;
+                  
+                  var results = (msg && msg.results) ? msg.results : [];
+                  var container = $('#keyword_tags_container');
+                  container.empty();
+                  
+                  if (!results || results.length === 0) {
+                    $('#author_list_text').css({
+                      'color': '#212529',
+                      'border-color': '#ced4da',
+                      'box-shadow': 'none'
+                    });
+                    return;
+                  }
+                  
+                  var allFound = true;
+                  var tagsHtml = '<div style=\"display: flex; flex-wrap: wrap; gap: 5px; align-items: center;\">';
+                  
+                  results.forEach(function(item) {
+                    var safeKw = $('<div>').text(item.keyword).html();
+                    if (item.found) {
+                      tagsHtml += '<span class=\"badge badge-success\" style=\"background-color: #28a745; color: white; border-radius: 4px; padding: 3px 8px; font-size: 11px; font-weight: 600;\">' +
+                                  '<i class=\"fa fa-check\" style=\"margin-right: 3px;\"></i>' +
+                                  safeKw + ' (' + item.count + ')</span>';
+                    } else {
+                      allFound = false;
+                      tagsHtml += '<span class=\"badge badge-danger\" style=\"background-color: #dc3545; color: white; border-radius: 4px; padding: 3px 8px; font-size: 11px; font-weight: 600;\">' +
+                                  '<i class=\"fa fa-times\" style=\"margin-right: 3px;\"></i>' +
+                                  safeKw + ' (0)</span>';
+                    }
+                  });
+                  tagsHtml += '</div>';
+                  container.html(tagsHtml);
+                  
+                  // Textarea border feedback: green if all found, red if any missing keyword
+                  if (allFound) {
+                    $('#author_list_text').css({
+                      'color': '#155724',
+                      'border-color': '#28a745',
+                      'box-shadow': '0 0 4px rgba(40, 167, 69, 0.3)'
+                    });
+                  } else {
+                    $('#author_list_text').css({
+                      'color': '#721c24',
+                      'border-color': '#dc3545',
+                      'box-shadow': '0 0 4px rgba(220, 53, 69, 0.3)'
+                    });
+                  }
+                });
+              } else {
+                $(document).one('shiny:connected', _registerKeywordHandler);
+              }
+            }
+            _registerKeywordHandler();
           ")),
           uiOutput("dynamic_author_filter"),
-          # The Toggle Lock Button
-          actionButton("toggle_extended", "Show Lookup Controls", icon = icon("magnifying-glass"), 
-                       class = "btn-secondary", style = "margin-top: 10px; width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
-                       "data-toggle" = "tooltip", title = "Open advanced column delimiter settings and relationship filters"),
-          shinyjs::hidden(
-            tags$div(id = "extended_controls_container",
-                     uiOutput("lookup_controls_panel")
+          # The Toggle Lock Button (initialized shown)
+          actionButton("toggle_extended", "Hide Lookup Controls", icon = icon("lock"), 
+                       class = "btn-warning", style = "margin-top: 10px; width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
+                       "data-toggle" = "tooltip", title = "Open or hide advanced column delimiter settings and relationship filters"),
+          tags$div(id = "extended_controls_container",
+                   uiOutput("lookup_controls_panel")
+          )
+        )
+      ),
+      tags$div(
+        class = "custom-card",
+        style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; margin-bottom: 25px;",
+        tags$div(
+          class = "custom-card-header",
+          style = "display: flex; justify-content: space-between; align-items: center; cursor: pointer; user-select: none; margin-bottom: 0;",
+          h4("AI/MCP Controls", style = "margin: 0; font-weight: bold; font-size: 16px;"),
+          tags$button(
+            type = "button", 
+            class = "btn-minimize", 
+            style = "background: transparent; border: none; font-size: 1.6em; line-height: 1; cursor: pointer; padding: 0 5px;",
+            HTML("&plus;")
+          ),
+        ),
+        tags$div(
+          class = "custom-card-content",
+          # style = "margin-top: 15px;", 
+          style = "display: none;",
+          tags$br(),
+          div(
+          tagList(
+                tags$head(
+                  tags$link(rel = "stylesheet", href = "css/collabnet-mcp.css")
+                ),
+                div(
+                  id = "collabnet-mcp-panel",
+                  class = "collabnet-mcp-panel",
+                  div(
+                    class = "collabnet-mcp-header",
+                    div(
+                      h3("CollabNET AI & MCP", class = "collabnet-mcp-title"),
+                      p("Ask questions about the dataset and active collaboration network in this browser session.",
+                        class = "collabnet-mcp-subtitle")
+                    ),
+                    div(
+                      class = "collabnet-mcp-live-status",
+                      span(id = "collabnet-mcp-led", class = "collabnet-mcp-led is-disconnected",
+                          role = "img", `aria-label` = "MCP disconnected"),
+                      span(id = "collabnet-mcp-status-text", "MCP disconnected"),
+                      span(id = "collabnet-mcp-connection-count", "0 connections")
+                    )
+                  ),
+                  div(
+                    class = "collabnet-mcp-consent",
+                    checkboxInput(
+                      inputId = "collabnet_mcp_enabled",
+                      label = "Allow AI tools to read data from this CollabNET session",
+                      value = FALSE
+                    ),
+                    p(
+                      "OFF blocks all MCP data-tool calls. ON lets connected AI clients query the current in-memory dataset and graph. Results requested by a client are sent to that client's AI provider. Turning access off prevents future calls; it cannot retract data already sent to a provider.",
+                      class = "collabnet-mcp-disclosure"
+                    )
+                  ),
+                  div(
+                    id = "collabnet-ai-chat",
+                    class = "collabnet-ai-chat",
+                    h4("In-page assistant", class = "collabnet-ai-chat-title"),
+                    div(class = "collabnet-ai-config",
+                      div(class = "collabnet-ai-config-row",
+                        tags$label(`for` = "collabnet-ai-endpoint", "OpenAI-compatible Chat Completions endpoint"),
+                        tags$input(id = "collabnet-ai-endpoint", type = "url",
+                          value = "https://api.openai.com/v1/chat/completions",
+                          autocomplete = "url", spellcheck = "false")
+                      ),
+                      div(class = "collabnet-ai-config-grid",
+                        div(class = "collabnet-ai-config-row",
+                          tags$label(`for` = "collabnet-ai-model", "Model"),
+                          tags$input(id = "collabnet-ai-model", type = "text", value = "gpt-4.1-mini",
+                            autocomplete = "off", spellcheck = "false")
+                        ),
+                        div(class = "collabnet-ai-config-row",
+                          tags$label(`for` = "collabnet-ai-key", "API key (kept in this tab's memory)"),
+                          tags$input(id = "collabnet-ai-key", type = "password", value = "",
+                            autocomplete = "off", spellcheck = "false")
+                        )
+                      ),
+                      div(class = "collabnet-ai-actions",
+                        tags$button(id = "collabnet-ai-connect", type = "button", class = "btn btn-default",
+                          "Connect in-page assistant"),
+                        span(id = "collabnet-ai-connection-state", "Not connected")
+                      ),
+                      p(class = "collabnet-ai-disclosure",
+                        "The endpoint receives your chat messages and any tool results you allow the assistant to retrieve. The endpoint URL and API key are not saved by this UI. Browser-based API calls require the endpoint to permit CORS. For production use, prefer an authenticated backend proxy; never commit a secret key into the GitHub Pages source.")
+                    ),
+                    div(id = "collabnet-ai-transcript", class = "collabnet-ai-transcript",
+                      `aria-live` = "polite",
+                      div(class = "collabnet-ai-empty",
+                        "Connect the assistant, enable data access if you want it to use CollabNET tools, then ask a question.")),
+                    tags$form(id = "collabnet-ai-form", class = "collabnet-ai-form",
+                      tags$textarea(id = "collabnet-ai-message", rows = 3,
+                        placeholder = "Ask about publications, authors, centrality, neighbors, communities…",
+                        `aria-label` = "Message to the CollabNET assistant"),
+                      tags$div(class = "collabnet-ai-form-actions",
+                        tags$button(id = "collabnet-ai-send", type = "submit", class = "btn btn-primary", "Send"),
+                        tags$button(id = "collabnet-ai-clear", type = "button", class = "btn btn-default", "Clear chat")
+                      )
+                    )
+                  ),
+                  tags$p(class = "collabnet-mcp-ide-note",
+                    "Desktop/agentic IDE connection: install the optional CollabNET Browser Bridge extension and configure its local MCP server. The extension connects only this browser tab to the IDE's local MCP process.")
+                ),
+                tags$script(src = "js/collabnet-mcp-browser.js"),
+                tags$script(src = "js/collabnet-ai-chat.js")
             )
           )
         )

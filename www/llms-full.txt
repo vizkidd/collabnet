@@ -1,0 +1,62 @@
+# CollabNET — Full AI Specification & API Reference
+
+> Expanded reference document for AI agents, LLMs, and automated tool runners interacting with CollabNET.
+
+## 1. System Architecture
+
+CollabNET operates on a dual-layer client-side architecture:
+- **UI & Presentation Layer**: Bootstrap 3 / Shiny UI running on HTML5, CSS3, and JavaScript, orchestrating visNetwork (vis.js) canvas rendering, Plotly graphs, and DataTables (DT).
+- **Compute Layer**: WebAssembly R runtime (webR 0.4.x / R 4.6.x) with Web Workers for parallel asynchronous task execution (e.g. OpenAlex API pagination, JCR string matching, citation count resolution).
+
+## 2. Graph Algorithms & Mathematical Formulations
+
+### 2.1 Newman Co-authorship Projection
+For a publication $p$ with $n_p$ co-authors, the weight contributed to the edge between co-authors $i$ and $j$ ($i \neq j$) is:
+$$w_{ij} = \sum_{p \in P_{ij}} \frac{1}{n_p - 1}$$
+where $P_{ij}$ is the set of publications co-authored by both $i$ and $j$. This discounts massive hyper-authored papers (e.g., CERN/high-energy physics papers with 1,000+ authors) appropriately.
+
+### 2.2 Disparity Filter (Multiscale Backbone Extraction)
+Given node $i$ with degree $k_i$ and edge weights $w_{ij}$, the normalized weight is $p_{ij} = w_{ij} / \sum_{m} w_{im}$.
+Under the null hypothesis that edge weights are distributed uniformly at random on a simplex, the probability that an edge has normalized weight greater than or equal to $x$ is:
+$$\alpha_{ij} = 1 - (k_i - 1) \int_0^{p_{ij}} (1 - u)^{k_i - 2} du = (1 - p_{ij})^{k_i - 1}$$
+An edge is retained in the multiscale backbone if $\min(\alpha_{ij}, \alpha_{ji}) < \alpha_{\text{cut}}$, preserving structural bridges across heterogeneous scales.
+
+### 2.3 Community Detection & Modularity
+Communities are identified using the Louvain heuristic maximizing modularity $Q$:
+$$Q = \frac{1}{2m} \sum_{i,j} \left[ w_{ij} - \frac{k_i k_j}{2m} \right] \delta(c_i, c_j)$$
+Nodes within the same cluster share consistent colors. In the macro "Community" view, nodes are collapsed into meta-nodes whose sizes reflect cluster volume and edge thicknesses represent cross-community collaborations.
+
+### 2.4 Articulation Points & Bridges
+- **Cut Vertices (Articulation Points)**: A node whose removal increases the number of connected components. Highlighted with dual-ring halo styling (`#ff4444`).
+- **Bridge Edges**: Edges whose removal disconnects previously connected subgraphs.
+
+### 2.5 Ego Network & Bibliometric Metrics
+- **$h$-index**: Maximum integer $h$ such that at least $h$ publications have $\ge h$ citations.
+- **$g$-index**: Highest rank $g$ such that the top $g$ publications have at least $g^2$ citations combined.
+- **$i10$-index**: Count of publications with $\ge 10$ citations.
+
+## 3. Data Ingestion Pipeline & Schemas
+
+### 3.1 ORCID Ingestion (v3.0)
+- Endpoint: `https://pub.orcid.org/v3.0/{orcid}/works`
+- Headers: `Accept: application/xml` or `Accept: application/json`
+- Extraction: Works summaries, external IDs (DOIs, PMIDs, ArXiv, Scopus EIDs), publication year, and source names.
+
+### 3.2 Standard CSV Columns
+- `Authors`: Delimited author names (e.g. `Last, F.; Coauthor, B.` or `Last, First, Coauthor, Second`).
+- `Title`: Document title.
+- `Year`: 4-digit publication year.
+- `Source title`: Journal or conference name.
+- `DOI`: Digital Object Identifier.
+- `Cited by` / `Citations`: Citation count.
+- `Source`: Ingestion source (e.g. `SCOPUS`, `DOI/ORCID`, `User_Import`).
+
+## 4. MCP Tools Reference
+
+The CollabNET Model Context Protocol server (`mcp/src/server.mjs`) provides:
+1. `r_eval`: Executes R code inside the webR WebAssembly environment.
+2. `r_load_collabnet`: Loads and sources all CollabNET graph engines (`GScholarLENS-*.R`).
+3. `r_run_tests`: Executes invariant unit tests (h-index, Newman projection, disparity filter, tokenizer).
+4. `r_benchmark_network`: Runs performance and memory benchmarks across network variants.
+5. `app_serve`: Starts a local COOP/COEP compliant HTTP server for Shinylive.
+6. `app_open`: Launches headless Chromium to verify UI events and reactive Shiny state.

@@ -233,7 +233,7 @@ detect_vpn <- function(rv, output) {
 }
 
 #Flow functions
-extend_input_table <- function(rv, df, author_match_regex, target_variants_norm) {
+extend_input_table <- function(rv, df, author_match_regex, target_variants_norm, keep_all = FALSE) {
   cn_log_debug("extend_input_table(rv): df rows=%d, author_regex='%s'", 
                if (is.null(df)) 0L else nrow(df), 
                paste(author_match_regex, collapse="; "))
@@ -269,15 +269,20 @@ extend_input_table <- function(rv, df, author_match_regex, target_variants_norm)
   
   # --- 3. BYPASS LOGIC: No Keywords Provided ---
   if (length(kw_list) == 0) {
+    raw_authors <- as.character(df$Authors)
+    raw_authors[is.na(raw_authors)] <- ""
+    author_cnt <- stringr::str_count(raw_authors, ",") + 1L
+    author_cnt[author_cnt < 1L] <- 1L
     df <- df %>%
       dplyr::mutate(
         label = "No_Filter",
         matched_token = NA_character_,
+        token_count = 0L,
         First_Author = 0L,
         Second_Author = 0L,
         Co_Author = 0L,
         Corresponding_Author = 0L,
-        Author_Count = stringr::str_count(Authors, ",") + 1,
+        Author_Count = as.integer(author_cnt),
         Adjustment_Weights = 0.0,
         Adjusted_Citations = suppressWarnings(as.numeric(Citations)),
         Year = as.integer(Year),
@@ -311,128 +316,132 @@ extend_input_table <- function(rv, df, author_match_regex, target_variants_norm)
   }
   
   # --- 4. EXTENDED MATCHING ---
-  is_full_data <- identical(rv$author_logic_gate, "FULL")
+  is_full_data <- isTRUE(keep_all) || 
+                  identical(rv$author_logic_gate, "FULL") || 
+                  identical(tryCatch(shiny::isolate(input$author_logic_gate), error = function(e) NULL), "FULL")
+  n_rows <- nrow(df)
+  labels <- character(n_rows)
+  matched_tokens <- rep(NA_character_, n_rows)
+  token_counts <- integer(n_rows)
 
-  glens_extended_table <- df %>%
-    rowwise() %>%
-    mutate(
-      dec = list({
-        best_match <- list(label = "Not_found", matched_token = NA_character_, token_count = 0L)
+  for (i in seq_len(n_rows)) {
+    best_match <- list(label = "Not_found", matched_token = NA_character_, token_count = 0L)
+    
+    for (col in valid_search_cols) {
+      val <- df[[col]][i]
+      
+      if (!is.na(val) && nzchar(trimws(val))) {
         
-        for (col in valid_search_cols) {
-          val <- get(col)
+        # Standardize delimiter
+        col_delim <- if (!is.null(delims[[col]])) delims[[col]] else ","
+        if (col_delim != ",") {
+          val <- gsub(escape_regex(col_delim), ",", val)
+        }
+        
+        # --- BRANCH: Extended Matching vs Basic Regex ---
+        if (ext_match) {
+          match_res <- decide_label_for_target(val, rv$target_variants_norm, rv$author_match_regex)
+          if (!is.null(match_res$label) && match_res$label != "Not_found") {
+            best_match <- match_res
+            break 
+          }
+        } else {
+          match_found <- FALSE
           
-          if (!is.na(val) && val != "") {
+          for (kw in kw_list) {
+            is_match <- tryCatch(
+              grepl(kw, val, ignore.case = ignore_case),
+              error = function(e) FALSE
+            )
             
-            # Standardize delimiter
-            col_delim <- if (!is.null(delims[[col]])) delims[[col]] else ","
-            if (col_delim != ",") {
-              val <- gsub(escape_regex(col_delim), ",", val)
-            }
-            
-            # --- BRANCH: Extended Matching vs Basic Regex ---
-            if (ext_match) {
-              match_res <- decide_label_for_target(val, rv$target_variants_norm, rv$author_match_regex)
-              if (match_res$label != "Not_found") {
-                best_match <- match_res
-                break 
-              }
-            } else {
-              match_found <- FALSE
-              
-              for (kw in kw_list) {
-                # print(paste("kw:",kw))
-                is_match <- tryCatch(
-                  grepl(kw, val, ignore.case = ignore_case),
-                  error = function(e) FALSE
-                )
-                
-                if (is_match) {
-                  best_match <- list(label = "Generic_Match", matched_token = kw, token_count = 1L)
-                  match_found <- TRUE
-                  break
-                }
-              }
-              if (match_found) break
+            if (is_match) {
+              best_match <- list(label = "Generic_Match", matched_token = kw, token_count = 1L)
+              match_found <- TRUE
+              break
             }
           }
+          if (match_found) break
         }
-        best_match
-      }),
-      label = as.character(if (is.null(dec$label) || is.na(dec$label)) "Not_found" else dec$label),
-      matched_token = as.character(if (is.null(dec$matched_token)) NA_character_ else dec$matched_token),
-      token_count = as.integer(if (is.null(dec$token_count) || length(dec$token_count) == 0 || is.na(dec$token_count)) 0L else dec$token_count)
-    ) %>%
-    ungroup()
-
-  if (!is_full_data) {
-    glens_extended_table <- glens_extended_table %>% filter(label != "Not_found")
+      }
+    }
+    labels[i] <- if (is.null(best_match$label) || is.na(best_match$label)) "Not_found" else as.character(best_match$label)
+    matched_tokens[i] <- if (is.null(best_match$matched_token) || is.na(best_match$matched_token)) NA_character_ else as.character(best_match$matched_token)
+    token_counts[i] <- if (is.null(best_match$token_count) || length(best_match$token_count) == 0 || is.na(best_match$token_count)) 0L else as.integer(best_match$token_count)
   }
 
-  glens_extended_table <- glens_extended_table %>%
-    mutate(
-      First_Author = as.integer(label == "First_Author"),
-      Second_Author = as.integer(label == "Second_Author"),
-      Co_Author = as.integer(label == "Co_Author"),
-      Corresponding_Author = as.integer(label == "Corresponding_Author"),
-      Generic_Match = as.integer(label == "Generic_Match") 
-    ) %>%
-    select(-dec)
-  
-  if(nrow(glens_extended_table) <= 0) {
+  df$label <- labels
+  df$matched_token <- matched_tokens
+  df$token_count <- token_counts
+
+  glens_extended_table <- df
+  if (!is_full_data && length(kw_list) > 0) {
+    glens_extended_table <- glens_extended_table[glens_extended_table$label != "Not_found", , drop = FALSE]
+  }
+
+  if (nrow(glens_extended_table) <= 0) {
     rv$log_text <- paste(rv$log_text, "Warning: No matches found during table extension.", sep="<br>")
     cn_log_warn("No matches found during table extension.")
     return(glens_extended_table) 
   }
-  
+
+  glens_extended_table$First_Author <- as.integer(glens_extended_table$label == "First_Author")
+  glens_extended_table$Second_Author <- as.integer(glens_extended_table$label == "Second_Author")
+  glens_extended_table$Co_Author <- as.integer(glens_extended_table$label == "Co_Author")
+  glens_extended_table$Corresponding_Author <- as.integer(glens_extended_table$label == "Corresponding_Author")
+  glens_extended_table$Generic_Match <- as.integer(glens_extended_table$label == "Generic_Match")
+
   count_target_col <- if ("Authors" %in% valid_search_cols) "Authors" else valid_search_cols[1]
   count_target_delim <- if (!is.null(delims[[count_target_col]])) delims[[count_target_col]] else ","
-  
+
   if (!"Author_Count" %in% colnames(glens_extended_table)) {
-    glens_extended_table <- glens_extended_table %>%
-      mutate(Author_Count = stringr::str_count(!!sym(count_target_col), escape_regex(count_target_delim)) + 1)
+    raw_col <- as.character(glens_extended_table[[count_target_col]])
+    raw_col[is.na(raw_col)] <- ""
+    counts <- stringr::str_count(raw_col, escape_regex(count_target_delim)) + 1L
+    counts[counts < 1L] <- 1L
+    glens_extended_table$Author_Count <- as.integer(counts)
+  } else {
+    glens_extended_table$Author_Count <- as.integer(glens_extended_table$Author_Count)
+    glens_extended_table$Author_Count[is.na(glens_extended_table$Author_Count) | glens_extended_table$Author_Count < 1L] <- 1L
   }
-  
-  # Correct weight logic
-  glens_extended_table <- glens_extended_table %>%
-    mutate(
-      Adjustment_Weights = case_when(
-        label == "Generic_Match" ~ 1.00,
-        label == "Corresponding_Author" ~ 1.00,
-        label == "First_Author" ~ 0.90,
-        label == "Second_Author" ~ 0.50,
-        label == "Co_Author" & Author_Count <= 6 ~ 0.25,
-        label == "Co_Author" & Author_Count > 6 ~ 0.10,
-        TRUE ~ 0
-      ),
-      Adjusted_Citations = as.numeric(Citations) * Adjustment_Weights
-    )
-  
-  glens_extended_table$Adjusted_Citations <- suppressWarnings(as.numeric(glens_extended_table$Adjusted_Citations))
-  
-  glens_extended_table <- glens_extended_table %>%
-    mutate(Co_Author = ifelse(Generic_Match == 1, 1L, Co_Author))
-  
+
+  # Vectorised, bulletproof weight computation (no dplyr case_when type mismatch traps)
+  n_ext <- nrow(glens_extended_table)
+  weights <- rep(0.0, n_ext)
+  weights[glens_extended_table$label == "Generic_Match"] <- 1.00
+  weights[glens_extended_table$label == "Corresponding_Author"] <- 1.00
+  weights[glens_extended_table$label == "First_Author"] <- 0.90
+  weights[glens_extended_table$label == "Second_Author"] <- 0.50
+  co_mask <- glens_extended_table$label == "Co_Author"
+  weights[co_mask & glens_extended_table$Author_Count <= 6L] <- 0.25
+  weights[co_mask & glens_extended_table$Author_Count > 6L] <- 0.10
+  glens_extended_table$Adjustment_Weights <- weights
+
+  cites <- suppressWarnings(as.numeric(glens_extended_table$Citations))
+  cites[is.na(cites)] <- 0.0
+  glens_extended_table$Adjusted_Citations <- cites * weights
+
+  glens_extended_table$Co_Author <- ifelse(glens_extended_table$Generic_Match == 1L, 1L, glens_extended_table$Co_Author)
+
   for (col in c("First_Author","Second_Author","Co_Author","Corresponding_Author")) {
-    glens_extended_table[[col]][is.na(glens_extended_table[[col]])] <- 0
-    glens_extended_table[[col]] <- ifelse(glens_extended_table[[col]] >= 1, 1L, 0L)
+    v <- glens_extended_table[[col]]
+    v[is.na(v)] <- 0L
+    glens_extended_table[[col]] <- ifelse(v >= 1L, 1L, 0L)
   }
-  
-  ret_df <- glens_extended_table %>%
-    mutate(
-      position_rank = case_when(
-        First_Author == 1 ~ 1L,
-        Second_Author == 1 ~ 2L,
-        Co_Author == 1 ~ 3L,
-        Corresponding_Author == 1 ~ 4L,
-        TRUE ~ 99L
-      ),
-      adj_cit_for_sort = ifelse(is.na(Adjusted_Citations), -Inf, Adjusted_Citations)
-    ) %>%
-    arrange(position_rank, desc(adj_cit_for_sort)) %>%
-    select(-adj_cit_for_sort, -Generic_Match) %>%
-    mutate(Year = as.integer(Year))
-  
+
+  pos_rank <- rep(99L, n_ext)
+  pos_rank[glens_extended_table$First_Author == 1L] <- 1L
+  pos_rank[glens_extended_table$Second_Author == 1L & pos_rank > 1L] <- 2L
+  pos_rank[glens_extended_table$Co_Author == 1L & pos_rank > 2L] <- 3L
+  pos_rank[glens_extended_table$Corresponding_Author == 1L & pos_rank > 3L] <- 4L
+  glens_extended_table$position_rank <- pos_rank
+
+  glens_extended_table$adj_cit_for_sort <- ifelse(is.na(glens_extended_table$Adjusted_Citations), -Inf, glens_extended_table$Adjusted_Citations)
+  ord <- order(glens_extended_table$position_rank, -glens_extended_table$adj_cit_for_sort)
+  ret_df <- glens_extended_table[ord, , drop = FALSE]
+  ret_df$adj_cit_for_sort <- NULL
+  ret_df$Generic_Match <- NULL
+  ret_df$Year <- suppressWarnings(as.integer(ret_df$Year))
+
   return(ret_df)
 }
 

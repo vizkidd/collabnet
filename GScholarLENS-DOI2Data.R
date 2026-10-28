@@ -84,7 +84,7 @@ detect_identifier_type <- function(raw_id) {
 
 extract_ris <- function(doi_or_url,
                         write_file = NULL,
-                        timeout_secs = 15,
+                        timeout_secs = 5,
                         user_agent_str = paste0("R (", R.version$version.string, ")")) {
   
   stopifnot(is.character(doi_or_url), length(doi_or_url) == 1)
@@ -135,19 +135,16 @@ extract_ris <- function(doi_or_url,
   # 1) Try doi.org content negotiation
   doi_url <- paste0("https://doi.org/", doi_enc)
   ris_text <- NULL
-  ris_text <- tryCatch(get_with_ris_accept(doi_url), error = function(e) {e})
-  # message(paste("RIS TEXT 1:", ris_text))
+  ris_text <- tryCatch(get_with_ris_accept(doi_url), error = function(e) { NULL })
   
   # 2) Fallback: CrossRef transform endpoint: /works/{doi}/transform/application/x-research-info-systems
-  if (is.null(ris_text)) {
+  if (is.null(ris_text) || !is.character(ris_text) || !nzchar(trimws(ris_text))) {
     crossref_url <- paste0("https://api.crossref.org/works/", doi_enc,
                            "/transform/application/x-research-info-systems")
-    ris_text <- tryCatch(get_with_ris_accept(crossref_url), error = function(e) {e})
+    ris_text <- tryCatch(get_with_ris_accept(crossref_url), error = function(e) { NULL })
   }
-  # message(paste("RIS TEXT 2:", ris_text))
   
-  if (is.null(ris_text)) {
-    # stop("Failed to retrieve RIS. The DOI may not support content negotiation and CrossRef doesn't have a transform for it.")
+  if (is.null(ris_text) || !is.character(ris_text) || !nzchar(trimws(ris_text))) {
     return(NULL)
   }
   
@@ -633,7 +630,7 @@ construct_author_list_from_ris <- function(ris){
   }
 }
 
-prepare_doi_metadata <- function(doi_input, orcid, rv, id_type = "DOI", write_file = NULL) {
+prepare_doi_metadata <- function(doi_input, orcid, rv, id_type = "DOI", write_file = NULL, fallback_title = NULL, fallback_journal = NULL, fallback_year = NULL) {
   if(is.null(doi_input) || length(doi_input) == 0 || is.na(doi_input[1]) || nchar(doi_input[1]) <= 0){
     warning("Empty DOI")
     return(NULL)
@@ -652,10 +649,25 @@ prepare_doi_metadata <- function(doi_input, orcid, rv, id_type = "DOI", write_fi
     ris <- resolve_non_doi_ris(doi_input, id_type, scopus_key = glens_env$scopus_key)
   }
   
-  # If BOTH extraction methods fail, abort row processing
-  if(is.null(ris) || trimws(ris) == ""){
-    rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'> RIS Extraction Failed for:", doi_input, "(", id_type, ")</span>"), sep="<br>")
-    return(NULL)
+  # If BOTH extraction methods fail, gracefully fall back to metadata from ORCID/synthetic instead of discarding the paper
+  if(is.null(ris) || !is.character(ris) || !nzchar(trimws(ris))){
+    rv$log_text <- paste(rv$log_text, paste("<span style='color: #856404;'> RIS fallback for:", doi_input, "(", id_type, ")</span>"), sep="<br>")
+    def_title <- if (!is.null(fallback_title) && nzchar(trimws(fallback_title))) trimws(fallback_title) else paste("Document", trimws(doi_input))
+    def_journal <- if (!is.null(fallback_journal) && nzchar(trimws(fallback_journal))) trimws(fallback_journal) else "Unknown"
+    def_year <- if (!is.null(fallback_year) && nzchar(trimws(fallback_year))) trimws(fallback_year) else NA_character_
+    return(data.frame(
+      Title = def_title, 
+      Authors = "Unknown",
+      Author_Count = 1L, 
+      Citations = NA_real_,
+      Journal = def_journal, 
+      Publisher = NA_character_, 
+      Year = def_year,
+      doi = trimws(doi_input),
+      orcid = trimws(orcid),
+      Source = "DOI/ORCID",
+      stringsAsFactors = FALSE
+    ))
   }
   
   ris_lines <- strsplit(ris, "\n")[[1]]
@@ -668,23 +680,37 @@ prepare_doi_metadata <- function(doi_input, orcid, rv, id_type = "DOI", write_fi
   publisher_year_text <- ifelse(length(publisher_year_text) > 0, publisher_year_text, NA)
   
   author_list <- tidyr::tibble(na.omit(construct_author_list_from_ris(ris)))
-  if(nrow(author_list) <= 0) return(NULL)
-  
-  author_text <- author_list$Authors 
-  author_text <- ifelse(length(author_text) > 0, author_text, NA)
+  if(nrow(author_list) <= 0) {
+    author_text <- "Unknown"
+    author_count <- 1L
+  } else {
+    author_text <- ifelse(length(author_list$Authors) > 0, author_list$Authors, "Unknown")
+    author_count <- if (!is.null(author_list$Author_Count)) author_list$Author_Count else 1L
+  }
   title_text <- get_title_from_ris(ris)
+  if (is.null(title_text) || !nzchar(trimws(title_text))) {
+    title_text <- if (!is.null(fallback_title) && nzchar(trimws(fallback_title))) trimws(fallback_title) else paste("Document", trimws(doi_input))
+  }
+  if ((is.null(journal_text) || !nzchar(trimws(journal_text)) || journal_text == "Unknown") && !is.null(fallback_journal) && nzchar(trimws(fallback_journal))) {
+    journal_text <- trimws(fallback_journal)
+  }
+  if ((is.null(publisher_year_text) || is.na(publisher_year_text) || !nzchar(trimws(publisher_year_text))) && !is.null(fallback_year) && nzchar(trimws(fallback_year))) {
+    publisher_year_text <- trimws(fallback_year)
+  }
   
   # Return the dataframe WITHOUT citations (we will add them asynchronously)
   return(data.frame(
     Title = title_text, 
     Authors = author_text,
-    Author_Count = author_list$Author_Count, 
+    Author_Count = author_count, 
     Citations = NA_real_, # Placeholder
     Journal = journal_text, 
     Publisher = publisher_text, 
     Year = publisher_year_text,
     doi = trimws(doi_input),
-    orcid = trimws(orcid)
+    orcid = trimws(orcid),
+    Source = "DOI/ORCID",
+    stringsAsFactors = FALSE
   ))
 }
 

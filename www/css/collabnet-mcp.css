@@ -1,0 +1,39 @@
+#collabnet-mcp-panel { margin: 1.5rem 0; padding: 1rem; border: 1px solid #d6dbe1; border-radius: 12px; background: #fff; color: #20252b; }
+.collabnet-mcp-header { display:flex; align-items:flex-start; justify-content:space-between; gap:1rem; flex-wrap:wrap; }
+.collabnet-mcp-title { margin:0 0 .35rem; font-size:1.35rem; }
+.collabnet-mcp-subtitle { margin:0; color:#5a6571; }
+.collabnet-mcp-live-status { display:flex; align-items:center; gap:.45rem; font-size:.9rem; font-weight:600; }
+.collabnet-mcp-led { width:11px; height:11px; border-radius:50%; display:inline-block; flex:0 0 11px; }
+.collabnet-mcp-led.is-connected { background:#14833b; box-shadow:0 0 0 3px rgba(20,131,59,.13); }
+.collabnet-mcp-led.is-disconnected { background:#c83232; box-shadow:0 0 0 3px rgba(200,50,50,.12); }
+#collabnet-mcp-connection-count { margin-left:.35rem; color:#5a6571; font-weight:500; }
+.collabnet-mcp-consent { margin:1rem 0; padding:.85rem 1rem; border:1px solid #d6dbe1; border-radius:8px; background:#f7f8fa; }
+.collabnet-mcp-consent .checkbox { margin:0; font-weight:650; }
+.collabnet-mcp-disclosure, .collabnet-ai-disclosure { margin:.5rem 0 0; font-size:.82rem; line-height:1.45; color:#555f6a; }
+.collabnet-ai-chat { border-top:1px solid #e1e5ea; padding-top:1rem; }
+.collabnet-ai-chat-title { margin-top:0; }
+.collabnet-ai-config { padding:.85rem; background:#f7f8fa; border-radius:8px; border:1px solid #e1e5ea; }
+.collabnet-ai-config-row { display:flex; flex-direction:column; gap:.3rem; min-width:0; }
+.collabnet-ai-config-row input { min-height:36px; border:1px solid #b9c2cc; border-radius:6px; padding:.45rem .6rem; width:100%; box-sizing:border-box; }
+.collabnet-ai-config-grid { display:grid; grid-template-columns:1fr 1fr; gap:.75rem; margin-top:.7rem; }
+.collabnet-ai-actions { display:flex; align-items:center; gap:.75rem; flex-wrap:wrap; margin-top:.8rem; }
+#collabnet-ai-connection-state { font-size:.85rem; color:#59636e; }
+.collabnet-ai-transcript { min-height:140px; max-height:480px; overflow-y:auto; padding:.8rem; margin:1rem 0; border:1px solid #d6dbe1; border-radius:8px; background:#fff; }
+.collabnet-ai-empty { color:#6a737d; font-size:.92rem; padding:.5rem; }
+.collabnet-ai-message { margin:.5rem 0; padding:.65rem .8rem; border-radius:8px; white-space:pre-wrap; overflow-wrap:anywhere; }
+.collabnet-ai-message.user { margin-left:8%; background:#eaf2ff; }
+.collabnet-ai-message.assistant { margin-right:8%; background:#f0f2f4; }
+.collabnet-ai-message.system { background:#fff3d6; color:#56451a; font-size:.87rem; }
+.collabnet-ai-message strong { display:block; font-size:.78rem; margin-bottom:.3rem; color:#4a5560; }
+.collabnet-ai-form textarea { width:100%; box-sizing:border-box; padding:.7rem; border:1px solid #b9c2cc; border-radius:8px; resize:vertical; }
+.collabnet-ai-form-actions { display:flex; justify-content:flex-end; gap:.5rem; margin-top:.5rem; }
+.collabnet-mcp-ide-note { margin:.9rem 0 0; color:#66717d; font-size:.84rem; }
+@media (max-width:700px) { .collabnet-ai-config-grid { grid-template-columns:1fr; } .collabnet-mcp-live-status { width:100%; } }
+/* Style Shiny's checkboxInput as a visible consent switch. */
+#collabnet_mcp_enabled { position:absolute; opacity:0; width:1px; height:1px; margin:0; }
+#collabnet_mcp_enabled + span { position:relative; display:inline-flex; align-items:center; min-height:28px; padding-left:62px; cursor:pointer; }
+#collabnet_mcp_enabled + span::before { content:""; position:absolute; left:0; top:1px; width:48px; height:26px; border-radius:999px; background:#b83232; transition:background .15s ease; }
+#collabnet_mcp_enabled + span::after { content:""; position:absolute; left:3px; top:4px; width:20px; height:20px; border-radius:50%; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.25); transition:transform .15s ease; }
+#collabnet_mcp_enabled:checked + span::before { background:#16843d; }
+#collabnet_mcp_enabled:checked + span::after { transform:translateX(22px); }
+#collabnet_mcp_enabled:focus-visible + span::before { outline:3px solid #6d9ee8; outline-offset:2px; }

@@ -23,7 +23,7 @@ helper_scripts <- c(
   "GScholarLENS-SCOPUS2Data.R", "GScholarLENS-ProcessJCR.R",
   "GScholarLENS-Data2GLENS.R", "GScholarLENS-PlotGLENS.R",
   "GScholarLENS-Graph.R", "GScholarLENS-helpers.R",
-  "GScholarLENS-Fixes.R"
+  "GScholarLENS-Fixes.R", "GScholarLENS-MCP.R"
 )
 
 # cat("WASM <- TRUE", file="staging_app/app.R")
