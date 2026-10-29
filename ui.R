@@ -311,6 +311,8 @@ ui <- fluidPage(
       .dark-mode input[type='text'], 
       .dark-mode input[type='number'], 
       .dark-mode input[type='search'], 
+      .dark-mode input[type='url'],
+      .dark-mode input[type='password'],
       .dark-mode textarea, 
       .dark-mode select, 
       .dark-mode .form-control {
@@ -446,6 +448,133 @@ ui <- fluidPage(
       .dark-mode .text-muted {
         color: #94a3b8 !important;
       }
+
+      /* Dark mode labels and controls */
+      .dark-mode label,
+      .dark-mode .control-label {
+        color: var(--text-color) !important;
+      }
+      .dark-mode .radio label,
+      .dark-mode .checkbox label {
+        color: var(--text-color) !important;
+      }
+      .dark-mode .btn-default {
+        background-color: #27272a !important;
+        color: #e2e8f0 !important;
+        border-color: #3f3f46 !important;
+      }
+      .dark-mode .btn-default:hover {
+        background-color: #3f3f46 !important;
+        color: #ffffff !important;
+      }
+      .dark-mode .badge-missing {
+        background-color: #3f3f46;
+        color: #a1a1aa;
+      }
+      .dark-mode .api-row {
+        border-bottom-color: #334155;
+      }
+
+      /* Dark mode execution log */
+      .dark-mode #log_wrapper {
+        background-color: #1e1e1e !important;
+        border-color: #3f3f46 !important;
+      }
+      .dark-mode #log_header {
+        background-color: #27272a;
+        border-bottom-color: #3f3f46;
+      }
+      .dark-mode #log_header .drag-grip {
+        background-color: #52525b;
+        box-shadow: 0 5px 0 #52525b, 0 -5px 0 #52525b;
+      }
+      .dark-mode #log {
+        color: #d4d4d8;
+      }
+
+      /* Dark mode progress bars */
+      .dark-mode .api-progress-label {
+        color: #e2e8f0 !important;
+      }
+      .dark-mode #progress_bars_container .progress-text {
+        color: #e2e8f0 !important;
+      }
+      .dark-mode #progress_bars_container .progress {
+        background-color: #3f3f46;
+      }
+      .dark-mode #progress_overlay h3 {
+        color: var(--text-color) !important;
+      }
+
+      /* Dark mode modals */
+      .dark-mode .modal-content h3,
+      .dark-mode .modal-content h4 {
+        color: var(--text-color) !important;
+      }
+      .dark-mode .modal-body {
+        color: var(--text-color) !important;
+      }
+      .dark-mode .modal-body pre,
+      .dark-mode .modal-body code {
+        background-color: #27272a !important;
+        color: #d4d4d8 !important;
+        border-color: #3f3f46 !important;
+      }
+
+      /* Dark mode minimal tables */
+      .dark-mode .minimal-table th {
+        background-color: #27272a;
+        color: #a1a1aa;
+        border-bottom-color: #3f3f46;
+      }
+      .dark-mode .minimal-table td {
+        border-bottom-color: #334155;
+        color: #d4d4d8;
+      }
+      .dark-mode .minimal-table tbody tr:hover {
+        background-color: #27272a;
+      }
+
+      /* Dark mode SH-Index badge */
+      .dark-mode .sh-index-container {
+        background-color: #1a2332;
+        border-color: #334155;
+      }
+      .dark-mode .sh-index-label {
+        color: #94a3b8;
+      }
+
+      /* Dark mode right-panel control grids (inline bg #f8f9fa) */
+      .dark-mode div[style*='background: #f8f9fa'],
+      .dark-mode div[style*='background-color: #f8f9fa'] {
+        background: var(--input-bg) !important;
+        border-color: var(--border-color) !important;
+      }
+
+      /* Dark mode extended controls box (inline bg #fff3e0) */
+      .dark-mode div[style*='background-color: #fff3e0'] {
+        background-color: #3d2e10 !important;
+        border-color: #b45309 !important;
+        color: var(--text-color) !important;
+      }
+
+      /* Dark mode DataTables select dropdown */
+      .dark-mode .dataTables_length select {
+        background-color: #27272a !important;
+        color: #f4f4f5 !important;
+        border-color: #3f3f46 !important;
+      }
+
+      /* Dark mode inline color overrides */
+      .dark-mode p[style*='color: #666'],
+      .dark-mode span[style*='color: #666'] {
+        color: #94a3b8 !important;
+      }
+      .dark-mode p[style*='color: #555'],
+      .dark-mode span[style*='color: #555'] {
+        color: #94a3b8 !important;
+      }
+
       
       /* --- HEADER ALIGNMENT --- */
       .header-container {
