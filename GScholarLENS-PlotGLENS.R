@@ -159,12 +159,12 @@ plot_glens_table <- function(rv,df,session){
     # }
     list(
       x = sub_data$Position,
-      y = sub_data$Count,
+      y = glens_finite(sub_data$Count),
       # customdata = sub_data$Total_Q_Pubs,
       hovertemplate = paste0(
         "<b>Position:</b> ", sub_data$Position, "<br>",
-        "<b>Quartile:</b> ", q, "<br>",
-        "<b>Quartile Publications:</b> ", sub_data$Count, "<br>",
+        "<b>Citedness band (OpenAlex):</b> ", q, "<br>",
+        "<b>Band publications:</b> ", sub_data$Count, "<br>",
         paste0("<b>Total '",sub_data$Position,"' Publications:</b> "), sub_data$Total_P_Pubs, "<br>",
         paste0("<b>Total '",q,"' Publications:</b> "), sub_data$Total_Q_Pubs, "<br>",
         "<b>Total Publications:</b> ", sum(agg_all$Count),
@@ -179,7 +179,7 @@ plot_glens_table <- function(rv,df,session){
                     list(
                       data = acounts_animate_payload, 
                       traces = as.list(0:(length(all_quartiles) - 1)),
-                      layout = list(yaxis = list(range=c(0,max(na.omit(agg_all$Total_P_Pubs))), autorange = TRUE, rangemode = "nonnegative"),
+                      layout = list(yaxis = list(range=glens_safe_range(agg_all$Total_P_Pubs), autorange = TRUE, rangemode = "nonnegative"),
                                     autosize = TRUE)
                       ),
                     list(
@@ -201,12 +201,12 @@ plot_glens_table <- function(rv,df,session){
     sub_data <- agg_all %>% filter(Qscore == q) %>% arrange(Position)
     list(
       x = sub_data$Position,
-      y = sub_data$SumCitations,
+      y = glens_finite(sub_data$SumCitations),
       # customdata = sub_data$Total_Q_Cites,
       hovertemplate = paste0(
         "<b>Position:</b> ", sub_data$Position, "<br>",
-        "<b>Quartile:</b> ", q, "<br>",
-        "<b>Quartile Citations:</b> ", sub_data$SumCitations, "<br>",
+        "<b>Citedness band (OpenAlex):</b> ", q, "<br>",
+        "<b>Band citations:</b> ", sub_data$SumCitations, "<br>",
         paste0("<b>Total '",sub_data$Position,"' Citations:</b> "), sub_data$Total_P_Cites, "<br>",
         paste0("<b>Total '",q,"' Citations:</b> "), sub_data$Total_Q_Cites, "<br>",
         "<b>Total Citations:</b> ", sum(agg_all$SumCitations),
@@ -220,7 +220,7 @@ plot_glens_table <- function(rv,df,session){
                     list(
                       data = ccounts_animate_payload, 
                       traces = as.list(0:(length(all_quartiles) - 1)),
-                      layout = list(yaxis = list(range=c(0,max(na.omit(agg_all$Total_P_Cites))), autorange = TRUE, rangemode = "nonnegative"),
+                      layout = list(yaxis = list(range=glens_safe_range(agg_all$Total_P_Cites), autorange = TRUE, rangemode = "nonnegative"),
                                     autosize = TRUE)
                       ),
                     list(
@@ -243,7 +243,7 @@ plot_glens_table <- function(rv,df,session){
   # =====================================================================
   # PLOT 1: CITATION DISTRIBUTION (Protected Flow)
   # =====================================================================
-  if(nrow(df_plot) <= 1 || all(group_counts$n <= 1) || all(df_plot$Citations == 0)){
+  if(nrow(df_plot) <= 1 || all(group_counts$n <= 1) || isTRUE(all(df_plot$Citations == 0 | is.na(df_plot$Citations)))){  # D-1: NA-safe
     shinyjs::hide("cdist_plot")
   } else {
     shinyjs::show("cdist_plot")
@@ -256,14 +256,14 @@ plot_glens_table <- function(rv,df,session){
     for (i in seq_along(all_positions)) {
       pos <- all_positions[i]
       rows <- which(df_plot$position_rank == pos)
-      y_violin <- if (length(rows) > 0) log1p(df_plot$Citations[rows]) else numeric(0)
+      y_violin <- if (length(rows) > 0) glens_finite(log1p(df_plot$Citations[rows])) else numeric(0)
       x_violin <- rep(i, length(y_violin))
       n_rows <- length(rows)
       if (n_rows > 0) {
         x_scatter <- i + runif(n_rows, -0.18, 0.18)
-        y_scatter <- log1p(df_plot$Citations[rows])
+        y_scatter <- glens_finite(log1p(df_plot$Citations[rows]))
         text_scatter <- make_dist_hover_text(df_plot[rows, , drop = FALSE])
-        size_scatter <- (scale(df_plot$Adjusted_Citations[rows]) * 10) + 15
+        size_scatter <- safe_marker_size(df_plot$Adjusted_Citations[rows])   # D-24: no NaN / negative sizes
       } else {
         x_scatter <- numeric(0); y_scatter <- numeric(0); text_scatter <- character(0); size_scatter <- numeric(0)
       }
@@ -340,8 +340,8 @@ plot_glens_table <- function(rv,df,session){
   # =====================================================================
   # PLOT 3: CITATION CONTRIBUTION % (Protected Flow)
   # =====================================================================
-  total_cites <- sum(df_plot$Citations)
-  cites_pdata <- df_plot %>% group_by(position_rank) %>% summarise(TotalCitations = sum(Citations), .groups = 'drop') %>% mutate(pcontrib = if (is.na(total_cites) || total_cites == 0) 0 else (TotalCitations / total_cites) * 100)
+  total_cites <- sum(df_plot$Citations, na.rm = TRUE)  # D-1: NA citations (unresolved DOIs) must not abort the plot
+  cites_pdata <- df_plot %>% group_by(position_rank) %>% summarise(TotalCitations = sum(Citations, na.rm = TRUE), .groups = 'drop') %>% mutate(pcontrib = if (is.na(total_cites) || total_cites == 0) 0 else (TotalCitations / total_cites) * 100)
   
   if(nrow(cites_pdata) <= 0 || total_cites == 0){
     shinyjs::hide("cperc_plot")
@@ -489,38 +489,8 @@ render_skeleton_plots <- function(rv, df, output){
   #       showlegend = FALSE, transition = list(duration = 1000, easing = "ease-in-out")
   #     )
   cn_log_debug("plot_glens_table: full_grid rows=%d", nrow(full_grid))
-  output$acounts_plot <- renderPlotly({
-    plot_ly(
-      data = agg_all, 
-      x = ~Position, 
-      y = ~Count, 
-      split = ~Qscore, 
-      type = "bar",
-      # hovertemplate is better than hovertext for proxies
-      # hovertemplate = "<b>%{x}</b><br>Quartile: %{fullData.name}<br>Publications: %{y}<extra></extra>",
-      # customdata = ~Total_Position, # Map the total here
-      # hovertemplate = paste0(
-      #   "<b>%{x}</b><br>",
-      #   "Quartile: %{fullData.name}<br>",
-      #   "Pubs in this Pos: %{y}<br>",
-      #   "Total Pubs in %{fullData.name}: %{customdata}",
-      #   "<extra></extra>"
-      # ),
-      marker = list(
-        color = ~position_colors[Position], 
-        opacity = ~quartile_alpha[Qscore], 
-        line = list(width = 1.2, color = ~position_border_colors[Position])
-      )
-    ) %>%
-      layout(
-        title = list(text = "Publication Count based on Authorship with Journal Rank Categorization", x = 0.5),
-        barmode = "stack", 
-        xaxis = list(title = "", tickangle = 15, categoryorder = "array", categoryarray = all_positions), 
-        yaxis = list(title = "", range=c(0,1), rangemode = "nonnegative", autorange = TRUE),
-        showlegend = FALSE,
-        autosize = TRUE
-      )
-  })
+  agg_fig <- glens_position_agg(df)  # D1-2: pure, finite helper (unweighted by design)
+  output$acounts_plot <- renderPlotly({ glens_counts_figure(agg_fig, "count") })
   outputOptions(output, "acounts_plot", suspendWhenHidden = FALSE)
   
   # output$ccounts_plot <- renderPlotly({
@@ -534,37 +504,7 @@ render_skeleton_plots <- function(rv, df, output){
   #       barmode = "stack", xaxis = list(title = "", tickangle = 15), yaxis = list(title = ""),
   #       showlegend = FALSE, transition = list(duration = 1000, easing = "ease-in-out")
   #     )
-  output$ccounts_plot <- renderPlotly({
-    plot_ly(
-      data = agg_all, 
-      x = ~Position, 
-      y = ~SumCitations, 
-      split = ~Qscore, 
-      type = "bar",
-      # hovertemplate = "<b>%{x}</b><br>Quartile: %{fullData.name}<br>Citations: %{y}<extra></extra>",
-      # customdata = ~Total_QCitations, # Map the total here
-      # hovertemplate = paste0(
-      #   "<b>%{x}</b><br>",
-      #   "Quartile: %{fullData.name}<br>",
-      #   "Citations in this Pos: %{y}<br>",
-      #   "Total Citations in %{fullData.name}: %{customdata}",
-      #   "<extra></extra>"
-      # ),
-      marker = list(
-        color = ~position_colors[Position], 
-        opacity = ~quartile_alpha[Qscore], 
-        line = list(width = 1.2, color = ~position_border_colors[Position])
-      )
-    ) %>%
-      layout(
-        title = list(text = "Citation Count based on Authorship with Journal Rank Categorization", x = 0.5),
-        barmode = "stack", 
-        xaxis = list(title = "", tickangle = 15, categoryorder = "array", categoryarray = all_positions), 
-        yaxis = list(title = "", range=c(0,1), rangemode = "nonnegative", autorange = TRUE),
-        showlegend = FALSE,
-        autosize = TRUE
-      )
-  })
+  output$ccounts_plot <- renderPlotly({ glens_counts_figure(agg_fig, "citations") })
   outputOptions(output, "ccounts_plot", suspendWhenHidden = FALSE)
   
   output$cdist_plot <- renderPlotly({
@@ -632,4 +572,94 @@ render_skeleton_plots <- function(rv, df, output){
     shinyjs::hide("cperc_plot")
     shinyjs::hide("network_filtered")
   }
+}
+
+# ---------------------------------------------------------------------------
+# D1-2: pure, testable figure helpers for the Publication / Citation trend plots.
+# Root causes of the plotly "translate(60,-Infinity)" / "scale(1,Infinity)" errors:
+#  (1) the plotlyProxy "animate" layout sent yaxis.range = c(0, max(na.omit(x))): when every
+#      band is 0 (e.g. zero-citation author, or weights/filters leaving only Not_found rows)
+#      the range is the degenerate [0, 0] -> plotly divides by a zero span -> +/-Infinity in
+#      the SVG transform (plotly.js transition_axes.js; CONFIRMED in Chromium by D2-A2,
+#      tests/browser/plotly_zero_span.py). Erratum (D2, 2026-11-07): max() of an empty vector gives
+#      -Inf, but shiny/plotly serialize -Inf/NaN as JSON null, and an animate to [0, null] does NOT
+#      produce the error -- the zero span is the only reproduced trigger.
+#  (2) non-finite values (NaN/Inf from 0/0 or bad numeric coercions) reached the y data.
+# Fix: every numeric that reaches plotly goes through glens_finite(); ranges come from
+# glens_safe_range() (always finite, span > 0); empty selections get a placeholder figure.
+# Design decision: the Publication/Citation count plots are UNWEIGHTED (raw publication counts
+# and raw citations); the Sh-index weight mode (default/custom/Newman) does not change them.
+# This is stated in the plot titles (GLENS_TREND_UNWEIGHTED_NOTE).
+# ---------------------------------------------------------------------------
+GLENS_TREND_UNWEIGHTED_NOTE <- "raw counts, not affected by Sh-index weights"
+GLENS_POSITIONS <- c("First Author","Second Author","Co-Author","Corresponding Author")
+GLENS_QUARTILES <- c("Q1","Q2","Q3","Q4", "NA")
+
+glens_finite <- function(x, fill = 0) {
+  x <- suppressWarnings(as.numeric(x)); x[!is.finite(x)] <- fill; x
+}
+glens_safe_range <- function(x, min_span = 1) {
+  x <- suppressWarnings(as.numeric(x)); x <- x[is.finite(x)]
+  hi <- if (length(x)) max(x) else 0
+  c(0, max(hi, min_span))
+}
+
+# Position x Qscore aggregation (Count, SumCitations + totals); always a full, finite 4x5 grid.
+glens_position_agg <- function(df) {
+  full_grid <- expand.grid(Position = GLENS_POSITIONS, Qscore = GLENS_QUARTILES, stringsAsFactors = FALSE)
+  if (is.data.frame(df) && nrow(df) > 0) {
+    for (col in c("First_Author", "Second_Author", "Co_Author", "Corresponding_Author"))
+      if (!col %in% colnames(df)) df[[col]] <- 0L
+    if (!"Citations" %in% colnames(df)) df$Citations <- 0.0
+    if (!"Qscore" %in% colnames(df)) df$Qscore <- "NA"
+    df$Citations <- glens_finite(df$Citations)
+    df$Qscore <- as.character(df$Qscore); df$Qscore[is.na(df$Qscore) | df$Qscore == ""] <- "NA"
+    agg <- bind_rows(make_agg(df, "First_Author", "First Author"), make_agg(df, "Second_Author", "Second Author"),
+                     make_agg(df, "Co_Author", "Co-Author"), make_agg(df, "Corresponding_Author", "Corresponding Author"))
+  } else agg <- tibble(Qscore = character(0), Count = integer(0), SumCitations = numeric(0), Position = character(0))
+  out <- full_grid %>% left_join(agg, by = c("Position", "Qscore"))
+  out$Count <- as.integer(glens_finite(out$Count)); out$SumCitations <- glens_finite(out$SumCitations)
+  out %>% group_by(Position) %>% mutate(Total_P_Pubs = sum(Count), Total_P_Cites = sum(SumCitations)) %>%
+    group_by(Qscore) %>% mutate(Total_Q_Pubs = sum(Count), Total_Q_Cites = sum(SumCitations)) %>% ungroup() %>%
+    mutate(Position = factor(Position, levels = GLENS_POSITIONS), Qscore = factor(Qscore, levels = GLENS_QUARTILES)) %>%
+    arrange(Qscore, Position)
+}
+
+glens_placeholder_figure <- function(title = "", msg = "No data for this selection") {
+  plot_ly(type = "scatter", mode = "markers", x = numeric(0), y = numeric(0), hoverinfo = "none") %>%
+    layout(title = list(text = title, x = 0.5),
+           xaxis = list(visible = FALSE, range = c(0, 1)), yaxis = list(visible = FALSE, range = c(0, 1)),
+           annotations = list(list(text = msg, x = 0.5, y = 0.5, xref = "paper", yref = "paper",
+                                   showarrow = FALSE, font = list(size = 16, color = "#777"))),
+           showlegend = FALSE)
+}
+
+# metric = "count" (Publication plot) or "citations" (Citation plot). Builds the stacked bar figure.
+glens_counts_figure <- function(agg_all, metric = c("count", "citations"), placeholder_if_empty = FALSE) {
+  metric <- match.arg(metric)
+  col <- if (metric == "count") "Count" else "SumCitations"
+  title <- sprintf("%s Count based on Authorship with Journal Rank Categorization<br><sup>(%s)</sup>",
+                   if (metric == "count") "Publication" else "Citation", GLENS_TREND_UNWEIGHTED_NOTE)
+  if (is.null(agg_all) || !nrow(agg_all)) agg_all <- glens_position_agg(NULL)
+  agg_all[[col]] <- glens_finite(agg_all[[col]])
+  if (placeholder_if_empty && sum(agg_all[[col]]) <= 0) return(glens_placeholder_figure(title))
+  position_colors <- c("First Author" = "#D6A77A", "Second Author" = "#B66BA4", "Co-Author" = "#2E8B57", "Corresponding Author" = "#4B8BBE")
+  position_border_colors <- c("First Author" = "#ff9f40ff", "Second Author" = "#9966ffff", "Co-Author" = "#4bc093ff", "Corresponding Author" = "#36a2ebff")
+  quartile_alpha <- c("Q1" = 0.9, "Q2" = 0.70, "Q3" = 0.50, "Q4" = 0.30, "NA" = 0.2)
+  agg_all$y__ <- agg_all[[col]]
+  tot <- if (metric == "count") agg_all$Total_P_Pubs else agg_all$Total_P_Cites
+  plot_ly(data = agg_all, x = ~Position, y = ~y__, split = ~Qscore, type = "bar",
+          marker = list(color = ~position_colors[as.character(Position)], opacity = ~quartile_alpha[as.character(Qscore)],
+                        line = list(width = 1.2, color = ~position_border_colors[as.character(Position)]))) %>%
+    layout(title = list(text = title, x = 0.5), barmode = "stack",
+           xaxis = list(title = "", tickangle = 15, categoryorder = "array", categoryarray = GLENS_POSITIONS),
+           yaxis = list(title = "", range = glens_safe_range(tot), rangemode = "nonnegative", autorange = TRUE),
+           showlegend = FALSE, autosize = TRUE)
+}
+
+# Recursively collect every numeric leaf of a (built) plotly object; used by tests.
+glens_numeric_leaves <- function(x) {
+  if (is.numeric(x)) return(as.numeric(x))
+  if (is.list(x)) return(unlist(lapply(x, glens_numeric_leaves), use.names = FALSE))
+  numeric(0)
 }

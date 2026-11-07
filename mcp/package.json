@@ -1,0 +1,12 @@
+{
+  "name": "collabnet-mcp",
+  "version": "1.0.0",
+  "description": "Zero-dependency local MCP bridge (stdio + Streamable HTTP) for the CollabNET web app",
+  "type": "module",
+  "bin": { "collabnet-mcp": "./collabnet-mcp.mjs" },
+  "files": ["collabnet-mcp.mjs"],
+  "engines": { "node": ">=18" },
+  "scripts": { "test": "node --test test/bridge.test.mjs", "start": "node collabnet-mcp.mjs" },
+  "license": "MIT",
+  "dependencies": {}
+}

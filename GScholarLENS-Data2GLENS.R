@@ -379,14 +379,17 @@ compute_h_index <- function(citations_vec) {
 #   j2
 # }
 
+# D-21 (redone in D1-8): previously split at the first letter+digit and then removed every digit, so
+# "Journal of 3D Printing" became "journal of" and "F1000Research" became "f". Now only a trailing
+# volume/issue/pages tail (whitespace-separated tokens made of digits and ()[]-:;,./ or vol/no/pp
+# keywords) is removed; digits inside the title are kept. JCR names go through the same function.
+.nj_tail_token <- "^([(\\[]?\\d[\\d()\\[\\]\u2013\\-:;,./]*|(vol|volume|no|issue|iss|pp|p|suppl)\\.?[,;:]?)$"
 normalize_journal <- function(x) {
-  x |>
-    str_to_lower() |>
-    ## str_split(",\\s*(.+)", simplify = TRUE) |>
-    # str_split("\\d", simplify = TRUE) |>
-    str_split("(?<=[A-Za-z])\\s*\\d+", simplify = T) |>
-    (\(y) y[1])() |>
-    str_remove_all("\\d+") |>
+  x <- str_to_lower(as.character(x)[1])
+  if (is.na(x)) return(NA_character_)
+  toks <- strsplit(str_squish(x), "\\s+")[[1]]
+  while (length(toks) > 1L && grepl(.nj_tail_token, toks[length(toks)], perl = TRUE)) toks <- toks[-length(toks)]
+  paste(toks, collapse = " ") |>
     str_remove_all("[^\\w\\s]|_") |>
     str_squish()
 }

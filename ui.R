@@ -33,7 +33,19 @@ is_WASM <- grepl(pattern="wasm",x=Sys.info()["machine"])
 #   future::plan(future::sequential)
 # }
 
+# Debug console UI helpers (console_ui(), debug_toggle_ui()); in the WASM bundle the file is concatenated before ui.R.
+if (!exists("console_ui", mode = "function")) source("GScholarLENS-Console.R", local = TRUE)
+if (!exists("SH_DEFAULT_WEIGHTS")) source("GScholarLENS-ShWeights.R", local = TRUE)  # C1-4
+if (!exists("cn_csp_meta")) source("GScholarLENS-CSP.R", local = TRUE)  # C3-2
+
 ui <- fluidPage(
+  tags$head(cn_csp_meta()),   # C3-2: app-page CSP (first head element after Shiny deps)
+  title = "CollabNET",        # D3-6: browser tab title (native runApp; the Shinylive shell is patched by html_head_patch.py)
+  tags$head(                  # D3-7: favicon / touch icons (files in www/)
+    tags$link(rel = "icon", type = "image/png", sizes = "32x32", href = "favicon-32.png"),
+    tags$link(rel = "icon", href = "favicon.ico", sizes = "any"),
+    tags$link(rel = "apple-touch-icon", href = "img/apple-touch-icon.png")
+  ),
   shinyjs::useShinyjs(),
   # theme = bs_theme(version = 5),
   # 1. The unconditional warning wall
@@ -91,12 +103,20 @@ ui <- fluidPage(
         </div>
       ")
     ),
-    tags$script(src = "js/plotly.min.js"),
     tags$script(src = "js/collabnet-worker-pool.js"),
+    tags$script(src = "js/collabnet-keystore.js"),
+    tags$link(rel = "stylesheet", href = "css/collabnet-mcp.css"),
+    tags$script(src = "js/collabnet-webmcp.js"),
+    tags$script(src = "js/collabnet-mcp-ui.js"),
+    tags$script(src = "js/collabnet-topbar.js", defer = NA),   # D2-B2 icon-only top bar
+    tags$link(rel = "stylesheet", href = "css/collabnet-topbar.css"),
+    tags$script(src = "js/collabnet-resize.js", defer = NA),   # D2-B1 widget re-fit on container resize
+    tags$script(src = "js/collabnet-layout.js", defer = NA),   # D3-4 reserve space for the docked Execution Log
     tags$script(HTML("
       $(document).ready(function(){
         // Initialize all Bootstrap 3 tooltips on the page
-        $('[data-toggle=\"tooltip\"]').tooltip({
+        // D3-3: top-bar tooltips are initialised by js/collabnet-topbar.js (placement below, kept in viewport)
+        $('[data-toggle=\"tooltip\"]').not('.header-container [data-toggle=\"tooltip\"]').tooltip({
           placement: 'top', // You can change this to 'right', 'bottom', or 'left'
           container: 'body' // Prevents the tooltip from breaking inside hidden divs
         });
@@ -164,8 +184,12 @@ ui <- fluidPage(
         updateGlensBusyState();
       });
 
-      $(document).on('shiny:connected', function() {
-        if (window.Shiny && Shiny.addCustomMessageHandler) {
+      // C1-1: register once (shiny:connected fires again on reconnect) and never let a throw escape:
+      // an exception in a shiny:connected listener aborts Shiny's socket.onopen before the init message.
+      var _glensHandlersDone = false;
+      function _glensRegisterHandlers() {
+        if (_glensHandlersDone || !(window.Shiny && Shiny.addCustomMessageHandler)) return;
+        try {
           Shiny.addCustomMessageHandler('glens_busy_state', function(isBusy) {
             _glensServerBusy = Boolean(isBusy);
             updateGlensBusyState();
@@ -174,8 +198,11 @@ ui <- fluidPage(
             _glensHasData = Boolean(msg && msg.has_data);
             updateGlensBusyState();
           });
-        }
-      });
+          _glensHandlersDone = true;
+        } catch (e) { console.error('glens busy-state handlers failed', e); }
+      }
+      _glensRegisterHandlers();
+      $(document).on('shiny:connected', _glensRegisterHandlers);
     ")),
     tags$style(HTML("
       /* --- Global Loading Indicator (when progress_overlay is not shown) --- */
@@ -535,6 +562,9 @@ ui <- fluidPage(
         background-color: #27272a;
       }
 
+      /* C1-4: non-default Sh weights banner (readable in light and dark mode) */
+      .cn-sh-banner { border-left: 5px solid #b45309; background: #fff7e6; color: #5c3a00; margin: 10px 0; }
+      .dark-mode .cn-sh-banner { background: #3b2a06; color: #ffe2a8; border-left-color: #f59e0b; }
       /* Dark mode SH-Index badge */
       .dark-mode .sh-index-container {
         background-color: #1a2332;
@@ -1008,24 +1038,9 @@ ui <- fluidPage(
           }
         });
         
-        // LOCAL API KEY STORAGE IN BROWSER using localStorage
-        // 1. When Shiny connects, check localStorage and send keys to R
-        $(document).on('shiny:connected', function() {
-          Shiny.setInputValue('browser_stored_keys', {
-            scopus_key: localStorage.getItem('scopus_key'),
-            wos_key: localStorage.getItem('wos_key'),
-            semantic_key: localStorage.getItem('semantic_key'),
-            crossref_key: localStorage.getItem('crossref_key'),
-            opencites_key: localStorage.getItem('opencites_key')
-          }, {priority: 'event'}); // priority: 'event' ensures it fires immediately
-        });
-    
-        // 2. Listen for a command from R to save a new key
-        Shiny.addCustomMessageHandler('save_key_to_browser', function(message) {
-          localStorage.setItem(message.platform, message.key);
-          // Optional: Give the user a tiny visual confirmation via JS
-          console.log('Saved ' + message.platform + ' key to browser.');
-        });
+        // API KEY STORAGE (P0-8b): handled by www/js/collabnet-keystore.js.
+        // Default = in-memory only; optional passphrase-encrypted (AES-GCM/PBKDF2)
+        // storage on this device; legacy plaintext localStorage keys are deleted.
     
       });
     ")),
@@ -1084,7 +1099,7 @@ ui <- fluidPage(
               if (keys.opencitations) headers['authorization'] = keys.opencitations;
             } else if (apiName === 'semanticscholar') {
               url = `https://api.semanticscholar.org/graph/v1/paper/DOI:${safeDoi}?fields=citationCount`;
-              if (keys.semanticscholar) headers['Authorization'] = `Bearer ${keys.semanticscholar}`;
+              if (keys.semanticscholar) headers['x-api-key'] = keys.semanticscholar;   // D-9: S2 Graph API key header
             }
 
             let count = null, maxRetries = 3, waitTime = 1500;
@@ -1177,6 +1192,7 @@ ui <- fluidPage(
                       jifValue = parseFloat(bestMatch.summary_stats['2yr_mean_citedness']);
                     }
                     
+                    // OpenAlex citedness band by FIXED cut-offs on 2yr_mean_citedness (NOT JCR quartiles; see CITEDNESS_BAND_CUTOFFS)
                     let fetched_q = 'NA';
                     if (jifValue >= 4.0) fetched_q = 'Q1';
                     else if (jifValue >= 2.0) fetched_q = 'Q2';
@@ -1251,7 +1267,11 @@ ui <- fluidPage(
   # 1. Custom Title Header with Settings & Dark Mode
   tags$div(
     class = "header-container",
-    h2("CollabNET Analysis Dashboard", style = "margin: 0; font-weight: bold;"),
+    tags$div(class = "header-title",   # D3-1/7: logo + heading on their own row when the bar wraps
+      tags$span(class = "cn-logo-chip",
+        tags$img(src = "img/collabnet-logo.png", class = "cn-logo cn-logo-light", alt = "CollabNET logo", width = "40", height = "40"),
+        tags$img(src = "img/collabnet-logo-mono-light.png", class = "cn-logo cn-logo-dark", alt = "", `aria-hidden` = "true", width = "40", height = "40")),
+      h2("CollabNET Analysis Dashboard", style = "margin: 0; font-weight: bold;")),
     tags$div(
       class = "header-buttons",
       # tags$label(
@@ -1285,25 +1305,26 @@ ui <- fluidPage(
         type = "button",
         class = "btn btn-default btn-outline-white action-button", 
         style = "margin-bottom: 0; font-weight: normal; cursor: pointer;",
-        "data-toggle" = "tooltip",
+        "data-toggle" = "tooltip", "data-placement" = "bottom", `aria-label` = "Upload publication data",
         title = "Upload publication data (CSV/Excel) from Scopus, Web of Science, PubMed, Lens, or a saved .cnet session",
         tags$i(id = "preupload_icon", class = "fa fa-upload"),
-        tags$span(id = "preupload_text", "") 
+        tags$span(id = "preupload_text", ""),
+        tags$span(class = "sr-only", "Upload publication data")
       ),
       tags$label(
         class = "btn btn-default btn-outline-white",
         style = "margin-bottom: 0; font-weight: normal; cursor: pointer;",
-        "data-toggle" = "tooltip",
+        "data-toggle" = "tooltip", "data-placement" = "bottom", `aria-label` = "Save session (.cnet)",
         title = "Export and save your current dataset, network, and analysis state as a portable .cnet file",
-        icon("download", lib = "font-awesome"),
+        icon("download", lib = "font-awesome"), tags$span(class = "sr-only", "Save session (.cnet)"),
         tags$input(id="predownload_btn", type="button", class="action-button", style = "display: none;")
       ),
       tags$label(
         class = "btn btn-default btn-outline-white",
         style = "margin-bottom: 0; font-weight: normal; cursor: pointer;",
-        "data-toggle" = "tooltip",
+        "data-toggle" = "tooltip", "data-placement" = "bottom", `aria-label` = "API keys",
         title = "Configure API keys for Scopus, Web of Science, Semantic Scholar, and OpenAlex",
-        icon("key", lib = "font-awesome"),
+        icon("key", lib = "font-awesome"), tags$span(class = "sr-only", "API keys"),
         tags$input(id="keys_btn", type="button", class="action-button", style = "display: none;")
       ),
       # tags$label(
@@ -1314,12 +1335,16 @@ ui <- fluidPage(
       #   icon("moon", lib = "font-awesome"),
       #   tags$input(id="theme_toggle", type="button", class="action-button", style = "display: none;")
       # ),
-      actionButton("tutorial_btn", "Tutorial", icon = icon("chalkboard-user", lib = "font-awesome"), class = "btn-outline-white", "data-toggle" = "tooltip", title = "Launch interactive live tutorial explaining fetching, lookup controls, and charts"),
-      actionButton("readme_btn", "ℹReadme", icon = icon("circle-info", lib = "font-awesome"), class = "btn-outline-white", "data-toggle" = "tooltip", title = "View project overview, architecture, and features"),
-      actionButton("manual_btn", "Manual", icon = icon("book-open", lib = "font-awesome"), class = "btn-outline-white", "data-toggle" = "tooltip", title = "Open full-length user manual, formulas, and analytical guides"),
-      actionButton("theme_toggle", "Dark Mode", icon = icon("moon", lib = "font-awesome"), class = "btn-outline-white", "data-toggle" = "tooltip", title = "Switch between Light and Dark interface themes")
+      actionButton("tutorial_btn", tags$span(class = "cn-btn-label sr-only", "Tutorial"), `aria-label` = "Tutorial", "data-placement" = "bottom", icon = icon("chalkboard-user", lib = "font-awesome"), class = "btn-outline-white", "data-toggle" = "tooltip", title = "Launch interactive live tutorial explaining fetching, lookup controls, and charts"),
+      actionButton("readme_btn", tags$span(class = "cn-btn-label sr-only", "Readme"), `aria-label` = "Readme", "data-placement" = "bottom", icon = icon("circle-info", lib = "font-awesome"), class = "btn-outline-white", "data-toggle" = "tooltip", title = "View project overview, architecture, and features"),
+      actionButton("manual_btn", tags$span(class = "cn-btn-label sr-only", "Manual"), `aria-label` = "Manual", "data-placement" = "bottom", icon = icon("book-open", lib = "font-awesome"), class = "btn-outline-white", "data-toggle" = "tooltip", title = "Open full-length user manual, formulas, and analytical guides"),
+      actionButton("theme_toggle", tags$span(class = "cn-btn-label sr-only", "Dark Mode"), `aria-label` = "Dark Mode", "data-placement" = "bottom", icon = icon("moon", lib = "font-awesome"), class = "btn-outline-white", "data-toggle" = "tooltip", title = "Switch between Light and Dark interface themes"),
+      actionButton("connect_ai_btn", tags$span(class = "cn-btn-label sr-only", "Connect AI"), `aria-label` = "Connect AI", "data-placement" = "bottom", icon = icon("plug", lib = "font-awesome"), class = "btn-outline-white", "data-toggle" = "tooltip", title = "Connect AI agents (MCP): pairing, consent policy, activity log, client configs"),
+      debug_toggle_ui()
     )
   ),
+  # Floating R console (hidden until Debug is switched on)
+  console_ui(),
   
   # 2. Main Content Grid
   fluidRow(
@@ -1458,6 +1483,7 @@ ui <- fluidPage(
 
             function _registerKeywordHandler() {
               if (window.Shiny && typeof Shiny.addCustomMessageHandler === 'function') {
+                try {
                 Shiny.addCustomMessageHandler('keyword_match_status', function(msg) {
                   _isUserTyping = false;
                   
@@ -1482,7 +1508,7 @@ ui <- fluidPage(
                     if (item.found) {
                       tagsHtml += '<span class=\"badge badge-success\" style=\"background-color: #28a745; color: white; border-radius: 4px; padding: 3px 8px; font-size: 11px; font-weight: 600;\">' +
                                   '<i class=\"fa fa-check\" style=\"margin-right: 3px;\"></i>' +
-                                  safeKw + ' (' + item.count + ')</span>';
+                                  safeKw + ' (' + (Number(item.count) || 0) + ')</span>';
                     } else {
                       allFound = false;
                       tagsHtml += '<span class=\"badge badge-danger\" style=\"background-color: #dc3545; color: white; border-radius: 4px; padding: 3px 8px; font-size: 11px; font-weight: 600;\">' +
@@ -1508,6 +1534,7 @@ ui <- fluidPage(
                     });
                   }
                 });
+                } catch (e) { console.error('keyword_match_status handler failed', e); }
               } else {
                 $(document).one('shiny:connected', _registerKeywordHandler);
               }
@@ -1546,7 +1573,7 @@ ui <- fluidPage(
           div(
           tagList(
                 tags$head(
-                  tags$link(rel = "stylesheet", href = "css/collabnet-mcp.css")
+                  NULL  # collabnet-mcp.css is loaded in the page head
                 ),
                 div(
                   id = "collabnet-mcp-panel",
@@ -1583,10 +1610,18 @@ ui <- fluidPage(
                     class = "collabnet-ai-chat",
                     h4("In-page assistant", class = "collabnet-ai-chat-title"),
                     div(class = "collabnet-ai-config",
+                      div(class = "collabnet-ai-config-row",   # D2-B3 provider selection
+                        tags$label(`for` = "collabnet-ai-provider", "Provider"),
+                        tags$select(id = "collabnet-ai-provider",
+                          tags$option(value = "openai", selected = NA, "OpenAI-compatible (OpenAI, OpenRouter, LM Studio, vLLM...)"),
+                          tags$option(value = "anthropic", "Anthropic (Messages API)"),
+                          tags$option(value = "gemini", "Google Gemini"),
+                          tags$option(value = "ollama", "Ollama (local, native API)"))
+                      ),
                       div(class = "collabnet-ai-config-row",
-                        tags$label(`for` = "collabnet-ai-endpoint", "OpenAI-compatible Chat Completions endpoint"),
+                        tags$label(`for` = "collabnet-ai-endpoint", "Base URL (or full endpoint URL)"),
                         tags$input(id = "collabnet-ai-endpoint", type = "url",
-                          value = "https://api.openai.com/v1/chat/completions",
+                          value = "https://api.openai.com/v1",
                           autocomplete = "url", spellcheck = "false")
                       ),
                       div(class = "collabnet-ai-config-grid",
@@ -1604,6 +1639,7 @@ ui <- fluidPage(
                       div(class = "collabnet-ai-actions",
                         tags$button(id = "collabnet-ai-connect", type = "button", class = "btn btn-default",
                           "Connect in-page assistant"),
+                        tags$button(id = "collabnet-ai-test", type = "button", class = "btn btn-default", "Test connection"),
                         span(id = "collabnet-ai-connection-state", "Not connected")
                       ),
                       p(class = "collabnet-ai-disclosure",
@@ -1619,14 +1655,15 @@ ui <- fluidPage(
                         `aria-label` = "Message to the CollabNET assistant"),
                       tags$div(class = "collabnet-ai-form-actions",
                         tags$button(id = "collabnet-ai-send", type = "submit", class = "btn btn-primary", "Send"),
+                        tags$button(id = "collabnet-ai-cancel", type = "button", class = "btn btn-warning", disabled = NA, "Cancel"),
                         tags$button(id = "collabnet-ai-clear", type = "button", class = "btn btn-default", "Clear chat")
                       )
                     )
                   ),
                   tags$p(class = "collabnet-mcp-ide-note",
-                    "Desktop/agentic IDE connection: install the optional CollabNET Browser Bridge extension and configure its local MCP server. The extension connects only this browser tab to the IDE's local MCP process.")
+                    "Desktop AI apps (Claude Desktop, Cursor, VS Code): run the local bridge (node mcp/collabnet-mcp.mjs --print-config), open the link it prints, or pair via 'Connect AI' in the top bar.")
                 ),
-                tags$script(src = "js/collabnet-mcp-browser.js"),
+                tags$script(src = "js/collabnet-ai-providers.js"),
                 tags$script(src = "js/collabnet-ai-chat.js")
             )
           )
@@ -1701,25 +1738,15 @@ ui <- fluidPage(
       tags$div(id = "log_wrapper",
                # A proper panel header that ALSO acts as your drag handle
                tags$div(id = "log_header",
-                        tags$span("Execution Log", style = "font-weight: bold; color: #333;"),
+                        tags$span("Execution Log", class = "cn-log-title"),
                         tags$div(class = "drag-grip") # The visual drag lines
                ),
                # The actual log output
                # verbatimTextOutput("log")
                htmlOutput("log", 
-                          style = "background-color: #f5f5f5; 
-                            border: 1px solid #ccc; 
-                            border-radius: 4px; 
-                            padding: 10px; 
-                            font-family: Menlo, Monaco, Consolas, 'Courier New', monospace; 
-                            font-size: 13px; 
-                            color: #333; 
-                            white-space: pre-wrap; 
-                            word-wrap: break-word; 
-                            max-height: 400px; 
-                            overflow-y: auto;"
+                          class = "cn-log-body"   # D3-5: colours in css/collabnet-d3.css (were inline, so dark mode could not override)
                           ),
-               tags$div(style = "display: flex; justify-content: center; margin-bottom: 15px; padding-top: 10px;",
+               tags$div(class = "cn-log-actions", style = "display: flex; justify-content: center; margin-bottom: 15px; padding-top: 10px;",
                         tags$div(
                           "data-toggle" = "tooltip",
                           title = "Clear current log messages",
@@ -1783,7 +1810,9 @@ ui <- fluidPage(
               column(6, 
                      style = "display: flex; align-items: center; justify-content: flex-start; height: 100%; min-height: 80px;", 
                      shinyjs::disabled(shiny::uiOutput("sh_index")))
-            )
+            ),
+            # C1-4: Sh-index author-position weights (editable; banner when non-default)
+            sh_weights_ui()
           )
         )
         # # Wrapped in minimal-table
@@ -1877,6 +1906,15 @@ ui <- fluidPage(
             # style = "margin-top: 15px;", 
             style = "display: none;",
             hr(),
+            # D1-6: server-side table exports (see EXPORTS.md)
+            tags$div(class = "cn-export-buttons", style = "margin-bottom: 8px;",
+              downloadButton("download_table_csv", "Table (.csv)", class = "btn-sm",
+                title = "CSV (UTF-8): the publication table exactly as currently filtered (years, sources, authors), including Adjusted_Citations under the active Sh-index weight mode. Cells starting with = + - @ are prefixed with ' to prevent spreadsheet formula injection. Use for spreadsheets, R/Python.",
+                `aria-label` = "Download the filtered publication table as CSV", `data-toggle` = "tooltip"),
+              downloadButton("download_table_xlsx", "Table (.xlsx)", class = "btn-sm",
+                title = "Excel workbook (one sheet) with the same filtered publication table and weight mode as the CSV export; formula-injection protected. Use for Excel/LibreOffice.",
+                `aria-label` = "Download the filtered publication table as Excel XLSX", `data-toggle` = "tooltip"),
+              tags$small(class = "text-muted", " Exports follow the current filters and Sh-index weight mode; Copy/PDF/Print buttons below act on the visible table page.")),
             DT::DTOutput("extended_table")
           # DT::dataTableOutput("extended_table")
           )
@@ -1973,12 +2011,14 @@ ui <- fluidPage(
               selectInput("layout_engine", 
                           tags$span("Layout engine:",
                                     tags$i(class = "fa fa-info-circle", style = "color: #C96480; margin-left: 5px; cursor: help;",
-                                           title = "Graph layout algorithm: Fruchterman-Reingold (force-directed), DrL (fast for large networks), or Kamada-Kawai (geometric path distance).")),
+                                           title = "Graph layout algorithm: Fruchterman-Reingold (force-directed), DrL (fast for large networks), Kamada-Kawai (geometric path distance), or Background worker (seeded force-directed layout computed in a browser Web Worker; the page only renders). Automatic uses the worker above CN_WORKER_LAYOUT_MIN_NODES nodes.")),
                           choices = c("Automatic"                 = "auto",
                                       "Fruchterman-Reingold"      = "fr",
                                       "DrL (large graphs)"        = "drl",
-                                      "Kamada-Kawai"              = "kk"),
+                                      "Kamada-Kawai"              = "kk",
+                                      "Background worker (browser)" = "worker"),
                           selected = "auto"),
+              tags$span(id = "cn_layout_status", class = "text-muted small", `aria-live` = "polite"),
               
               checkboxInput("use_backbone",
                             tags$span(tags$b("Extract statistical backbone (disparity filter)"),
@@ -1992,10 +2032,34 @@ ui <- fluidPage(
                           min = 0.01, max = 0.5, value = 0.05, step = 0.01),
               
               checkboxInput("detect_communities", 
-                            tags$span(tags$b("Detect communities (Louvain)"),
+                            tags$span(tags$b("Detect communities"),
                                       tags$i(class = "fa fa-info-circle", style = "color: #C96480; margin-left: 5px; cursor: help;",
                                              title = "Groups tightly connected researchers into collaborative sub-communities using multi-level modularity optimization.")),
                             value = TRUE),
+              conditionalPanel("input.detect_communities",
+                selectInput("community_algorithm", "Community algorithm:",
+                            choices = c("Leiden (modularity) - recommended" = "leiden",
+                                        "Louvain" = "louvain"),
+                            selected = "leiden"),
+                numericInput("community_resolution", "Resolution (modularity gamma):",
+                             value = 1, min = 0.05, max = 10, step = 0.05),
+                numericInput("community_seed", "Random seed (communities & layout):",
+                             value = 42, min = 1, step = 1)),
+              selectInput("identity_policy", "Author identity (P1-1):",
+                          choices = c("Normalised names; author IDs when present (recommended)" = "normalised",
+                                      "Exact strings (legacy)" = "exact",
+                                      "Surname + first initial (may merge homonyms)" = "initials"),
+                          selected = "normalised"),
+              downloadButton("download_methods", "Methods paragraph (.txt)", class = "btn-sm",
+                             title = "Plain-text (UTF-8) methods paragraph describing data sources, identity policy, counting mode, Sh-index weights, filters and software versions of the current analysis. Paste into a paper's Methods section.",
+                             `aria-label` = "Download the methods paragraph as a text file", `data-toggle` = "tooltip"),
+              tags$details(tags$summary("Sensitivity bands: rank stability across identity policies and counting modes (P1-6)"),
+                           actionButton("run_sensitivity", "Compute (rebuilds the network 9x)", class = "btn-sm"),
+                           DT::dataTableOutput("sensitivity_table"), DT::dataTableOutput("sensitivity_configs")),
+              tags$details(tags$summary("Identity review: raw name strings merged into one node"),
+                           DT::dataTableOutput("identity_review_table")),
+              checkboxInput("betweenness_approx", "Approximate betweenness (sample 200 source nodes; labelled approximate)",
+                            value = FALSE),
               checkboxInput("compute_centrality", 
                             tags$span(tags$b("Compute centralities"),
                                       tags$i(class = "fa fa-info-circle", style = "color: #C96480; margin-left: 5px; cursor: help;",
@@ -2105,7 +2169,7 @@ ui <- fluidPage(
                   "Node Icon:",
                   tags$a(
                     href = "https://fontawesome.com/search?o=r&m=free", 
-                    target = "_blank", # Opens in new tab
+                    target = "_blank", rel = "noopener noreferrer", # Opens in new tab (B-34)
                     tags$i(
                       class = "fa fa-info-circle", 
                       style = "color: #4B8BBE; margin-left: 5px; cursor: pointer;", 
@@ -2184,6 +2248,13 @@ ui <- fluidPage(
             ),
             
             visNetwork::visNetworkOutput("network_filtered", height = "520px"),
+            tags$div(class = "cn-net-downloads", style = "display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px;",   # D3-(a)
+              downloadButton("dl_net_nodes_csv", "Nodes (.csv)", class = "btn-sm", `data-toggle` = "tooltip", `data-placement` = "bottom",
+                             title = "Download the node list of the filtered network shown above (id, degree)"),
+              downloadButton("dl_net_edges_csv", "Edges (.csv)", class = "btn-sm", `data-toggle` = "tooltip", `data-placement` = "bottom",
+                             title = "Download the edge list of the filtered network (source, target, weight)"),
+              downloadButton("dl_net_graphml", "GraphML", class = "btn-sm", `data-toggle` = "tooltip", `data-placement` = "bottom",
+                             title = "Download the filtered network as GraphML (Gephi, Cytoscape, igraph)")),
             tags$div(
               style = "margin-top: 25px;",
               tabsetPanel(
@@ -2399,5 +2470,8 @@ ui <- fluidPage(
         )
       )
     )  # closes column(width = 9) (line 1192)
-  )  # closes fluidRow (line 986)
+  ),  # closes fluidRow (line 986)
+  # D2-B1: responsive layer, hoisted into <head> after every inline <style> above so its rules take precedence
+  tags$head(tags$link(rel = "stylesheet", href = "css/collabnet-responsive.css"),
+            tags$link(rel = "stylesheet", href = "css/collabnet-d3.css"))   # D3: header wrap, log flow + dark mode, logo
 )

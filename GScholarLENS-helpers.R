@@ -7,6 +7,13 @@
 
 # collabnet_required_cols <- c("Citations",	"User_Journal",	"orcid",	"Name",	"JIF5Years",	"Qscore",	"JCR_Journal", "Title",	"Authors",	"Year",	"Source")
 collabnet_required_cols <- c("Citations", "User_Journal", "Title", "Authors")
+# P0-9: "Qscore"/"JIF5Years"/"JCR_Journal" are legacy INTERNAL column names kept for data-flow compatibility.
+# They are NOT Journal Citation Reports (JCR) quartiles or impact factors. The values are OpenAlex citedness bands:
+# the journal is matched to the top hit of the OpenAlex /sources search, and its summary_stats$2yr_mean_citedness (c)
+# is binned by FIXED cut-offs (ui.R, OpenAlex lookup JS): Q1: c >= 4.0, Q2: 2.0 <= c < 4.0, Q3: 0.75 <= c < 2.0,
+# Q4: 0 < c < 0.75, NA: no match or c = 0. These are not field-normalised and not percentile ranks.
+CITEDNESS_BAND_CUTOFFS <- c(Q1 = 4.0, Q2 = 2.0, Q3 = 0.75, Q4 = 0)
+CITEDNESS_BAND_LABEL <- "OpenAlex citedness bands (Q1\u2013Q4 by fixed cut-offs)"
 collabnet_optional_cols <- c("Qscore", "JIF5Years", "SCOPUS_ID", "doi", "orcid", "Year", "Source")
 
 # =============================================================================
@@ -25,9 +32,9 @@ collabnet_display_names <- c(
   "doi"                   = "DOI",
   "orcid"                 = "ORCID",
   "SCOPUS_ID"             = "Scopus ID",
-  "Qscore"               = "Q Score",
-  "JIF5Years"             = "Impact Factor (5yr)",
-  "JCR_Journal"           = "JCR Journal",
+  "Qscore"               = "OpenAlex citedness band (Q1-Q4)",
+  "JIF5Years"             = "OpenAlex 2-yr mean citedness",
+  "JCR_Journal"           = "Matched journal (OpenAlex)",
   "Author_Count"          = "Author Count",
   "Adjusted_Citations"    = "Adjusted Citations",
   "Adjustment_Weights"    = "Adjustment Weight",
@@ -333,9 +340,12 @@ extend_input_table <- function(rv, df, author_match_regex, target_variants_norm,
       if (!is.na(val) && nzchar(trimws(val))) {
         
         # Standardize delimiter
+        # P0-6 / C-3: never rewrite ';' to ',' - that turned "Smith, J.; Doe, A."
+        # into an ambiguous comma list and split_authors() then mis-paired names.
+        # ';' is understood natively; other custom delimiters map to ';'.
         col_delim <- if (!is.null(delims[[col]])) delims[[col]] else ","
-        if (col_delim != ",") {
-          val <- gsub(escape_regex(col_delim), ",", val)
+        if (!col_delim %in% c(",", ";") && nzchar(col_delim)) {
+          val <- gsub(escape_regex(col_delim), ";", val)
         }
         
         # --- BRANCH: Extended Matching vs Basic Regex ---
@@ -404,21 +414,9 @@ extend_input_table <- function(rv, df, author_match_regex, target_variants_norm,
     glens_extended_table$Author_Count[is.na(glens_extended_table$Author_Count) | glens_extended_table$Author_Count < 1L] <- 1L
   }
 
-  # Vectorised, bulletproof weight computation (no dplyr case_when type mismatch traps)
-  n_ext <- nrow(glens_extended_table)
-  weights <- rep(0.0, n_ext)
-  weights[glens_extended_table$label == "Generic_Match"] <- 1.00
-  weights[glens_extended_table$label == "Corresponding_Author"] <- 1.00
-  weights[glens_extended_table$label == "First_Author"] <- 0.90
-  weights[glens_extended_table$label == "Second_Author"] <- 0.50
-  co_mask <- glens_extended_table$label == "Co_Author"
-  weights[co_mask & glens_extended_table$Author_Count <= 6L] <- 0.25
-  weights[co_mask & glens_extended_table$Author_Count > 6L] <- 0.10
-  glens_extended_table$Adjustment_Weights <- weights
-
-  cites <- suppressWarnings(as.numeric(glens_extended_table$Citations))
-  cites[is.na(cites)] <- 0.0
-  glens_extended_table$Adjusted_Citations <- cites * weights
+  # Author-position weights for the Sh-index (C1-4: table-driven, defaults = SH_DEFAULT_WEIGHTS; the user's
+  # custom weights / Newman toggle are applied later by sh_apply_weights()).
+  glens_extended_table <- sh_apply_weights(glens_extended_table)
 
   glens_extended_table$Co_Author <- ifelse(glens_extended_table$Generic_Match == 1L, 1L, glens_extended_table$Co_Author)
 
@@ -597,6 +595,11 @@ compute_indices <- function(rv, df) {
   summary_tab <- summary_tab %>%
     add_row(Position = "h-index(Citations)",
             H_index = h_cites,
+            Num_papers = nrow(df)) %>%
+    # D1-4: the weighted row, so the table visibly follows the active Sh weights (per-position rows use raw
+    # citations by design and are weight-independent).
+    add_row(Position = "Sh-index(Adjusted_Citations)",
+            H_index = h_adjcites,
             Num_papers = nrow(df))
   
   # Return pure data! No rv$ assignments, no shinyjs calls.
@@ -1335,3 +1338,71 @@ refresh_data <- function(rv, session){
 #   print(str(rv$glens_etable_final))
 #   print("HERE6.1")
 # }
+
+# -----------------------------------------------------------------------------
+# P1-2: paper deduplication. Pass 1: normalised DOI (lower case, doi.org / "doi:" prefixes and trailing punctuation
+# removed). Pass 2 (rows still without a duplicate): normalised title (accent-folded, lower case, punctuation and
+# whitespace removed) + year. Exact duplicate rows are removed first. Among duplicates the row with the most non-missing
+# fields is kept; the maximum citation count is carried over. Returns list(data, report).
+# -----------------------------------------------------------------------------
+cn_normalize_doi <- function(x) {
+  x <- tolower(trimws(as.character(x)))
+  x <- sub("^(https?://)?(dx\\.)?doi\\.org/", "", x)
+  x <- sub("^doi:\\s*", "", x)
+  x <- sub("[].,;)]+$", "", x)
+  ifelse(grepl("^10\\.\\d{4,9}/\\S+$", x, perl = TRUE), x, NA_character_)
+}
+cn_normalize_title <- function(x) {
+  x <- as.character(x)
+  x <- if (exists("cn_fold_accents", mode = "function")) cn_fold_accents(x) else tolower(x)
+  x <- trimws(gsub("[[:space:]]+", " ", gsub("[^a-z0-9 ]", " ", x)))
+  ifelse(nchar(x) >= 10L, x, NA_character_)          # very short titles are not reliable keys
+}
+cn_dedup_papers <- function(df, doi_cols = c("DOI", "doi", "Doi"), title_cols = c("Title", "title", "Document Title"),
+                            year_cols = c("Year", "year", "pub_year", "Publication Year"),
+                            cite_cols = c("Citations", "Cited by", "citations")) {
+  empty_report <- list(n_in = if (is.data.frame(df)) nrow(df) else 0L, n_out = if (is.data.frame(df)) nrow(df) else 0L,
+                       exact_rows = 0L, by_doi = 0L, by_title_year = 0L)
+  if (!is.data.frame(df) || nrow(df) < 2L) return(list(data = df, report = empty_report))
+  pick <- function(c) { h <- intersect(c, names(df)); if (length(h)) h[1] else NULL }
+  n_in <- nrow(df)
+  df <- df[!duplicated(df), , drop = FALSE]; exact_rows <- n_in - nrow(df)
+  dcol <- pick(doi_cols); tcol <- pick(title_cols); ycol <- pick(year_cols); ccol <- pick(cite_cols)
+  completeness <- rowSums(!is.na(df) & as.matrix(df) != "")
+  collapse <- function(df, key) {
+    has <- !is.na(key); if (!any(duplicated(key[has]))) return(list(df = df, removed = 0L))
+    grp <- ifelse(has, key, paste0("\u0001row", seq_along(key)))
+    ord <- order(grp, -completeness)                     # most complete row first within each group
+    keep <- ord[!duplicated(grp[ord])]
+    if (!is.null(ccol)) {                                # carry the maximum citation count
+      cit <- suppressWarnings(as.numeric(df[[ccol]]))
+      mx <- tapply(cit, grp, function(v) if (all(is.na(v))) NA_real_ else max(v, na.rm = TRUE))
+      newv <- mx[grp[keep]]
+      if (is.numeric(df[[ccol]])) df[[ccol]][keep] <- newv else df[[ccol]][keep] <- ifelse(is.na(newv), df[[ccol]][keep], as.character(newv))
+    }
+    keep <- sort(keep)
+    list(df = df[keep, , drop = FALSE], removed = nrow(df) - length(keep), keep = keep)
+  }
+  by_doi <- 0L; by_ty <- 0L
+  if (!is.null(dcol)) {
+    r <- collapse(df, cn_normalize_doi(df[[dcol]])); by_doi <- r$removed
+    if (by_doi > 0L) completeness <- completeness[r$keep]; df <- r$df
+  }
+  if (!is.null(tcol) && !is.null(ycol)) {
+    t <- cn_normalize_title(df[[tcol]]); y <- suppressWarnings(as.integer(as.character(df[[ycol]])))
+    key <- ifelse(is.na(t) | is.na(y), NA_character_, paste(t, y, sep = "|"))
+    if (!is.null(dcol)) {                                # never merge records that carry DIFFERENT valid DOIs
+      d <- cn_normalize_doi(df[[dcol]])
+      ndoi <- tapply(d, key, function(v) length(unique(v[!is.na(v)])))
+      key[!is.na(key) & ndoi[key] > 1L] <- NA_character_
+    }
+    r <- collapse(df, key); by_ty <- r$removed; df <- r$df
+  }
+  rownames(df) <- NULL
+  list(data = df, report = list(n_in = n_in, n_out = nrow(df), exact_rows = exact_rows, by_doi = by_doi, by_title_year = by_ty))
+}
+cn_dedup_message <- function(rep) {
+  sprintf("Deduplication: %d of %d records removed (%d identical rows, %d by DOI, %d by title + year).",
+          rep$n_in - rep$n_out, rep$n_in, rep$exact_rows, rep$by_doi, rep$by_title_year)
+}
+

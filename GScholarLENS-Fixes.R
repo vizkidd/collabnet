@@ -25,27 +25,44 @@ suppressPackageStartupMessages({
 # c(3,3,3) got h = 2 instead of 3. There were also two divergent copies of
 # this function in the codebase; this is now the single definition.
 # -----------------------------------------------------------------------------
-compute_h_index <- function(citations_vec) {
+# P0-7: one shared cleaning rule for h/g/i10. Citation counts must be finite
+# and non-negative; NA, NaN, +/-Inf and negative values are ignored (not
+# counted as papers) by all three indices.
+cn_clean_citations <- function(citations_vec) {
   v <- suppressWarnings(as.numeric(citations_vec))
-  v <- v[is.finite(v)]
+  v[is.finite(v) & v >= 0]
+}
+
+compute_h_index <- function(citations_vec) {
+  v <- cn_clean_citations(citations_vec)
   if (!length(v)) return(0L)
   v <- sort(v, decreasing = TRUE)
   # Fully vectorised: no loop, no early break needed.
   as.integer(sum(v >= seq_along(v)))
 }
 
-# Companion index that the summary panel can now show for free.
+# g-index convention (Egghe 2006, *capped* variant):
+#   g = the largest g <= N (N = number of papers with valid citation counts)
+#   such that the top g papers have together >= g^2 citations.
+# We do NOT pad the list with fictitious zero-citation papers, so g can never
+# exceed the number of papers. Shown to users via G_INDEX_HELP.
+G_INDEX_HELP <- paste(
+  "g-index: the largest g such that the g most-cited papers together received",
+  "at least g^2 citations. CollabNET uses the capped convention: g is never",
+  "larger than the number of papers (no fictitious zero-citation papers are",
+  "added). Missing, negative or non-finite citation counts are ignored.")
+
 compute_g_index <- function(citations_vec) {
-  v <- suppressWarnings(as.numeric(citations_vec))
-  v <- v[is.finite(v)]
+  v <- cn_clean_citations(citations_vec)
   if (!length(v)) return(0L)
   v <- sort(v, decreasing = TRUE)
-  as.integer(sum(cumsum(v) >= seq_along(v)^2))
+  ok <- which(cumsum(v) >= seq_along(v)^2)   # g <= length(v) by construction
+  if (!length(ok)) 0L else as.integer(max(ok))
 }
 
 compute_i10_index <- function(citations_vec) {
-  v <- suppressWarnings(as.numeric(citations_vec))
-  as.integer(sum(v >= 10, na.rm = TRUE))
+  v <- cn_clean_citations(citations_vec)   # Inf / NA / negative ignored (P0-7)
+  as.integer(sum(v >= 10))
 }
 
 
@@ -84,6 +101,12 @@ split_authors <- function(author_field) {
     # Heuristic: "Smith, J, Doe, A" (even count, every second token is
     # 1-3 chars or initials) is surname-first pairs that were flattened.
     surname_first <- FALSE
+    # P0-6: a lone "Surname, Firstname" record (two single-word tokens) is
+    # one author, not two.
+    if (length(parts) == 2L && all(!grepl("\\s", trimws(parts)))) {
+      parts <- paste(parts[1], parts[2], sep = ", ")
+      surname_first <- TRUE
+    } else
     if (length(parts) >= 2L && length(parts) %% 2L == 0L) {
       even_idx <- seq(2L, length(parts), by = 2L)
       if (all(nchar(gsub("[^A-Za-z]", "", parts[even_idx])) <= 3L)) {
@@ -393,42 +416,48 @@ decide_labels_bulk <- function(author_fields, target_variants_norm,
 # -----------------------------------------------------------------------------
 apply_author_logic <- function(pubs_df, selected_authors, gate,
                                ext_match = TRUE, ignore_case = TRUE,
-                               search_cols = "Authors") {
-
-  selected_authors <- selected_authors[!is.na(selected_authors) &
-                                         nzchar(trimws(selected_authors))]
-  if (!length(selected_authors) || is.null(gate) || identical(gate, "FULL"))
-    return(pubs_df)
+                               search_cols = "Authors", identity_policy = "normalised") {
+  # P1-7: gates count DISTINCT PEOPLE, not query strings: queries are resolved to identity keys (P1-1) and
+  # duplicates/variants of one person count once. A row matches a person if one of its author tokens has the
+  # same identity key OR (fallback) the raw text matches with an alnum-boundary regex that also works after a
+  # full stop ("Smith J."). Matching is restricted to author fields. Gates: OR, AND, XOR = exactly one,
+  # XOR_PARITY = odd number, NOR, NAND.
+  selected_authors <- selected_authors[!is.na(selected_authors) & nzchar(trimws(selected_authors))]
+  if (!length(selected_authors) || is.null(gate) || identical(gate, "FULL")) return(pubs_df)
 
   cols <- intersect(search_cols, colnames(pubs_df))
+  author_cols <- cols[grepl("author", cols, ignore.case = TRUE)]
+  if (length(author_cols)) cols <- author_cols                 # restrict to author fields when any are present
   if (!length(cols)) {
-    warning("apply_author_logic(): none of ", paste(search_cols, collapse = ", "),
-            " present; filter skipped.")
+    warning("apply_author_logic(): none of ", paste(search_cols, collapse = ", "), " present; filter skipped.")
     return(pubs_df)
   }
+  have_keys <- exists("cn_identity_key", mode = "function") && exists("cn_split_multivalue", mode = "function")
+  qkey <- if (have_keys) cn_identity_key(trimws(selected_authors), identity_policy)$key else tolower(trimws(selected_authors))
+  people <- split(selected_authors, factor(qkey, levels = unique(qkey)))      # one entry per distinct person
 
-  haystack <- do.call(paste, c(lapply(cols, function(c) {
-    v <- as.character(pubs_df[[c]]); v[is.na(v)] <- ""; v
-  }), sep = " \u2028 "))
-
-  counts <- integer(nrow(pubs_df))
-  for (a in selected_authors) {
-    rgx <- if (ext_match) paste0("\\b", escape_regex(a), "\\b") else escape_regex(a)
-    counts <- counts + grepl(rgx, haystack,
-                                         perl = TRUE, ignore.case = ignore_case)
+  haystack <- do.call(paste, c(lapply(cols, function(c) { v <- as.character(pubs_df[[c]]); v[is.na(v)] <- ""; v }), sep = " \u2028 "))
+  row_keys <- NULL
+  if (have_keys) {
+    toks <- lapply(cols, function(c) { v <- as.character(pubs_df[[c]]); v[is.na(v)] <- ""; cn_split_multivalue(v, ";") })
+    row_keys <- lapply(seq_len(nrow(pubs_df)), function(i) {
+      t <- unlist(lapply(toks, `[[`, i), use.names = FALSE); t <- trimws(t[nzchar(trimws(t))])
+      if (length(t)) unique(cn_identity_key(t, identity_policy)$key) else character(0)
+    })
   }
-
-  N <- length(selected_authors)
-  keep <- switch(
-    gate,
-    OR   = counts > 0L,
-    AND  = counts == N,
-    XOR  = counts == 1L,
-    NOR  = counts == 0L,
-    NAND = counts < N,
-    rep(TRUE, nrow(pubs_df))
-  )
-
+  counts <- integer(nrow(pubs_df))
+  for (k in names(people)) {
+    hit <- if (!is.null(row_keys)) vapply(row_keys, function(rk) k %in% rk, logical(1)) else rep(FALSE, nrow(pubs_df))
+    for (a in people[[k]]) {
+      rgx <- if (ext_match) paste0("(?<![[:alnum:]])", escape_regex(trimws(a)), "(?![[:alnum:]])") else escape_regex(trimws(a))
+      hit <- hit | grepl(rgx, haystack, perl = TRUE, ignore.case = ignore_case)
+    }
+    counts <- counts + hit
+  }
+  N <- length(people)
+  keep <- switch(gate,
+    OR = counts > 0L, AND = counts == N, XOR = counts == 1L, XOR_PARITY = counts %% 2L == 1L,
+    NOR = counts == 0L, NAND = counts < N, rep(TRUE, nrow(pubs_df)))
   pubs_df[keep, , drop = FALSE]
 }
 
@@ -603,3 +632,47 @@ collabnet_run_post <- function(verbose = TRUE) {
   return(invisible(results))
 }
 
+
+# ---------------------------------------------------------------------------
+# D1-6: data export helpers (see EXPORTS.md).
+# CSV/XLSX formula-injection protection: character cells that start with = + - @ TAB or CR are
+# prefixed with a single quote (') so spreadsheet programs show them as text instead of
+# evaluating them. Only character/factor cells are touched; numeric columns (including negative
+# numbers) are left as numbers. Controlled by options(collabnet.export_sanitize = TRUE/FALSE),
+# default TRUE.
+# ---------------------------------------------------------------------------
+cn_export_sanitize_vec <- function(x) {
+  if (is.factor(x)) x <- as.character(x)
+  if (!is.character(x)) return(x)
+  bad <- !is.na(x) & grepl("^[=+@\t\r-]", x, perl = TRUE)
+  x[bad] <- paste0("'", x[bad]); x
+}
+cn_export_flatten <- function(df) {
+  df <- as.data.frame(df, stringsAsFactors = FALSE, check.names = FALSE)
+  for (k in names(df)) if (is.list(df[[k]]))
+    df[[k]] <- vapply(df[[k]], function(v) paste(as.character(unlist(v)), collapse = "; "), character(1))
+  df
+}
+cn_export_prepare <- function(df, sanitize = getOption("collabnet.export_sanitize", TRUE)) {
+  if (is.null(df) || !is.data.frame(df) || !nrow(df)) df <- data.frame(Status = "No data matched the current filters.")
+  df <- cn_export_flatten(df)
+  if (isTRUE(sanitize)) for (k in names(df)) df[[k]] <- cn_export_sanitize_vec(df[[k]])
+  df
+}
+# "CollabNET_<what>_YYYYmmdd-HHMMSSZ.<ext>" (UTC timestamp, filesystem-safe).
+cn_export_filename <- function(what, ext, time = Sys.time()) {
+  what <- gsub("[^A-Za-z0-9_-]+", "_", what)
+  sprintf("CollabNET_%s_%s.%s", what, format(time, "%Y%m%d-%H%M%SZ", tz = "UTC"), ext)
+}
+cn_export_csv <- function(df, file, sanitize = getOption("collabnet.export_sanitize", TRUE)) {
+  df <- cn_export_prepare(df, sanitize)
+  con <- file(file, open = "w", encoding = "UTF-8"); on.exit(close(con))
+  utils::write.csv(df, con, row.names = FALSE, na = "")
+  invisible(file)
+}
+cn_export_xlsx <- function(df, file, sanitize = getOption("collabnet.export_sanitize", TRUE)) {
+  df <- cn_export_prepare(df, sanitize)
+  if (!requireNamespace("openxlsx", quietly = TRUE)) stop("XLSX export needs the openxlsx package; use CSV instead.", call. = FALSE)
+  openxlsx::write.xlsx(df, file, sheetName = "CollabNET", overwrite = TRUE)
+  invisible(file)
+}

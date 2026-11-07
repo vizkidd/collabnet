@@ -162,7 +162,7 @@ The **Hamiltonian Cycle Diagnostics** tab summarizes component sizes, maximum/mi
 
 ## 8. Publication & Citation Trends
 
-- **Journal Quartiles (Q1–Q4)**: Evaluates publication volume and citations across JCR Journal Impact Factor Quartiles.
+- **OpenAlex citedness bands (Q1–Q4 by fixed cut-offs)**: publication volume and citations by journal citedness band. The journal is matched to its top OpenAlex `/sources` hit, and its 2-year mean citedness `c` is binned: Q1 `c ≥ 4.0`, Q2 `2.0 ≤ c < 4.0`, Q3 `0.75 ≤ c < 2.0`, Q4 `0 < c < 0.75`, NA otherwise. These are **not** Journal Citation Reports (JCR) quartiles or impact factors, and they are not field-normalised.
 - **Authorship Position Distribution**: Visualizes contribution proportions across First Author, Second Author, Corresponding Author, and Co-Author roles.
 - **Citation Distribution (Violin & Scatter Plots)**: Visualizes log-transformed citation spreads with percentile markers ($25^{th}$, Median, Mean, $75^{th}$).
 

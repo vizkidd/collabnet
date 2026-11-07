@@ -412,7 +412,7 @@ get_semanticscholar_count <- function(doi, api_key = NULL) {
   
   req_headers <- c(Accept = "application/json")
   if (!is.null(api_key)) {
-    req_headers["Authorization"] <- paste("Bearer", api_key)
+    req_headers["x-api-key"] <- api_key   # D-9: S2 Graph API expects x-api-key, not Bearer
   }
   
   txt <- safe_fetch_with_backoff(url, req_headers = req_headers)
@@ -489,17 +489,9 @@ get_citation_counts_async <- function(doi_or_url,
   
   doi <- normalize_doi(doi_or_url)
   
-  # Format keys for JavaScript injection
-  ss_key <- if (is.null(semanticscholar_key)) "null" else paste0("'", semanticscholar_key, "'")
-  
-  # Format array and request ID for JS
-  sources_js <- paste0("['", paste(try_sources, collapse = "','"), "']")
-  req_id_js <- if(is.null(request_id)) "null" else paste0("'", request_id, "'")
-  
-  # Construct the JS call
-  js_code <- sprintf("
-    window.fetchAllCitationCounts('%s', %s, {semanticscholar: %s}, '%s', %s);
-  ", doi, sources_js, ss_key, input_id, req_id_js)
+  # SECURITY (B-1/P0-8a): every argument is JSON-encoded; no raw string
+  # interpolation of DOI / key / ids into JavaScript source.
+  js_code <- cn_build_citation_js(doi, semanticscholar_key, try_sources, input_id, request_id)
   
   # CRITICAL FIX: Use shinyjs instead of webr
   # This works perfectly in BOTH local RStudio testing and deployed WASM
@@ -651,7 +643,7 @@ prepare_doi_metadata <- function(doi_input, orcid, rv, id_type = "DOI", write_fi
   
   # If BOTH extraction methods fail, gracefully fall back to metadata from ORCID/synthetic instead of discarding the paper
   if(is.null(ris) || !is.character(ris) || !nzchar(trimws(ris))){
-    rv$log_text <- paste(rv$log_text, paste("<span style='color: #856404;'> RIS fallback for:", doi_input, "(", id_type, ")</span>"), sep="<br>")
+    rv$log_text <- paste(rv$log_text, paste("<span style='color: #856404;'> RIS fallback for:", cn_html_escape(doi_input), "(", cn_html_escape(id_type), ")</span>"), sep="<br>")
     def_title <- if (!is.null(fallback_title) && nzchar(trimws(fallback_title))) trimws(fallback_title) else paste("Document", trimws(doi_input))
     def_journal <- if (!is.null(fallback_journal) && nzchar(trimws(fallback_journal))) trimws(fallback_journal) else "Unknown"
     def_year <- if (!is.null(fallback_year) && nzchar(trimws(fallback_year))) trimws(fallback_year) else NA_character_

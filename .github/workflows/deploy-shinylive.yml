@@ -126,6 +126,16 @@ jobs:
       #   with:
       #     python-version: '3.13'
       # - run: python inject_packages.py
+      
+      #- uses: actions/setup-python@v7
+      #  with:
+      #    python-version: '3.13'
+      #- run: python csp_inject.py wasm_build/index.html
+      #
+      #- uses: actions/setup-python@v7
+      #  with:
+      #    python-version: '3.13'
+      #- run: python html_head_patch.py wasm_build/index.html
 
       - name: Upload Static Web Site Artifact
         uses: actions/upload-pages-artifact@v3

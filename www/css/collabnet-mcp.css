@@ -58,3 +58,44 @@
 .dark-mode .collabnet-ai-message strong { color:#94a3b8; }
 .dark-mode .collabnet-ai-form textarea { background:#1e1e1e; color:#f4f4f5; border-color:#3f3f46; }
 .dark-mode .collabnet-mcp-ide-note { color:#71717a; }
+
+/* ====== Connect AI panel (collabnet-mcp-ui.js) ====== */
+.cmcp-fab { position:fixed; right:16px; bottom:16px; z-index:10000; display:inline-flex; align-items:center; gap:.45rem; padding:.55rem .9rem; border:0; border-radius:999px; background:#2b3a4a; color:#fff; font-weight:600; box-shadow:0 3px 12px rgba(0,0,0,.25); cursor:pointer; }
+.cmcp-fab:focus-visible { outline:3px solid #6d9ee8; outline-offset:2px; }
+.cmcp-dot { width:10px; height:10px; border-radius:50%; background:#c83232; }
+.cmcp-fab.is-on .cmcp-dot { background:#e0a800; }
+.cmcp-fab.is-on.is-linked .cmcp-dot { background:#1fa34a; }
+.cmcp-panel { position:fixed; right:16px; bottom:68px; z-index:10000; width:380px; max-width:calc(100vw - 32px); max-height:calc(100vh - 100px); overflow:auto; padding:.8rem 1rem; border:1px solid #d6dbe1; border-radius:12px; background:#fff; color:#20252b; box-shadow:0 8px 28px rgba(0,0,0,.22); font-size:13px; line-height:1.45; }
+.cmcp-panel[hidden], .cmcp-modal[hidden] { display:none; }
+.cmcp-panel h4 { margin:.8rem 0 .35rem; font-size:.95rem; }
+.cmcp-head { display:flex; justify-content:space-between; align-items:center; font-size:1.05rem; }
+.cmcp-x { border:0; background:transparent; font-size:1.4rem; line-height:1; cursor:pointer; color:inherit; }
+.cmcp-status { list-style:none; margin:0; padding:0; }
+.cmcp-status li { padding:.1rem 0; }
+.cmcp-row { display:flex; align-items:flex-start; gap:.4rem; font-weight:500; margin:.4rem 0 0; }
+.cmcp-actions { display:flex; flex-wrap:wrap; gap:.45rem; align-items:center; margin:.4rem 0; }
+.cmcp-panel input[type=text], .cmcp-panel select { width:100%; box-sizing:border-box; min-height:32px; padding:.3rem .5rem; border:1px solid #b9c2cc; border-radius:6px; background:#fff; color:inherit; }
+.cmcp-actions select { width:auto; flex:1 1 180px; }
+.cmcp-note { color:#5a6571; font-size:.82rem; }
+.cmcp-log { list-style:none; margin:0; padding:0; max-height:160px; overflow:auto; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; border:1px solid #e1e5ea; border-radius:6px; }
+.cmcp-log:empty::before { content:"No AI activity yet."; display:block; padding:.4rem; color:#6a737d; }
+.cmcp-log li { padding:.2rem .4rem; border-bottom:1px solid #eef0f3; overflow-wrap:anywhere; }
+.cmcp-log li.is-deny { color:#a12828; }
+.cmcp-pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:180px; overflow:auto; font-size:11px; background:#f7f8fa; border:1px solid #e1e5ea; border-radius:6px; padding:.4rem; margin:.2rem 0 .6rem; color:inherit; }
+.cmcp-cfg-head { display:flex; justify-content:space-between; align-items:center; margin-top:.5rem; font-weight:600; }
+.cmcp-configs summary { cursor:pointer; font-weight:600; margin-top:.6rem; }
+.cmcp-modal { position:fixed; inset:0; z-index:10001; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.45); padding:16px; }
+.cmcp-modal-box { width:440px; max-width:100%; background:#fff; color:#20252b; border-radius:10px; padding:1rem 1.2rem; box-shadow:0 10px 30px rgba(0,0,0,.3); }
+@media (max-width:600px) {
+  .cmcp-panel { right:8px; left:8px; width:auto; bottom:64px; max-height:calc(100vh - 84px); }
+  .cmcp-fab { right:10px; bottom:10px; }
+}
+.dark-mode .cmcp-panel, .dark-mode .cmcp-modal-box { background:var(--card-bg, #1e1e1e); color:var(--text-color, #e2e8f0); border-color:#3f3f46; }
+.dark-mode .cmcp-note, .dark-mode .cmcp-log:empty::before { color:#94a3b8; }
+.dark-mode .cmcp-panel input[type=text], .dark-mode .cmcp-panel select { background:#27272a; color:#f4f4f5; border-color:#3f3f46; }
+.dark-mode .cmcp-pre { background:#27272a; border-color:#3f3f46; }
+.dark-mode .cmcp-log { border-color:#3f3f46; }
+.dark-mode .cmcp-log li { border-bottom-color:#2f2f35; }
+.dark-mode .cmcp-log li.is-deny { color:#f87171; }
+.dark-mode .cmcp-fab { background:#3b4b5e; }
+.cmcp-hint { color: #8a4b00; font-size: 0.9em; }

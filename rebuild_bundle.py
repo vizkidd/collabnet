@@ -9,21 +9,22 @@ helper_scripts = [
     "GScholarLENS-ORCID2Data.R",
     "GScholarLENS-SCOPUS2Data.R",
     "GScholarLENS-ProcessJCR.R",
+    "GScholarLENS-Session.R",
     "GScholarLENS-Data2GLENS.R",
     "GScholarLENS-PlotGLENS.R",
     "GScholarLENS-Graph.R",
     "GScholarLENS-helpers.R",
     "GScholarLENS-Fixes.R",
-    "GScholarLENS-MCP.R"
+    "GScholarLENS-MCP.R",
+    "GScholarLENS-Console.R",
+    "GScholarLENS-Parsers.R",
+    "GScholarLENS-ShWeights.R", "GScholarLENS-CSP.R",
+    "GScholarLENS-Keys.R"
 ]
 app_files = ["ui.R", "server.R", "app.R"]
 all_files = helper_scripts + app_files
 
-worker_js_src = os.path.join(base_dir, "www", "js", "collabnet-worker-pool.js")
 worker_js_content = ""
-if os.path.exists(worker_js_src):
-    with open(worker_js_src, "r", encoding="utf-8") as f:
-        worker_js_content = f.read()
 
 combined_lines = []
 for fname in all_files:
@@ -36,7 +37,6 @@ for fname in all_files:
             # # Strip require(httr2) to prevent rlang version conflict in WebR
             # if re.search(r"require\s*\(\s*httr2\s*\)", line):
             #     continue
-            # if 'tags$script(src = "js/collabnet-worker-pool.js")' in line:
             #     if worker_js_content:
             #         combined_lines.append(f'    tags$script(HTML({json.dumps(worker_js_content)})),\n')
             #         continue
@@ -97,3 +97,12 @@ if os.path.exists(www_dir):
 with open(app_json_path, "w", encoding="utf-8") as f:
     json.dump(app_data, f)
 print(f"Updated {app_json_path} and synced all www/ assets successfully")
+
+# P3-6: Content-Security-Policy meta for the exported shell (idempotent; see csp_inject.py, untested in a browser)
+try:
+    import csp_inject
+    _idx = os.path.join(base_dir, "wasm_build", "index.html")
+    if os.path.exists(_idx):
+        csp_inject.main([_idx])
+except Exception as _e:  # never break the bundle rebuild over the CSP step
+    print("CSP injection skipped:", _e)

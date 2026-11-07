@@ -7,11 +7,144 @@ if (!exists("is_WASM") || !isTRUE(is_WASM)) {
   suppressPackageStartupMessages(require(httr2, quietly = TRUE))
 }
 
-get_scopus_data_orcid <- function(orcid, rv, api_key = NULL) {
+# SECURITY (P0-8c / audit D-2): the Elsevier API key is sent ONLY as the
+# X-ELS-APIKey request header, never in the URL query string (URLs end up in
+# logs, proxies, browser history and error messages).
+scopus_auth_headers <- function(api_key) {
+  c(`X-ELS-APIKey` = as.character(api_key), Accept = "application/json")
+}
+scopus_base_request <- function(url, api_key) {
+  httr2::request(url) %>%
+    httr2::req_headers(!!!as.list(scopus_auth_headers(api_key))) %>%
+    httr2::req_url_query(httpAccept = "application/json")
+}
+
+# ---------------------------------------------------------------------------
+# C2 (audit D-3 / D-4): resilient, injectable Scopus Search paging.
+#   fetch_fn(url, query, api_key) -> list(status = int, headers = named list
+#   (lower-case names), body = character(1)). status NA = transport error.
+#   sleep_fn(seconds) is injectable so tests run with no network / no waiting.
+# ---------------------------------------------------------------------------
+SCOPUS_SEARCH_URL <- "https://api.elsevier.com/content/search/scopus"
+
+scopus_http_get <- function(url, query, api_key) {
+  local_is_WASM <- grepl(pattern = "wasm", x = Sys.info()["machine"])
+  if (local_is_WASM || !requireNamespace("httr2", quietly = TRUE)) {
+    req_url <- paste0(url, "?", paste(names(query), vapply(query, function(v) URLencode(as.character(v), reserved = TRUE), ""), sep = "=", collapse = "&"))
+    con <- NULL
+    out <- tryCatch({
+      con <- url(req_url, headers = scopus_auth_headers(api_key))
+      list(status = 200L, headers = list(), body = paste(readLines(con, warn = FALSE), collapse = "\n"))
+    }, error = function(e) {
+      m <- conditionMessage(e)
+      code <- suppressWarnings(as.integer(regmatches(m, regexpr("[1-5][0-9][0-9]", m))))
+      list(status = if (length(code)) code else NA_integer_, headers = list(), body = m)
+    }, finally = { if (!is.null(con) && inherits(con, "connection")) try(close(con), silent = TRUE) })
+    return(out)
+  }
+  tryCatch({
+    req <- scopus_base_request(url, api_key) %>%   # key only in X-ELS-APIKey header (P0-8c)
+      httr2::req_url_query(!!!query) %>%
+      httr2::req_error(is_error = function(resp) FALSE)
+    resp <- httr2::req_perform(req)
+    h <- as.list(httr2::resp_headers(resp)); names(h) <- tolower(names(h))
+    list(status = as.integer(httr2::resp_status(resp)), headers = h,
+         body = tryCatch(httr2::resp_body_string(resp, encoding = "UTF-8"), error = function(e) ""))
+  }, error = function(e) list(status = NA_integer_, headers = list(), body = conditionMessage(e)))
+}
+
+# Seconds to wait before retrying, from Retry-After (delta-seconds or HTTP-date)
+# or X-RateLimit-Reset (Unix epoch seconds, per dev.elsevier.com/support.html).
+# Returns NA when no usable header is present.
+scopus_retry_wait <- function(headers, now = Sys.time()) {
+  h <- headers; if (is.null(h)) return(NA_real_)
+  names(h) <- tolower(names(h))
+  ra <- h[["retry-after"]]
+  if (!is.null(ra) && length(ra) && nzchar(ra <- trimws(as.character(ra[[1]])))) {
+    if (grepl("^[0-9]+(\\.[0-9]+)?$", ra)) return(max(0, as.numeric(ra)))
+    lc <- Sys.getlocale("LC_TIME"); on.exit(try(Sys.setlocale("LC_TIME", lc), silent = TRUE), add = TRUE)
+    try(Sys.setlocale("LC_TIME", "C"), silent = TRUE)
+    t <- as.POSIXct(ra, format = "%a, %d %b %Y %H:%M:%S", tz = "GMT")
+    if (!is.na(t)) return(max(0, as.numeric(difftime(t, now, units = "secs"))))
+  }
+  rs <- h[["x-ratelimit-reset"]]
+  if (!is.null(rs) && length(rs)) {
+    rs <- suppressWarnings(as.numeric(as.character(rs[[1]])))
+    if (!is.na(rs)) return(max(0, rs - as.numeric(now)))
+  }
+  NA_real_
+}
+
+# One request with exponential backoff + jitter for 429 / 5xx / transport errors.
+# Never stop()s: returns list(ok, status, body, attempts, waits, message).
+scopus_request_with_retry <- function(query, api_key, fetch_fn = scopus_http_get, sleep_fn = Sys.sleep,
+                                      max_attempts = 5, base_delay = 1, max_delay = 60, jitter = 0.25,
+                                      url = SCOPUS_SEARCH_URL) {
+  waits <- numeric(0); last <- NULL
+  for (attempt in seq_len(max_attempts)) {
+    last <- fetch_fn(url, query, api_key)
+    st <- suppressWarnings(as.integer(last$status))
+    if (!is.na(st) && st == 200L)
+      return(list(ok = TRUE, status = 200L, body = last$body, attempts = attempt, waits = waits, message = "OK"))
+    retryable <- is.na(st) || st == 429L || st >= 500L
+    if (!retryable || attempt == max_attempts) break
+    w <- scopus_retry_wait(last$headers)
+    if (is.na(w)) w <- base_delay * 2^(attempt - 1) * (1 + stats::runif(1, 0, jitter))
+    if (w > max_delay) break  # e.g. weekly QUOTA_EXCEEDED: do not block for hours/days
+    waits <- c(waits, w)
+    sleep_fn(w)
+  }
+  st <- suppressWarnings(as.integer(last$status))
+  h <- last$headers; if (!is.null(h)) names(h) <- tolower(names(h))
+  els <- if (!is.null(h[["x-els-status"]])) paste0(" [", h[["x-els-status"]], "]") else ""
+  msg <- if (!is.na(st) && st == 401L) "Authorization Error (401): API key lacks permissions."
+         else sprintf("API Error (%s)%s after %d attempt(s)", if (is.na(st)) "network" else st, els, length(waits) + 1L)
+  list(ok = FALSE, status = st, body = last$body, attempts = length(waits) + 1L, waits = waits, message = msg)
+}
+
+# Pages one search query with CURSOR pagination (audit D-4): first request
+# cursor=*, then the returned search-results$cursor$`@next`. Standard start=
+# paging is capped at 5,000 items (dev.elsevier.com/api_key_settings.html), so
+# `start` is never sent. Stops at opensearch:totalResults, on an empty page,
+# when the cursor does not advance, or at max_results (quota guard).
+# Returns list(entries = list of data.frames, status, message, complete, total).
+# On a final HTTP failure the pages already fetched are KEPT (audit D-3).
+scopus_paged_search <- function(search_query, api_key, fetch_fn = scopus_http_get, sleep_fn = Sys.sleep,
+                                cancel_fn = function() FALSE, count = 25, max_results = 5000,
+                                max_pages = 2000, ...) {
+  entries_out <- list(); n <- 0; cursor <- "*"; seen <- character(0); total <- NA_real_
+  done <- function(status, message, complete) list(entries = entries_out, status = status, message = message,
+                                                   complete = complete, total = total)
+  if (max_results <= 0) return(done("capped", "max_results reached", FALSE))
+  for (page in seq_len(max_pages)) {
+    if (isTRUE(cancel_fn())) return(done("cancelled", "Cancelled by user.", FALSE))
+    r <- scopus_request_with_retry(list(httpAccept = "application/json", query = search_query,
+                                        count = min(count, max_results - n), cursor = cursor, view = "COMPLETE"),
+                                   api_key, fetch_fn = fetch_fn, sleep_fn = sleep_fn, ...)
+    if (!r$ok) return(done(if (identical(r$status, 401L)) "unauthorized" else "partial", r$message, FALSE))
+    sr <- tryCatch(jsonlite::fromJSON(r$body, flatten = TRUE)$`search-results`, error = function(e) NULL)
+    if (is.null(sr)) return(done("partial", "Unparseable Scopus response", FALSE))
+    if (is.na(total)) total <- suppressWarnings(as.numeric(sr$`opensearch:totalResults`))
+    entries <- sr$entry
+    # an empty result set comes back as a single entry carrying only an "error" field
+    if (is.data.frame(entries) && "error" %in% names(entries) && !("dc:title" %in% names(entries)) && !("dc:identifier" %in% names(entries))) entries <- NULL
+    if (is.null(entries) || NROW(entries) < 1) break
+    if (n + NROW(entries) > max_results) entries <- entries[seq_len(max(0, max_results - n)), , drop = FALSE]
+    entries_out <- append(entries_out, list(entries)); n <- n + NROW(entries)
+    if (!is.na(total) && n >= total) break
+    if (n >= max_results) return(done("capped", sprintf("Stopped at max_results = %d of %s", as.integer(max_results), total), FALSE))
+    nxt <- sr$cursor$`@next`
+    if (is.null(nxt) || !nzchar(nxt) || nxt %in% c(seen, cursor)) break   # cursor missing or not advancing
+    seen <- c(seen, cursor); cursor <- nxt
+  }
+  done("ok", "OK", TRUE)
+}
+
+get_scopus_data_orcid <- function(orcid, rv = NULL, api_key = NULL, fetch_fn = scopus_http_get, sleep_fn = Sys.sleep,
+                                  cancel_fn = function() !fs::file_exists(file.path("run.lock")),
+                                  max_results = getOption("collabnet.scopus_max_results", 20000)) {
   if(is.null(api_key) || trimws(api_key) == ""){ stop("SCOPUS API Key is missing.") }
   api_key <- gsub("[^[:alnum:]]", "", api_key)
-  
-  local_is_WASM <- grepl(pattern="wasm", x=Sys.info()["machine"])
   
   # Process and Clean ORCIDs
   clean_orcids <- trimws(orcid)
@@ -22,73 +155,30 @@ get_scopus_data_orcid <- function(orcid, rv, api_key = NULL) {
   chunk_size <- 30
   id_chunks <- split(clean_orcids, ceiling(seq_along(clean_orcids) / chunk_size))
   
-  if (!local_is_WASM) {
-    base_req <- httr2::request("https://api.elsevier.com/content/search/scopus") %>%
-      httr2::req_url_query(apiKey = api_key, httpAccept = "application/json") %>%
-      httr2::req_error(is_error = function(resp) httr2::resp_status(resp) >= 400)
-  }
+  n_fetched <- 0; fetch_status <- "ok"; fetch_message <- "OK"
   
   all_entries <- list()
   
   for (chunk in id_chunks) {
     search_query <- paste0("ORCID(", chunk, ")", collapse = " OR ")
     
-    start_idx <- 0
-    total_results <- NA
-    
-    repeat {
-      if(!fs::file_exists(file.path("run.lock"))) return(NULL)
-      status <- 200; pubs_raw <- NULL; err_body <- ""
-      
-      if (local_is_WASM) {
-        encoded_query <- URLencode(search_query, reserved = TRUE)
-        req_url <- sprintf(
-          "https://api.elsevier.com/content/search/scopus?apiKey=%s&httpAccept=application/json&query=%s&count=25&start=%d&view=COMPLETE",
-          api_key, encoded_query, start_idx
-        )
-        
-        con <- NULL
-        res_err <- tryCatch({
-          con <- url(req_url, headers = c(Accept = "application/json"))
-          txt <- paste(readLines(con, warn = FALSE), collapse = "\n")
-          pubs_raw <- jsonlite::fromJSON(txt, flatten = TRUE)
-          NULL 
-        }, error = function(e) { conditionMessage(e) 
-        }, finally = { if (!is.null(con) && inherits(con, "connection")) try(close(con), silent = TRUE) })
-        
-        if (!is.null(res_err)) {
-          if (grepl("401", res_err)) status <- 401
-          else if (grepl("429", res_err)) status <- 429
-          else status <- 500
-          err_body <- res_err
-        }
-      } else {
-        current_req <- base_req %>%
-          httr2::req_url_query(query = search_query, count = 25, start = start_idx, view = "COMPLETE") %>% 
-          httr2::req_error(is_error = ~ FALSE)
-        
-        resp_pubs <- httr2::req_perform(current_req)
-        status <- httr2::resp_status(resp_pubs)
-        
-        if (status == 200) {
-          pubs_raw <- httr2::resp_body_string(resp_pubs, encoding = "UTF-8") %>% jsonlite::fromJSON(flatten = TRUE)
-        } else { err_body <- httr2::resp_body_string(resp_pubs) }
-      }
-      
-      if (status == 401) stop("Authorization Error (401): API key lacks permissions.")
-      else if (status != 200) stop(sprintf("API Error (%d)", status)) #, err_body
-      
-      entries <- pubs_raw$`search-results`$entry
-      if (is.null(entries) || length(entries) == 0) break
-      
-      all_entries <- append(all_entries, list(entries))
-      if (nrow(entries) < 1) break
-      start_idx <- start_idx + nrow(entries)
-    } 
+    res <- scopus_paged_search(search_query, api_key, fetch_fn = fetch_fn, sleep_fn = sleep_fn,
+                               cancel_fn = cancel_fn, max_results = max(0, max_results - n_fetched))
+    all_entries <- append(all_entries, res$entries)
+    n_fetched <- n_fetched + sum(vapply(res$entries, NROW, 0L))
+    if (identical(res$status, "cancelled")) return(NULL)
+    if (identical(res$status, "capped")) { fetch_status <- "capped"; fetch_message <- res$message; break }
+    if (!identical(res$status, "ok")) {
+      if (identical(res$status, "unauthorized") && length(all_entries) == 0) stop(res$message)
+      fetch_status <- res$status; fetch_message <- res$message
+      warning("Scopus fetch incomplete; returning ", n_fetched, " record(s) already fetched. ", res$message, call. = FALSE)
+      break
+    }
+    if (n_fetched >= max_results) { fetch_status <- "capped"; fetch_message <- sprintf("Stopped at max_results = %d", as.integer(max_results)); break }
   } # End of chunk loop
   
   combined_entries <- dplyr::bind_rows(all_entries)
-  if(nrow(combined_entries) == 0) return(tibble::tibble())
+  if(nrow(combined_entries) == 0) return(structure(tibble::tibble(), scopus_status = fetch_status, scopus_message = fetch_message))
   
   final_tibble <- combined_entries %>%
     dplyr::as_tibble() %>%
@@ -119,14 +209,15 @@ get_scopus_data_orcid <- function(orcid, rv, api_key = NULL) {
       })
     ) %>% dplyr::select(Title, Authors, ORCIDs, Author_Count, Citations, Journal, Publisher, Year, SCOPUS_ID, ORCIDs)
   
+  attr(final_tibble, "scopus_status") <- fetch_status; attr(final_tibble, "scopus_message") <- fetch_message
   return(final_tibble)
 }
 
-get_scopus_data_id <- function(scopus_id, api_key = NULL, queue = NULL){
+get_scopus_data_id <- function(scopus_id, api_key = NULL, queue = NULL, fetch_fn = scopus_http_get, sleep_fn = Sys.sleep,
+                                  cancel_fn = function() !fs::file_exists(file.path("run.lock")),
+                                  max_results = getOption("collabnet.scopus_max_results", 20000)) {
   if(is.null(api_key) || trimws(api_key) == ""){ stop("SCOPUS API Key is missing.") }
   api_key <- gsub("[^[:alnum:]]", "", api_key)
-  
-  local_is_WASM <- grepl(pattern="wasm", x=Sys.info()["machine"])
   
   clean_ids <- trimws(scopus_id)
   clean_ids <- gsub("2-s2\\.0-", "", clean_ids) 
@@ -137,11 +228,7 @@ get_scopus_data_id <- function(scopus_id, api_key = NULL, queue = NULL){
   id_chunks <- split(clean_ids, ceiling(seq_along(clean_ids) / chunk_size))
   total_ids <- length(clean_ids)
   
-  if (!local_is_WASM) {
-    base_req <- httr2::request("https://api.elsevier.com/content/search/scopus") %>%
-      httr2::req_url_query(apiKey = api_key, httpAccept = "application/json") %>%
-      httr2::req_error(is_error = function(resp) httr2::resp_status(resp) >= 400)
-  }
+  n_fetched <- 0; fetch_status <- "ok"; fetch_message <- "OK"
   
   all_entries <- list() 
   ids_processed <- 0 # Keep track of progress
@@ -163,65 +250,26 @@ get_scopus_data_id <- function(scopus_id, api_key = NULL, queue = NULL){
     # -----------------------------------------
     
     search_query <- paste0("AU-ID(", chunk, ")", collapse = " OR ")
-    start_idx <- 0
-    total_results <- NA
-    
-    repeat {
-      if(!fs::file_exists(file.path("run.lock"))) return(NULL)
-      status <- 200; pubs_raw <- NULL; err_body <- ""
-      
-      if (local_is_WASM) {
-        encoded_query <- URLencode(search_query, reserved = TRUE)
-        req_url <- sprintf(
-          "https://api.elsevier.com/content/search/scopus?apiKey=%s&httpAccept=application/json&query=%s&count=25&start=%d&view=COMPLETE",
-          api_key, encoded_query, start_idx
-        )
-        
-        con <- NULL
-        res_err <- tryCatch({
-          con <- url(req_url, headers = c(Accept = "application/json"))
-          txt <- paste(readLines(con, warn = FALSE), collapse = "\n")
-          pubs_raw <- jsonlite::fromJSON(txt, flatten = TRUE)
-          NULL 
-        }, error = function(e) { conditionMessage(e) 
-        }, finally = { if (!is.null(con) && inherits(con, "connection")) try(close(con), silent = TRUE) })
-        
-        if (!is.null(res_err)) {
-          if (grepl("401", res_err)) status <- 401
-          else if (grepl("429", res_err)) status <- 429
-          else status <- 500
-          err_body <- res_err
-        }
-      } else {
-        current_req <- base_req %>%
-          httr2::req_url_query(query = search_query, count = 25, start = start_idx, view = "COMPLETE") %>% 
-          httr2::req_error(is_error = ~ FALSE)
-        
-        resp_pubs <- httr2::req_perform(current_req)
-        status <- httr2::resp_status(resp_pubs)
-        
-        if (status == 200) {
-          pubs_raw <- httr2::resp_body_string(resp_pubs, encoding = "UTF-8") %>% jsonlite::fromJSON(flatten = TRUE)
-        } else { err_body <- httr2::resp_body_string(resp_pubs) }
-      }
-      
-      if (status == 401) stop("Authorization Error (401): API key lacks permissions.")
-      else if (status != 200) stop(sprintf("API Error (%d)", status)) #, err_body
-      
-      entries <- pubs_raw$`search-results`$entry
-      if (is.null(entries) || length(entries) == 0) break
-      
-      all_entries <- append(all_entries, list(entries))
-      if (nrow(entries) < 1) break
-      start_idx <- start_idx + nrow(entries)
-    } 
+    res <- scopus_paged_search(search_query, api_key, fetch_fn = fetch_fn, sleep_fn = sleep_fn,
+                               cancel_fn = cancel_fn, max_results = max(0, max_results - n_fetched))
+    all_entries <- append(all_entries, res$entries)
+    n_fetched <- n_fetched + sum(vapply(res$entries, NROW, 0L))
+    if (identical(res$status, "cancelled")) return(NULL)
+    if (identical(res$status, "capped")) { fetch_status <- "capped"; fetch_message <- res$message; break }
+    if (!identical(res$status, "ok")) {
+      if (identical(res$status, "unauthorized") && length(all_entries) == 0) stop(res$message)
+      fetch_status <- res$status; fetch_message <- res$message
+      warning("Scopus fetch incomplete; returning ", n_fetched, " record(s) already fetched. ", res$message, call. = FALSE)
+      break
+    }
+    if (n_fetched >= max_results) { fetch_status <- "capped"; fetch_message <- sprintf("Stopped at max_results = %d", as.integer(max_results)); break }
   } # End of Chunk loop
   
   combined_entries <- dplyr::bind_rows(all_entries)
   
   # print(str(combined_entries))
   
-  if(nrow(combined_entries) == 0) return(tibble::tibble())
+  if(nrow(combined_entries) == 0) return(structure(tibble::tibble(), scopus_status = fetch_status, scopus_message = fetch_message))
   
   final_tibble <- combined_entries %>%
     dplyr::as_tibble() %>%
@@ -252,6 +300,7 @@ get_scopus_data_id <- function(scopus_id, api_key = NULL, queue = NULL){
       }),
     ) %>% dplyr::select(Title, Authors, ORCIDs, Author_Count, Citations, Journal, Publisher, Year, SCOPUS_ID, ORCIDs)
   
+  attr(final_tibble, "scopus_status") <- fetch_status; attr(final_tibble, "scopus_message") <- fetch_message
   return(final_tibble)
 }
 
@@ -269,12 +318,8 @@ get_author_mapping <- function(id, id_type = c("ORCID", "AU-ID"), api_key) {
   
   # Use tryCatch to prevent a single bad ID from crashing the whole pre-check
   mapping <- tryCatch({
-    resp <- httr2::request(req_url) %>%
-      httr2::req_url_query(
-        apiKey = api_key, 
-        query = search_query, 
-        httpAccept = "application/json"
-      ) %>%
+    resp <- scopus_base_request(req_url, api_key) %>%
+      httr2::req_url_query(query = search_query) %>%
       httr2::req_error(is_error = ~ FALSE) %>% # Handle errors manually
       httr2::req_perform()
     

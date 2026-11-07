@@ -1,580 +1,200 @@
 /**
- * CollabNET Web Worker Pool Architecture
- * JS-Driven Multicore/Multithreaded Parallelism for WebAssembly Shiny Applications
+ * CollabNET worker pool (C2-1).
  *
- * Implements a thread pool over navigator.hardwareConcurrency using Blob-based Web Workers,
- * offloading intensive data tokenisation, parallel API fetching, and graph metric calculations
- * from the single-threaded webR engine.
+ * Small, lazily created pool of Web Workers used to compute network layouts off
+ * the page main thread. In Shinylive, R/igraph already runs inside the webR
+ * worker; what blocks the page is vis-network work on large graphs. Layout
+ * coordinates computed here are handed to vis-network with physics disabled,
+ * so the main thread only renders.
+ *
+ *  - size = clamp(hardwareConcurrency - 1, 1, 4); workers are created on first use
+ *  - inputs/outputs are transferable typed arrays (Int32Array edges, Float32Array coords)
+ *  - a newer request with the same key cancels the stale one (worker is terminated)
+ *  - per-task timeout; on any Worker/Blob failure the kernel runs on the main thread
+ *  - every error is caught and reported; nothing here may break the app
  */
-
-(function(window) {
+(function (root) {
   'use strict';
 
-  // Worker code bundle instantiated via Blob to guarantee zero CORS/path friction
-  const WORKER_SCRIPT = `
-    self.onmessage = async function(e) {
-      const { jobId, task, payload } = e.data;
-      const startTime = performance.now();
-
-      try {
-        let result;
-        switch (task) {
-          case 'ping':
-            result = { pong: true, threadId: payload.threadId, timestamp: Date.now() };
-            break;
-
-          case 'tokenize_chunk': {
-            // payload: { chunk: Array<{ id: number, raw: string }>, targetDelim: string }
-            const { chunk, targetDelim } = payload;
-            const isStandard = !targetDelim || !targetDelim.trim() || /[,;]/.test(targetDelim);
-            const tokenMap = {};
-            const pairs = [];
-
-            for (let i = 0; i < chunk.length; i++) {
-              const item = chunk[i];
-              if (!item.raw) continue;
-              const text = String(item.raw).trim();
-              if (!text) continue;
-
-              let tokens;
-              if (isStandard) {
-                if (text.includes(';')) {
-                  tokens = text.split(';');
-                } else if (text.includes(',')) {
-                  tokens = text.split(',');
-                } else {
-                  tokens = [text];
-                }
-              } else {
-                tokens = text.split(targetDelim);
-              }
-
-              const cleanedTokens = [];
-              for (let j = 0; j < tokens.length; j++) {
-                const tok = tokens[j].replace(/\\s+/g, ' ').trim();
-                if (tok) {
-                  cleanedTokens.push(tok);
-                  tokenMap[tok] = (tokenMap[tok] || 0) + 1;
-                }
-              }
-
-              if (cleanedTokens.length > 0) {
-                pairs.push({ id: item.id, entities: cleanedTokens });
-              }
-            }
-
-            result = {
-              frequencies: tokenMap,
-              records: pairs,
-              count: chunk.length
-            };
-            break;
-          }
-
-          case 'cooccurrence_chunk': {
-            // payload: { records: Array<{ id: number, entities: string[] }> }
-            // Calculates pairwise co-occurrences and Newman fractional weights
-            const { records } = payload;
-            const edgeWeights = {};
-
-            for (let r = 0; r < records.length; r++) {
-              const ents = records[r].entities;
-              const k = ents.length;
-              if (k < 2) continue;
-              const weight = 1.0 / (k - 1.0); // Newman fractional co-authorship weight
-
-              for (let i = 0; i < k; i++) {
-                for (let j = i + 1; j < k; j++) {
-                  const a = ents[i];
-                  const b = ents[j];
-                  const key = a < b ? a + '|||' + b : b + '|||' + a;
-                  edgeWeights[key] = (edgeWeights[key] || 0) + weight;
-                }
-              }
-            }
-
-            result = { edges: edgeWeights };
-            break;
-          }
-
-          case 'fetch_doi_chunk': {
-            // payload: { dois: string[], timeoutMs: number }
-            const { dois, timeoutMs = 15000 } = payload;
-            const results = [];
-            const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-            for (let d = 0; d < dois.length; d++) {
-              const rawDoi = dois[d].trim().replace(/^https?:\\/\\/(dx\\.)?doi\\.org\\//i, '');
-              if (!rawDoi) continue;
-
-              let fetchedOk = false;
-              let lastStatus = 0;
-              let lastError = null;
-
-              // Step 1: OpenAlex with 429 / transient retry & backoff
-              const openAlexUrl = 'https://api.openalex.org/works/https://doi.org/' + encodeURIComponent(rawDoi);
-              for (let attempt = 0; attempt < 3 && !fetchedOk; attempt++) {
-                try {
-                  const controller = new AbortController();
-                  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-                  const resp = await fetch(openAlexUrl, { signal: controller.signal });
-                  clearTimeout(timeoutId);
-                  lastStatus = resp.status;
-
-                  if (resp.ok) {
-                    const data = await resp.json();
-                    const authors = (data.authorships || [])
-                      .map(a => a.author ? a.author.display_name : null)
-                      .filter(Boolean)
-                      .join('; ');
-
-                    results.push({
-                      doi: rawDoi,
-                      success: true,
-                      title: data.title || '',
-                      authors: authors,
-                      year: data.publication_year || null,
-                      citations: data.cited_by_count || 0,
-                      source: data.primary_location?.source?.display_name || ''
-                    });
-                    fetchedOk = true;
-                    break;
-                  } else if (resp.status === 429 || resp.status >= 500) {
-                    const retrySec = parseInt(resp.headers?.get('retry-after') || '0', 10);
-                    const backoff = retrySec > 0 ? (retrySec + 1) * 1000 : Math.min(1000 * Math.pow(2, attempt), 4000);
-                    await sleep(backoff);
-                  } else {
-                    // Non-retryable HTTP error (e.g. 404) -> break to Crossref fallback
-                    break;
-                  }
-                } catch (err) {
-                  lastError = err.message;
-                  await sleep(500 * (attempt + 1));
-                }
-              }
-
-              // Step 2: Crossref Fallback if OpenAlex failed or was rate-limited
-              if (!fetchedOk) {
-                try {
-                  const crossrefUrl = 'https://api.crossref.org/works/' + encodeURIComponent(rawDoi);
-                  const controller = new AbortController();
-                  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-                  const resp = await fetch(crossrefUrl, {
-                    headers: { 'User-Agent': 'CollabNET/1.0 (https://vizkidd.github.io/collabnet/)' },
-                    signal: controller.signal
-                  });
-                  clearTimeout(timeoutId);
-                  lastStatus = resp.status;
-
-                  if (resp.ok) {
-                    const crData = await resp.json();
-                    const msg = crData.message || {};
-                    const authors = (msg.author || [])
-                      .map(a => a.family ? (a.given ? a.family + ', ' + a.given : a.family) : (a.name || ''))
-                      .filter(Boolean)
-                      .join('; ');
-                    const year = msg['published-print']?.['date-parts']?.[0]?.[0] ||
-                                 msg['published-online']?.['date-parts']?.[0]?.[0] ||
-                                 msg.created?.['date-parts']?.[0]?.[0] || null;
-
-                    results.push({
-                      doi: rawDoi,
-                      success: true,
-                      title: Array.isArray(msg.title) ? (msg.title[0] || '') : (msg.title || ''),
-                      authors: authors,
-                      year: year ? parseInt(year, 10) : null,
-                      citations: msg['is-referenced-by-count'] || 0,
-                      source: Array.isArray(msg['container-title']) ? (msg['container-title'][0] || '') : (msg['container-title'] || '')
-                    });
-                    fetchedOk = true;
-                  }
-                } catch (crErr) {
-                  lastError = crErr.message;
-                }
-              }
-
-              if (!fetchedOk) {
-                results.push({ doi: rawDoi, success: false, status: lastStatus, error: lastError || 'All resolvers failed' });
-              }
-
-              // Friendly pacing delay between sequential requests in the worker
-              if (d < dois.length - 1) {
-                await sleep(50);
-              }
-            }
-
-            result = { fetched: results };
-            break;
-          }
-
-          default:
-            throw new Error('Unknown worker task: ' + task);
-        }
-
-        self.postMessage({
-          jobId,
-          success: true,
-          result,
-          elapsedMs: performance.now() - startTime
-        });
-      } catch (err) {
-        self.postMessage({
-          jobId,
-          success: false,
-          error: err.message,
-          elapsedMs: performance.now() - startTime
-        });
-      }
-    };
-  `;
-
-  class WorkerPool {
-    constructor(options = {}) {
-      const concurrency = navigator.hardwareConcurrency || 4;
-      // Clamp pool size between 2 and 6 workers for optimal memory and CPU balance
-      this.size = options.size || Math.max(2, Math.min(concurrency, 6));
-      this.workers = [];
-      this.idleWorkers = [];
-      this.jobQueue = [];
-      this.activeJobs = new Map();
-      this.jobCounter = 0;
-      this.blobUrl = null;
-      this.isInitialized = false;
-
-      this._init();
-    }
-
-    _init() {
-      try {
-        const blob = new Blob([WORKER_SCRIPT], { type: 'application/javascript' });
-        this.blobUrl = URL.createObjectURL(blob);
-
-        for (let i = 0; i < this.size; i++) {
-          const worker = new Worker(this.blobUrl);
-          worker.workerId = i;
-          worker.onmessage = this._handleMessage.bind(this, worker);
-          worker.onerror = this._handleError.bind(this, worker);
-          this.workers.push(worker);
-          this.idleWorkers.push(worker);
-        }
-
-        this.isInitialized = true;
-        console.log(`[CollabNET] Web Worker Pool initialized with ${this.size} worker threads.`);
-      } catch (e) {
-        console.warn('[CollabNET] Web Worker initialization failed; falling back to main thread.', e);
-        this.isInitialized = false;
-      }
-    }
-
-    _handleMessage(worker, event) {
-      const { jobId, success, result, error, elapsedMs } = event.data;
-      const job = this.activeJobs.get(jobId);
-
-      this.idleWorkers.push(worker);
-      this.activeJobs.delete(jobId);
-      this._drainQueue();
-
-      if (job) {
-        if (success) {
-          job.resolve({ result, elapsedMs, workerId: worker.workerId });
-        } else {
-          job.reject(new Error(error || 'Worker execution failed'));
-        }
-      }
-    }
-
-    _handleError(worker, error) {
-      console.error(`[CollabNET Worker #${worker.workerId} Error]`, error);
-    }
-
-    _drainQueue() {
-      while (this.idleWorkers.length > 0 && this.jobQueue.length > 0) {
-        const worker = this.idleWorkers.shift();
-        const nextJob = this.jobQueue.shift();
-        this.activeJobs.set(nextJob.jobId, nextJob);
-        worker.postMessage({
-          jobId: nextJob.jobId,
-          task: nextJob.task,
-          payload: nextJob.payload
-        });
-      }
-    }
-
-    /**
-     * Dispatch a single job to the next available worker
-     */
-    dispatch(task, payload) {
-      if (!this.isInitialized) {
-        return Promise.reject(new Error('Worker pool not available'));
-      }
-
-      const jobId = ++this.jobCounter;
-      return new Promise((resolve, reject) => {
-        this.jobQueue.push({ jobId, task, payload, resolve, reject });
-        this._drainQueue();
-      });
-    }
-
-    /**
-     * Parallel Map-Reduce across all pool workers
-     * Splits an array of items into equal chunks, processes them in parallel across workers,
-     * and combines the results using a reducer function.
-     */
-    async mapReduce(items, task, options = {}, reducer) {
-      if (!items || items.length === 0) return [];
-      const numWorkers = Math.min(this.size, items.length);
-      const chunkSize = Math.ceil(items.length / numWorkers);
-      const promises = [];
-
-      for (let i = 0; i < numWorkers; i++) {
-        const chunk = items.slice(i * chunkSize, (i + 1) * chunkSize);
-        if (chunk.length > 0) {
-          promises.push(this.dispatch(task, Object.assign({}, options, { chunk })));
-        }
-      }
-
-      const responses = await Promise.all(promises);
-      const results = responses.map(r => r.result);
-
-      if (typeof reducer === 'function') {
-        return reducer(results);
-      }
-      return results;
-    }
-
-    /**
-     * Parallel Tokenisation: splits an array of strings in parallel chunks
-     */
-    async parallelTokenize(items, targetDelim = ',') {
-      const formattedItems = items.map((raw, idx) => ({ id: idx + 1, raw }));
-      
-      const reducer = (chunkResults) => {
-        const mergedFrequencies = {};
-        const mergedRecords = [];
-        for (const res of chunkResults) {
-          for (const [token, count] of Object.entries(res.frequencies)) {
-            mergedFrequencies[token] = (mergedFrequencies[token] || 0) + count;
-          }
-          for (const rec of res.records) {
-            mergedRecords.push(rec);
+  // ---- layout kernel: plain JS, no dependencies; also runs inside the worker ----
+  // Fruchterman-Reingold with grid-binned repulsion (O(n) per iteration on
+  // average) and a deterministic seeded PRNG (mulberry32).
+  function layoutKernel(n, edges, opts) {
+    opts = opts || {};
+    var iters = Math.max(1, opts.iterations | 0 || 300);
+    var seed = (opts.seed | 0) || 42;
+    var shouldStop = opts.shouldStop || function () { return false; };
+    var pos = new Float32Array(2 * n);
+    if (n === 0) return pos;
+    var s = seed >>> 0;
+    function rnd() { s = (s + 0x6D2B79F5) >>> 0; var t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }
+    var side = Math.sqrt(n) * 100, k = side / Math.sqrt(n), k2 = k * k;
+    for (var i = 0; i < 2 * n; i++) pos[i] = (rnd() - 0.5) * side;
+    var disp = new Float32Array(2 * n), m = edges.length >> 1;
+    var cell = 2 * k, head, next = new Int32Array(n);
+    var temp = side / 10, cool = temp / (iters + 1);
+    for (var it = 0; it < iters; it++) {
+      if ((it & 15) === 0 && shouldStop()) return null;
+      disp.fill(0);
+      // bin nodes into a grid; repulsion only from the 3x3 neighbourhood
+      var minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
+      for (i = 0; i < n; i++) { var x = pos[2 * i], y = pos[2 * i + 1]; if (x < minx) minx = x; if (x > maxx) maxx = x; if (y < miny) miny = y; if (y > maxy) maxy = y; }
+      var gw = Math.max(1, Math.ceil((maxx - minx) / cell) + 1), gh = Math.max(1, Math.ceil((maxy - miny) / cell) + 1);
+      if (gw * gh > 4 * n + 16) { var f = Math.sqrt(gw * gh / (4 * n + 16)); cell *= f; gw = Math.ceil((maxx - minx) / cell) + 1; gh = Math.ceil((maxy - miny) / cell) + 1; }
+      head = new Int32Array(gw * gh).fill(-1);
+      for (i = 0; i < n; i++) { var c = ((pos[2 * i] - minx) / cell | 0) + gw * ((pos[2 * i + 1] - miny) / cell | 0); next[i] = head[c]; head[c] = i; }
+      for (i = 0; i < n; i++) {
+        var cx = (pos[2 * i] - minx) / cell | 0, cy = (pos[2 * i + 1] - miny) / cell | 0;
+        for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) {
+          var gx = cx + dx, gy = cy + dy; if (gx < 0 || gy < 0 || gx >= gw || gy >= gh) continue;
+          for (var j = head[gx + gw * gy]; j !== -1; j = next[j]) {
+            if (j === i) continue;
+            var ddx = pos[2 * i] - pos[2 * j], ddy = pos[2 * i + 1] - pos[2 * j + 1], d2 = ddx * ddx + ddy * ddy;
+            if (d2 < 1e-4) { ddx = (rnd() - 0.5); ddy = (rnd() - 0.5); d2 = ddx * ddx + ddy * ddy; }
+            var fr = k2 / d2; disp[2 * i] += ddx * fr; disp[2 * i + 1] += ddy * fr;
           }
         }
-        return { frequencies: mergedFrequencies, records: mergedRecords };
+      }
+      for (var e = 0; e < m; e++) {
+        var a = edges[2 * e], b = edges[2 * e + 1]; if (a === b) continue;
+        var ex = pos[2 * a] - pos[2 * b], ey = pos[2 * a + 1] - pos[2 * b + 1], d = Math.sqrt(ex * ex + ey * ey) + 1e-6, fa = d / k;
+        disp[2 * a] -= ex * fa; disp[2 * a + 1] -= ey * fa; disp[2 * b] += ex * fa; disp[2 * b + 1] += ey * fa;
+      }
+      for (i = 0; i < n; i++) {
+        var vx = disp[2 * i], vy = disp[2 * i + 1], l = Math.sqrt(vx * vx + vy * vy) + 1e-9, st = Math.min(l, temp) / l;
+        pos[2 * i] += vx * st; pos[2 * i + 1] += vy * st;
+      }
+      temp = Math.max(temp - cool, k * 0.01);
+    }
+    return pos;
+  }
+
+  var WORKER_SRC = 'var layoutKernel = ' + layoutKernel.toString() + ';\n' +
+    'self.onmessage = function (e) { var d = e.data; try {' +
+    ' var pos = layoutKernel(d.n, d.edges, d.opts);' +
+    ' self.postMessage({ id: d.id, pos: pos }, [pos.buffer]);' +
+    ' } catch (err) { self.postMessage({ id: d.id, error: String(err && err.message || err) }); } };';
+
+  function makePool(env) {
+    env = env || {};
+    var hc = env.hardwareConcurrency != null ? env.hardwareConcurrency : (root.navigator && root.navigator.hardwareConcurrency) || 2;
+    var size = Math.max(1, Math.min((hc | 0) - 1, 4));
+    var createWorker = env.createWorker || defaultCreateWorker;
+    var timeoutMs = env.timeoutMs || 30000;
+    var workers = [], idle = [], queue = [], byKey = {}, seq = 0, fallback = false;
+    var stats = { created: 0, fallbackRuns: 0, cancelled: 0, timeouts: 0, errors: 0 };
+
+    function defaultCreateWorker() {
+      var url = URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' }));
+      var w = new Worker(url); URL.revokeObjectURL(url); return w;
+    }
+    function spawn() {
+      try { var w = createWorker(); stats.created++; workers.push(w); return w; }
+      catch (e) { fallback = true; return null; }   // CSP worker-src / no Worker: main thread
+    }
+    function runMain(task) {
+      stats.fallbackRuns++;
+      try { task.resolve(layoutKernel(task.n, task.edges, task.opts)); } catch (e) { task.reject(e); }
+    }
+    function pump() {
+      while (queue.length) {
+        var w = idle.pop() || (workers.length < size && !fallback ? spawn() : null);
+        if (!w) { if (fallback) { runMain(queue.shift()); continue; } return; }
+        dispatch(w, queue.shift());
+      }
+    }
+    function finish(w, task, recycle) {
+      clearTimeout(task.timer);
+      if (byKey[task.key] === task) delete byKey[task.key];
+      w.onmessage = w.onerror = null;
+      if (recycle) idle.push(w); else { try { w.terminate(); } catch (e) {} workers.splice(workers.indexOf(w), 1); }
+      pump();
+    }
+    function dispatch(w, task) {
+      task.worker = w;
+      w.onmessage = function (ev) {
+        var d = ev.data; if (!d || d.id !== task.id) return;
+        finish(w, task, true);
+        if (d.error) { stats.errors++; task.reject(new Error(d.error)); } else task.resolve(d.pos);
       };
-
-      return this.mapReduce(formattedItems, 'tokenize_chunk', { targetDelim }, reducer);
+      w.onerror = function (ev) { stats.errors++; finish(w, task, false); task.reject(new Error((ev && ev.message) || 'worker error')); };
+      task.timer = setTimeout(function () { stats.timeouts++; finish(w, task, false); task.reject(new Error('layout timeout')); }, timeoutMs);
+      var edges = task.edges.slice();   // keep caller's copy; transfer ours
+      try { w.postMessage({ id: task.id, n: task.n, edges: edges, opts: { iterations: task.opts.iterations, seed: task.opts.seed } }, [edges.buffer]); }
+      catch (e) { finish(w, task, false); fallback = true; runMain(task); }
     }
-
-    /**
-     * Parallel DOI Fetcher: resolves a list of DOIs across worker pool threads
-     */
-    async parallelFetchDois(doiList, timeoutMs = 15000) {
-      const numWorkers = Math.min(this.size, doiList.length);
-      const chunkSize = Math.ceil(doiList.length / numWorkers);
-      const promises = [];
-
-      for (let i = 0; i < numWorkers; i++) {
-        const dois = doiList.slice(i * chunkSize, (i + 1) * chunkSize);
-        if (dois.length > 0) {
-          promises.push(this.dispatch('fetch_doi_chunk', { dois, timeoutMs }));
-        }
-      }
-
-      const responses = await Promise.all(promises);
-      const merged = [];
-      for (const r of responses) {
-        if (r.result && r.result.fetched) {
-          merged.push(...r.result.fetched);
-        }
-      }
-      return merged;
+    function cancel(task) {
+      stats.cancelled++;
+      var qi = queue.indexOf(task); if (qi >= 0) queue.splice(qi, 1);
+      if (task.worker) finish(task.worker, task, false);   // terminate stale computation
+      task.reject(Object.assign(new Error('cancelled'), { cancelled: true }));
     }
-
-    /**
-     * Power-On Self-Test (POST): Machine precision & thread warmup
-     */
-    async runPost(verbose = true) {
-      const startTime = performance.now();
-      const eps = Number.EPSILON;
-      const expectedEps = 2.220446049250313e-16;
-      const epsPass = Math.abs(eps - expectedEps) < 1e-12 &&
-                      ((1.0 + (eps / 2.0)) === 1.0) &&
-                      ((1.0 + eps) > 1.0);
-
-      // Float64Array and subnormal arithmetic sanity
-      const f64 = new Float64Array(2);
-      f64[0] = 1.0;
-      f64[1] = eps;
-      const f64Pass = (f64[0] + f64[1]) > 1.0;
-      const subnormalPass = Number.MIN_VALUE > 0 && isFinite(1 / Number.MAX_VALUE);
-
-      // Concurrent thread dispatch & warmup
-      const pings = [];
-      const pingStart = performance.now();
-      for (let i = 0; i < this.size; i++) {
-        pings.push(this.dispatch('ping', { threadId: i }));
-      }
-      const pingResponses = await Promise.all(pings);
-      const pingTotalMs = performance.now() - pingStart;
-      const avgPingMs = pingTotalMs / Math.max(1, this.size);
-
-      const allPassed = epsPass && f64Pass && subnormalPass && pingResponses.length === this.size;
-      const totalElapsed = performance.now() - startTime;
-
-      this.postDiagnostics = {
-        passed: allPassed,
-        elapsedMs: totalElapsed,
-        machinePrecision: {
-          epsilon: eps,
-          compliant: epsPass,
-          float64Compliant: f64Pass,
-          subnormalCompliant: subnormalPass
-        },
-        workers: {
-          size: this.size,
-          concurrency: navigator.hardwareConcurrency || 4,
-          avgRoundTripMs: avgPingMs,
-          allResponsive: pingResponses.length === this.size
-        },
-        timestamp: Date.now()
-      };
-
-      if (verbose) {
-        console.info(
-          `[CollabNET Client POST] Machine Prec: eps=${eps.toExponential(4)} (${epsPass ? 'PASS' : 'FAIL'}), ` +
-          `Workers: ${this.size} active (${avgPingMs.toFixed(2)}ms avg latency) -> ${allPassed ? 'OPERATIONAL' : 'DEGRADED'}`
-        );
-      }
-
-      return this.postDiagnostics;
+    function layout(n, edges, opts) {
+      opts = opts || {};
+      var key = opts.key || 'default';
+      if (byKey[key]) cancel(byKey[key]);
+      var task = { id: ++seq, key: key, n: n, edges: edges instanceof Int32Array ? edges : Int32Array.from(edges || []), opts: opts };
+      var p = new Promise(function (res, rej) { task.resolve = res; task.reject = rej; });
+      byKey[key] = task; queue.push(task); pump();
+      return p;
     }
-
-    destroy() {
-      for (const w of this.workers) {
-        w.terminate();
-      }
-      if (this.blobUrl) {
-        URL.revokeObjectURL(this.blobUrl);
-      }
-      this.workers = [];
-      this.idleWorkers = [];
-      this.activeJobs.clear();
-      this.isInitialized = false;
-    }
+    return { layout: layout, size: size, stats: stats,
+             workerCount: function () { return workers.length; },
+             usingFallback: function () { return fallback; },
+             destroy: function () { workers.forEach(function (w) { try { w.terminate(); } catch (e) {} }); workers = []; idle = []; } };
   }
 
-  // Instantiate singleton instance
-  window.collabNetPool = new WorkerPool();
-  // Warm up workers and machine precision in the background
-  window.collabNetPool.runPost().catch(err => {
-    console.warn('[CollabNET Client POST] Warmup warning:', err);
-  });
+  var api = { layoutKernel: layoutKernel, makePool: makePool, WORKER_SRC: WORKER_SRC };
 
-  // -------------------------------------------------------------------------
-  // Shiny bridge: safe accessor that works in both native Shiny and shinylive
-  // WASM where the Shiny object loads asynchronously inside an iframe.
-  // -------------------------------------------------------------------------
-  function _getShiny() {
-    // In shinylive, Shiny lives on the iframe's window but is also
-    // propagated to the parent. Try the direct reference first.
-    if (typeof Shiny !== 'undefined' && typeof Shiny.setInputValue === 'function') {
-      return Shiny;
+  // ---- Shiny glue: server sends {key, ids, from, to, seed, iterations, el}; we set positions ----
+  if (root.document) {
+    var pool = null;
+    function status(el, text) {
+      var s = root.document.getElementById('cn_layout_status'); if (s) s.textContent = text || '';
     }
-    if (window.Shiny && typeof window.Shiny.setInputValue === 'function') {
-      return window.Shiny;
-    }
-    return null;
-  }
-
-  function _safeSetInputValue(name, value, opts) {
-    var s = _getShiny();
-    if (s) {
-      s.setInputValue(name, value, opts || {});
-    } else {
-      console.warn('[CollabNET] Shiny.setInputValue not yet available; queuing "' + name + '".');
-      // Retry once after a short delay (Shiny may still be initialising)
-      setTimeout(function() {
-        var s2 = _getShiny();
-        if (s2) s2.setInputValue(name, value, opts || {});
-      }, 2000);
-    }
-  }
-
-  function _bindShinyHandlers() {
-    var S = _getShiny();
-    if (!S || typeof S.addCustomMessageHandler !== 'function') return false;
-
-    // Guard against double-binding
-    if (window._collabNetShinyBound) return true;
-    window._collabNetShinyBound = true;
-
-    // Receive task from Shiny R server
-    S.addCustomMessageHandler('collabnet_pool_exec', async function(msg) {
-      var taskId = msg.taskId, action = msg.action, data = msg.data, options = msg.options;
+    function apply(msg) {
       try {
-        var result;
-        if (action === 'tokenize') {
-          result = await window.collabNetPool.parallelTokenize(data, (options && options.delim) || ',');
-        } else if (action === 'fetch_dois') {
-          result = await window.collabNetPool.parallelFetchDois(data, (options && options.timeoutMs) || 15000);
-        } else {
-          result = await window.collabNetPool.dispatch(action, data);
-        }
-
-        _safeSetInputValue('collabnet_pool_result', {
-          taskId: taskId,
-          success: true,
-          data: result
-        }, { priority: 'event' });
-      } catch (err) {
-        _safeSetInputValue('collabnet_pool_result', {
-          taskId: taskId,
-          success: false,
-          error: err.message
-        }, { priority: 'event' });
-      }
-    });
-
-    // Send worker pool readiness, core count, and client-side POST diagnostics
-    window.collabNetPool.runPost().then(function(diag) {
-      _safeSetInputValue('collabnet_pool_ready', {
-        cores: navigator.hardwareConcurrency || 4,
-        workers: window.collabNetPool.size,
-        postDiagnostics: diag
-      });
-    }).catch(function() {
-      _safeSetInputValue('collabnet_pool_ready', {
-        cores: navigator.hardwareConcurrency || 4,
-        workers: window.collabNetPool.size
-      });
-    });
-
-    console.info('[CollabNET] Shiny message handlers bound successfully.');
-    return true;
-  }
-
-  // Strategy 1: Try immediately (native Shiny, already loaded)
-  if (!_bindShinyHandlers()) {
-    // Strategy 2: Wait for DOMContentLoaded
-    document.addEventListener('DOMContentLoaded', function() {
-      if (!_bindShinyHandlers()) {
-        // Strategy 3: Listen for Shiny's own connected event (shinylive)
-        document.addEventListener('shiny:connected', function() {
-          _bindShinyHandlers();
-        });
-        // Strategy 4: Polling fallback for edge cases where events are missed
-        var _attempts = 0;
-        var _pollId = setInterval(function() {
-          _attempts++;
-          if (_bindShinyHandlers() || _attempts > 30) {
-            clearInterval(_pollId);
-            if (_attempts > 30 && !_getShiny()) {
-              console.warn('[CollabNET] Shiny object not found after 30 attempts; worker pool is standalone.');
-            }
+        pool = pool || makePool();
+        var ids = msg.ids || [], idx = {}; ids.forEach(function (id, i) { idx[id] = i; });
+        var from = msg.from || [], to = msg.to || [], e = new Int32Array(2 * from.length), m = 0;
+        for (var i = 0; i < from.length; i++) { var a = idx[from[i]], b = idx[to[i]]; if (a != null && b != null) { e[2 * m] = a; e[2 * m + 1] = b; m++; } }
+        status(msg.el, 'laying out… (' + (pool.usingFallback() ? 'main thread' : 'worker') + ')');
+        var t0 = root.performance ? root.performance.now() : 0;
+        pool.layout(ids.length, e.subarray(0, 2 * m), { key: msg.el || 'net', seed: msg.seed, iterations: msg.iterations }).then(function (pos) {
+          var w = root.HTMLWidgets && root.HTMLWidgets.find('#' + (msg.el || 'network_filtered'));
+          var net = w && w.network;
+          if (net) {
+            var upd = new Array(ids.length);
+            for (var j = 0; j < ids.length; j++) upd[j] = { id: ids[j], x: pos[2 * j], y: pos[2 * j + 1] };
+            net.setOptions({ physics: { enabled: false } });
+            net.body.data.nodes.update(upd);
+            net.fit({ animation: false });
           }
-        }, 1000);
-      }
-    });
+          if (root.Shiny && root.Shiny.setInputValue) {
+            var xs = new Array(ids.length), ys = new Array(ids.length);
+            for (var q = 0; q < ids.length; q++) { xs[q] = pos[2 * q]; ys[q] = pos[2 * q + 1]; }
+            root.Shiny.setInputValue((msg.el || 'network_filtered').replace(/_filtered$/, '') + '_worker_positions', { ids: ids, x: xs, y: ys });
+          }
+          root.__cnLastLayout = { n: ids.length, ms: (root.performance ? root.performance.now() : 0) - t0, worker: !pool.usingFallback() };
+          status(msg.el, '');
+        }, function (err) {
+          if (!(err && err.cancelled)) { console.warn('[CollabNET] worker layout failed; keeping server layout:', err && err.message); }
+          status(msg.el, '');
+        });
+      } catch (err) { console.warn('[CollabNET] worker layout error:', err && err.message); status(msg.el, ''); }
+    }
+    function onLayoutMsg(msg) { apply(msg || {}); }
+    api.apply = apply;
+    var registered = false;
+    function register() {
+      if (registered || !root.Shiny || !root.Shiny.addCustomMessageHandler) return;
+      try { root.Shiny.addCustomMessageHandler('collabnet_worker_layout', onLayoutMsg); registered = true; }
+      catch (e) { console.error('[CollabNET] worker layout handler registration failed:', e); }
+    }
+    register();
+    if (root.jQuery) root.jQuery(root.document).on('shiny:connected', function () { try { register(); } catch (e) {} });
   }
 
-})(window);
+  root.CollabNETWorkerPool = api;
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+})(typeof window !== 'undefined' ? window : globalThis);

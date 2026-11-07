@@ -1,0 +1,27 @@
+/* D2-B2: icon-only top bar. Text labels are visually hidden (still read by screen readers via aria-label) and
+   become visible inside the collapsed menu below 768px. */
+.header-buttons .cn-btn-label {
+  position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+.header-buttons .btn { min-width: 40px; min-height: 38px; }
+.header-buttons .btn:focus-visible, .header-buttons [role="button"]:focus-visible {
+  outline: 3px solid #ffd54f; outline-offset: 2px;
+}
+#cn-topbar-toggle { display: none; }
+
+@media (max-width: 767.98px) {
+  .header-container { flex-wrap: wrap; padding: 10px 12px !important; position: relative; }
+  .header-container h2 { font-size: 1.15em !important; margin: 0; flex: 1 1 auto; min-width: 0; }
+  #cn-topbar-toggle { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; }
+  .header-container .header-buttons { display: none !important; }
+  .header-container.cn-menu-open .header-buttons {
+    display: flex !important; flex-direction: column; align-items: stretch; width: 100%; gap: 6px !important; margin-top: 8px;
+  }
+  .header-container.cn-menu-open .header-buttons > * { width: 100%; text-align: left; min-height: 44px; }
+  /* in the menu each button shows its short label (data-cn-label, set by collabnet-topbar.js from the title) */
+  .header-container.cn-menu-open .header-buttons .btn[data-cn-label]::after,
+  .header-container.cn-menu-open .header-buttons label[data-cn-label]::after {
+    content: attr(data-cn-label); margin-left: 8px;
+  }
+}

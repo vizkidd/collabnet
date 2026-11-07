@@ -46,41 +46,13 @@ is_WASM <- grepl(pattern="wasm",x=Sys.info()["machine"])
 
 fs::dir_create("keys") 
 
-BIOS_ID <- ""
-
-tryCatch({
 glens_env <- new.env(parent = emptyenv())
-BIOS_ID <- Sys.info()[["user"]] #FALLBACK 
-if(xfun::is_windows()){
-  BIOS_ID <- trimws(system("wmic bios get serialnumber", intern = TRUE)[2])
-}else if(xfun::is_linux() || xfun::is_unix()){
-  BIOS_ID <- readLines("/var/lib/dbus/machine-id")
-}else if(xfun::is_macos()){
-  stop("macOS not tested")
-  system("ioreg -l | grep IOPlatformSerialNumber", intern = TRUE)
-}else{
-  stop("Could not find operating system!")
-} 
-}, error=function(e){
-  #Probably running in webR with WASM so lets take the session cookie
-  # We are likely in WebR/WASM. System commands are sandboxed.
-  message("OS hardware ID failed (likely WebR). Generating session UUID instead.")
-  # # Pure Base R function to generate random hex strings (WASM safe!)
-  # random_hex <- function(n) {
-  #   paste(sample(c(0:9, letters[1:6]), n, replace = TRUE), collapse = "")
-  # }
-  # BIOS_ID <<- paste0(
-  #   random_hex(8), "-", 
-  #   random_hex(4), "-4", 
-  #   random_hex(3), "-",
-  #   sample(c("8", "9", "a", "b"), 1), random_hex(3), "-", 
-  #   random_hex(12)
-  # )
-  BIOS_ID <<- uuid::UUIDgenerate()
-})
-
-# Print to verify it worked in the browser console
-message(paste("Active ID:", BIOS_ID))
+# A-6: stable machine identifier (see GScholarLENS-Keys.R); never a per-run
+# random UUID unless no OS id and no writable config dir exist.
+source("GScholarLENS-Keys.R", local = TRUE)
+glens_env$machine_id <- cn_machine_id()
+BIOS_ID <- glens_env$machine_id$id
+message(paste("Machine ID source:", glens_env$machine_id$source))
 
 #CREATING PRIVATE KEY (if it doesn't exist) TO encrypt API keys
 dir.create("keys", showWarnings = FALSE, recursive = TRUE)
@@ -114,29 +86,14 @@ if (is_WASM) {
   # =========================================================================
   # BRANCH 2: Local Standard R (Requires Sodium)
   # =========================================================================
-  if (!fs::file_exists(file.path("keys", "private.key")) || !fs::file_exists(file.path("keys", "private.key.signed"))) {
-    glens_env$privkey <- charToRaw(openssl::sha512(openssl::base64_encode(uuid::UUIDgenerate()), key=BIOS_ID))
-    # print(glens_env$privkey)
-    # print(str(glens_env$privkey))
-    glens_env$privkey_final <- sodium::data_encrypt(glens_env$privkey, key=sha256(charToRaw(BIOS_ID)))
-    saveRDS(glens_env$privkey, file = file.path("keys","private.key"))
-    saveRDS(glens_env$privkey_final, file = file.path("keys","private.key.signed"))
-    glens_env$privkey_dec <- sodium::data_decrypt(glens_env$privkey_final, key=sha256(charToRaw(BIOS_ID)))
-    
-  } else {
-    glens_env$privkey <- readRDS(file.path("keys", "private.key"))
-    glens_env$privkey_final <- readRDS(file.path("keys", "private.key.signed"))
-    message("Checking local key files...")
-    
-    # Note: If this still throws a "24 bytes" error after you delete your old keys, 
-    # make sure you are using sodium::simple_decrypt() which takes a 32-byte key (like sha256). 
-    # data_decrypt() sometimes expects a 24-byte nonce depending on how you call it!
-    glens_env$privkey_dec <- sodium::data_decrypt(
-      glens_env$privkey_final, 
-      key = sodium::sha256(charToRaw(BIOS_ID))
-    )
-    stopifnot(identical(glens_env$privkey_dec, glens_env$privkey))
-  }
+  # A-6: explicit status; on failure the old key files are backed up (never
+  # deleted) and the user is notified / re-prompted in the session.
+  glens_env$key_status <- cn_init_privkey("keys", BIOS_ID, id_stable = isTRUE(glens_env$machine_id$stable))
+  glens_env$privkey       <- glens_env$key_status$privkey
+  glens_env$privkey_final <- glens_env$key_status$privkey_final
+  glens_env$privkey_dec   <- glens_env$key_status$privkey_dec
+  message("Local key status: ", glens_env$key_status$status,
+          if (nzchar(glens_env$key_status$message)) paste0(" - ", glens_env$key_status$message) else "")
 }
 
 # if(!fs::file_exists(file.path("keys","private.key")) || !fs::file_exists(file.path("keys","private.key.signed"))){
@@ -174,6 +131,7 @@ if (is_WASM) {
 #   stopifnot(identical(glens_env$privkey_dec, glens_env$privkey))
 # }
 
+source("GScholarLENS-Session.R", local = TRUE)
 source("GScholarLENS-ProcessJCR.R", local = TRUE)
 source("GScholarLENS-DOI2Data.R", local = TRUE)
 source("GScholarLENS-ORCID2Data.R", local = TRUE)
@@ -181,11 +139,16 @@ source("GScholarLENS-SCOPUS2Data.R", local = TRUE)
 source("GScholarLENS-Data2GLENS.R", local = TRUE)
 source("GScholarLENS-PlotGLENS.R", local = TRUE)
 source("GScholarLENS-helpers.R",local=TRUE)
+source("GScholarLENS-ShWeights.R", local = TRUE)  # C1-4
 source("GScholarLENS-Graph.R", local = TRUE)
 source("GScholarLENS-Fixes.R", local = TRUE)
 source("GScholarLENS-MCP.R", local = TRUE)
+source("GScholarLENS-Console.R", local = TRUE)
+source("GScholarLENS-Parsers.R", local = TRUE)
+cn_install_quit_override()  # D1-1 layer 3: guard base::quit/q in webR only (no-op on desktop R)
 
 server <- function(input, output, session) {
+  options(collabnet.worker_layout = TRUE)   # C2-1: browser app hands large layouts to the JS worker pool
   rv <- reactiveValues(
     author_list=list(),
     glens_full_table = data.frame(),
@@ -243,17 +206,24 @@ server <- function(input, output, session) {
   shinyjs::hide("progress_overlay") 
   
   # Try VFS first. If it fails or doesn't exist, fall back to what's already in glens_env
+  # A-6: a decrypt failure is reported (notification + re-prompt), never silent;
+  # the ciphertext file is left in place.
+  key_decrypt_failed <- character(0)
   get_resolved_key <- function(filename, env_fallback) {
     path <- file.path("keys", filename)
     message(paste("Looking for key:", path))
-    if (fs::file_exists(path)) {
-      tryCatch({
-        dec <- sodium::data_decrypt(readRDS(path), key=openssl::sha256(glens_env$privkey_dec))
-        return(trimws(rawToChar(dec)))
-      }, error = function(e) { return(env_fallback) }) # Fallback on decrypt error
-    }
-    return(env_fallback) # Fallback if file is missing (WebR refresh)
+    r <- cn_read_api_key(path, glens_env$privkey_dec)
+    if (identical(r$status, "ok")) return(r$value)
+    if (identical(r$status, "decrypt_failed")) key_decrypt_failed <<- c(key_decrypt_failed, filename)
+    return(env_fallback) # missing (WebR refresh) or undecryptable
   }
+  local({
+    ks <- glens_env$key_status
+    if (!is.null(ks) && !ks$status %in% c("ok", "created"))
+      showNotification(paste0("Stored API keys could not be unlocked (", ks$status, "). ", ks$message,
+                              " Open 'API Configuration Settings' to re-enter them."),
+                       type = "warning", duration = NULL)
+  })
   
   glens_env$mail_key <- get_resolved_key("mail.key", glens_env$mail_key)
   # --- 1. Scopus ---
@@ -269,6 +239,10 @@ server <- function(input, output, session) {
   }
   # --- 2. OpenAlex ---
   glens_env$openalex_key <- get_resolved_key("openalex.key", glens_env$openalex_key)
+  if (length(key_decrypt_failed))
+    showNotification(paste0("Could not decrypt stored key(s): ", paste(key_decrypt_failed, collapse = ", "),
+                            ". The encrypted files were kept; please re-enter them in 'API Configuration Settings'."),
+                     type = "warning", duration = NULL)
 
   # # --- 2. Web of Science ---
   # glens_env$wos_key <- get_resolved_key("wos.key", glens_env$wos_key)
@@ -310,38 +284,8 @@ server <- function(input, output, session) {
   })
   
 
-  # Publish the checkbox's consent state to JavaScript. The R-side check below
-  # remains authoritative even if browser JS is modified.
-  shiny::observeEvent(input$collabnet_mcp_enabled, {
-    session$sendCustomMessage("collabnet_mcp_enabled", list(enabled = isTRUE(input$collabnet_mcp_enabled)))
-  }, ignoreNULL = FALSE)
-
-  # One request in, one response out. The handler is intentionally synchronous:
-  # it only runs read-only calculations on this Shiny session's reactive values.
-  shiny::observeEvent(input$collabnet_mcp_request, {
-    req_data <- shiny::isolate(input$collabnet_mcp_request)
-    request_id <- tryCatch(as.character(req_data$id)[1L], error = function(e) "")
-    if (!nzchar(request_id)) return()
-
-    response <- tryCatch({
-      if (!isTRUE(shiny::isolate(input$collabnet_mcp_enabled))) {
-        stop("AI read access is disabled. Enable the CollabNET browser MCP checkbox first.", call. = FALSE)
-      }
-      tool_name <- as.character(req_data$tool)[1L]
-      if (is.na(tool_name) || !nzchar(tool_name) || length(tool_name) != 1L) stop("A valid tool name is required.", call. = FALSE)
-      args <- req_data$arguments
-      if (is.null(args) || !is.list(args)) args <- list()
-      result <- mcp_dispatch_tool(tool_name, args)
-      list(id = request_id, ok = TRUE, result = result)
-    }, error = function(e) {
-      list(id = request_id, ok = FALSE,
-          error = list(code = "TOOL_ERROR", message = conditionMessage(e)))
-    })
-
-    # All responses are bounded at the tool level. Never send the igraph object,
-    # Shiny reactive environment, raw application environment, or credentials.
-    session$sendCustomMessage("collabnet_mcp_response", response)
-  }, ignoreInit = TRUE)
+  # MCP: request handling and consent/state pushes live in register_collabnet_mcp() (GScholarLENS-MCP.R),
+  # called below once net_data_filtered_debounced exists.
 
   observeEvent(input$browser_stored_keys, {
     keys <- input$browser_stored_keys
@@ -462,6 +406,9 @@ server <- function(input, output, session) {
         downloadButton(
           outputId = "download_btn",
           label = "Download Data",
+          title = "CollabNET session (.cnet v2, gzipped JSON, UTF-8): the data table (Current View = current filters, or Full Data) plus all analysis settings (weights, identity policy, counting mode) and provenance. Re-upload it to restore or replay the session.",
+          `aria-label` = "Download the session as a .cnet file",
+          `data-toggle` = "tooltip",
           icon = icon("download", lib = "font-awesome"),
           class = "btn btn-primary btn-lg", 
           style = "font-weight: normal; cursor: pointer; padding: 10px 30px;",
@@ -492,7 +439,7 @@ server <- function(input, output, session) {
         
         tags$h5(icon("info-circle"), " Supported Formats", style = "margin-top: 0;"),
         tags$p("Please upload a data file in one of the following formats: ", 
-               tags$strong(".csv, .tsv, .xlsx, .xls, .cnet, or .rds")),
+               tags$strong(".csv, .tsv, .xlsx, .xls, .ris, .bib, Web of Science .txt, or .cnet (v2)")),
         tags$p("Currently accepts files from these sources: ", 
                tags$strong(tags$a("SCOPUS",href="https://www.scopus.com/pages/search/publications?type=advanced", target="_blank"),",", tags$a("GScholarLENS exported tables", href="https://project.iith.ac.in/sharmaglab/gscholarlens/", target="_blank"), ", or CollabNET saved sessions (.cnet)")),
         tags$hr(style = "margin: 15px 0;"),
@@ -529,7 +476,7 @@ server <- function(input, output, session) {
             id = "upload_btn",
             type = "file",
             multiple = FALSE,
-            accept = ".csv, .tsv, .xlsx, .xls, .cnet, .rds", # OS-level restriction
+            accept = ".csv, .tsv, .xlsx, .xls, .cnet, .ris, .bib, .txt", # OS-level restriction (.rds disabled: P0-8d; RIS/BibTeX/WoS: P2-1)
             style = "display: none;", # Hides the ugly native input, leaving only the label visible
             onchange = "
               document.getElementById('upload_text').innerText = ' Uploading...';
@@ -568,6 +515,7 @@ server <- function(input, output, session) {
       message("FILE UPLOADED!")
       
       # 2. Iterate through each uploaded file
+      rv$cnet_loaded_settings <- NULL; rv$cnet_loaded_app <- NULL   # C1-5: reset per upload
       imported_data_list <- lapply(seq_len(nrow(input$upload_btn)), function(i) {
         file_name <- input$upload_btn$name[i]
         file_path <- input$upload_btn$datapath[i]
@@ -576,10 +524,28 @@ server <- function(input, output, session) {
         df <- switch(ext,
                      "csv"  = read.csv(file_path, stringsAsFactors = FALSE, check.names = FALSE),
                      "tsv"  = read.delim(file_path, sep = "\t", stringsAsFactors = FALSE, check.names = FALSE),
+                     # P2-1: bibliographic exports (RIS, BibTeX, Web of Science plain-text / tab-delimited)
+                     "ris"  = cn_parse_ris(file_path),
+                     "bib"  = cn_parse_bibtex(file_path),
+                     "txt"  = cn_parse_bibliographic(file_path, "txt") %||% {
+                       showNotification("Unrecognised .txt format: expected a Web of Science export (plain text or tab-delimited).", type = "error", duration = 10); NULL },
                      "xlsx" = as.data.frame(readxl::read_excel(file_path)),
                      "xls"  = as.data.frame(readxl::read_excel(file_path)),
-                     "cnet" = as.data.frame(readRDS(file_path)),
-                     "rds"  = as.data.frame(readRDS(file_path)),
+                     # P0-8d: .cnet v2 = validated gzipped JSON; readRDS() on uploads removed
+                     # (R deserialisation of untrusted files can execute code).
+                     "cnet" = tryCatch({
+                       sess <- cnet_read(file_path)
+                       rv$cnet_loaded_settings <- sess$settings %||% list()
+                       rv$cnet_loaded_app <- sess$app
+                       sess$data
+                     }, error = function(e) {
+                       showNotification(paste("Could not open session file", file_name, ":", conditionMessage(e)), type = "error", duration = 15)
+                       NULL
+                     }),
+                     "rds"  = {
+                       showNotification("Loading .rds files is disabled for security reasons (R deserialisation can execute code). Please upload CSV/TSV/Excel or a CollabNET v2 .cnet session.", type = "error", duration = 15)
+                       NULL
+                     },
                      {
                        warning(paste("Unsupported file extension:", ext))
                        NULL 
@@ -602,6 +568,13 @@ server <- function(input, output, session) {
         showModal(modalDialog(
           title = tags$span(icon("columns", lib = "font-awesome"), " Step 1: Column Mapping"),
           size = "m",
+          # C1-5: a .cnet session can be loaded as data only, or replayed with all saved settings
+          if (!is.null(isolate(rv$cnet_loaded_settings)))
+            tags$div(class = "alert alert-info", style = "padding: 8px 12px;",
+              radioButtons("cnet_load_mode", "This upload contains a saved CollabNET session (.cnet). How should it be loaded?",
+                choices = c("Load data only (keep my current settings, rebuild with them)" = "data",
+                            "Replay full session (data + every saved setting: filters, identity policy, communities, layout, Sh weights)" = "replay"),
+                selected = "data")),
           radioButtons("col_import_type", label = "Choose Column import type:", inline = TRUE, choices = c("Common Columns", "All Columns", "Map")),
           uiOutput("column_mapping_ui"),
           footer = tagList(
@@ -632,7 +605,7 @@ server <- function(input, output, session) {
       document.getElementById('upload_icon').style.color = '#dc3545';
     ")
       showNotification(paste("Failed to process file:", e$message), type = "error", duration = 5)
-      rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'>Failed to process file:", e$message, "</span>"), sep="<br>")
+      rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'>Failed to process file:", cn_html_escape(e$message), "</span>"), sep="<br>")
       
       shinyjs::delay(3000, {
         shinyjs::runjs("
@@ -1095,6 +1068,7 @@ server <- function(input, output, session) {
             "Co-patriot/Collaborator (OR — Any)"  = "OR",
             "Companion (AND — All Co-authored)"    = "AND",
             "Rival (XOR — Exactly One, No Overlap)"= "XOR",
+            "Parity XOR (odd number of them)"      = "XOR_PARITY",
             "Ignore (NOR — Neither)"               = "NOR",
             "Divide & Exclude (NAND — Exclude Shared)" = "NAND"
           ),
@@ -1222,11 +1196,11 @@ server <- function(input, output, session) {
   observeEvent(input$theme_toggle, {
     shinyjs::toggleClass(selector = "body", class = "dark-mode")
     
-    # Update button label and icon
+    # Update button label and icon (D2-B2: label is visually hidden; collabnet-topbar.js syncs title/aria-label)
     if (input$theme_toggle %% 2 == 1) {
-      updateActionButton(session, "theme_toggle", label = "Light Mode", icon = icon("sun", lib = "font-awesome"))
+      updateActionButton(session, "theme_toggle", label = tags$span(class = "cn-btn-label sr-only", "Light Mode"), icon = icon("sun", lib = "font-awesome"))
     } else {
-      updateActionButton(session, "theme_toggle", label = "Dark Mode", icon = icon("moon", lib = "font-awesome"))
+      updateActionButton(session, "theme_toggle", label = tags$span(class = "cn-btn-label sr-only", "Dark Mode"), icon = icon("moon", lib = "font-awesome"))
     }
   })
 
@@ -1235,7 +1209,7 @@ server <- function(input, output, session) {
     showModal(modalDialog(
       title = tags$div(
         style = "display: flex; align-items: center; gap: 10px;",
-        tags$span(style = "font-size: 1.4em; color: #4B8BBE;", icon("circle-info", lib = "font-awesome")),
+        tags$img(src = "img/collabnet-logo.png", alt = "CollabNET logo", width = "40", height = "40"),   # D3-7
         tags$h3("CollabNET: Project Overview & Architecture", style = "margin: 0; font-weight: 700; color: #2c3e50;")
       ),
       size = "l",
@@ -1248,7 +1222,7 @@ server <- function(input, output, session) {
           class = "alert alert-info",
           style = "border-left: 4px solid #17a2b8;",
           tags$b("Client-Side WebAssembly Bibliometrics: "),
-          "CollabNET executes 100% inside your web browser via WebAssembly (Shinylive / webR) and a concurrent multi-threaded Web Worker pool. No research data or API keys leave your machine."
+          "CollabNET executes 100% inside your web browser via WebAssembly (Shinylive / webR) and a concurrent multi-threaded Web Worker pool. Your data is processed locally; outbound requests go only to the bibliographic APIs you query (OpenAlex, Crossref, Scopus, ORCID, ...), and API keys are sent only to their own provider."
         ),
         tags$h4(icon("star", lib = "font-awesome"), " Core Capabilities", style = "color: #2E8B57; font-weight: bold; margin-top: 15px;"),
         tags$ul(
@@ -1257,18 +1231,21 @@ server <- function(input, output, session) {
           tags$li(tags$b("Graph Centrality Suite: "), "Full topology metrics including Degree, Betweenness, Closeness, Eigenvector Centrality, PageRank, and k-Core decomposition."),
           tags$li(tags$b("Hamiltonian Cycle Diagnostics: "), "Formal graph-theoretic verification of Dirac's and Ore's sufficient conditions for traceable collaboration loops."),
           tags$li(tags$b("Propositional Logic Gates: "), "Filter collaboration subnetworks using OR, AND, XOR, NOR, NAND, and FULL (unfiltered) cohort combinations."),
-          tags$li(tags$b("Session Portability: "), "Save and restore complete analytical states with portable ", tags$code(".cnet"), " binary session files.")
+          tags$li(tags$b("Session Portability: "), "Save and restore complete analytical states with portable ", tags$code(".cnet"), " session files (gzipped JSON, version 2; legacy binary .cnet files are not accepted).")
         ),
         tags$hr(),
         tags$h4(icon("cubes", lib = "font-awesome"), " System Architecture", style = "color: #4B8BBE; font-weight: bold;"),
-        tags$p("CollabNET couples a sandboxed R WebAssembly runtime with a browser-native Web Worker Pool:"),
+        tags$p("CollabNET runs entirely in the browser on a sandboxed R WebAssembly runtime (webR via Shinylive):"),
         tags$div(
           style = "background: #f8f9fa; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px; font-family: monospace; font-size: 13px;",
-          "Browser Window -> webR Shinylive (Graph Theory, Reactive UI, visNetwork)",
-          tags$br(),
-          "              -> JS Worker Pool (Multi-threaded tokenization, Newman weighting, parallel DOI fetch)"
+          "Browser Window -> webR Shinylive (graph engine, reactive UI, visNetwork); single-threaded R in WASM"
         ),
         tags$hr(),
+        tags$p(style = "font-size: 12px; color: #6c757d;",   # P1-5: versions (also in .cnet and the methods text)
+          local({ ai <- cnet_app_info(); bi <- ai$build
+            sprintf("Version %s | commit %s | R %s | igraph %s%s%s", ai$collabnet_version %||% "?", ai$commit %||% bi$commit %||% "?",
+                    ai$R, ai$igraph %||% "?", if (!is.null(bi$webR)) paste0(" | webR ", bi$webR) else "",
+                    if (!is.null(bi$shinylive_assets)) paste0(" | Shinylive ", bi$shinylive_assets) else "") })),
         tags$p(style = "font-size: 13px; color: #6c757d; margin-top: 15px;",
           "CollabNET is open source under the MIT License. Live deployment: ",
           tags$a(href = "https://vizkidd.github.io/collabnet/", target = "_blank", "https://vizkidd.github.io/collabnet/")
@@ -1423,7 +1400,7 @@ server <- function(input, output, session) {
               tags$div(
                 class = "alert alert-warning",
                 style = "margin-top: 15px;",
-                tags$b("Pro Tip: "), "To query Scopus directly, click the ", tags$b("Key icon"), " in the top-right header and paste your Elsevier API Key. It is encrypted in browser memory and never sent to any server."
+                tags$b("Pro Tip: "), "To query Scopus directly, click the ", tags$b("Key icon"), " in the top-right header and paste your Elsevier API Key. By default it is kept in memory for this session only (optionally saved on this device, encrypted with your passphrase); it is sent only to Elsevier as a request header when querying Scopus."
               )
             )
           ),
@@ -1465,7 +1442,7 @@ server <- function(input, output, session) {
               style = "padding: 20px 10px; line-height: 1.7;",
               tags$h4("Step 4: Exporting Results & Sessions", style = "color: #4B8BBE; font-weight: bold;"),
               tags$ul(
-                tags$li(tags$b("Save Session (.cnet): "), "Click the ", tags$b("Download"), " button in the top navigation to export a binary snapshot of your current session. You can reload it anytime via Upload."),
+                tags$li(tags$b("Save Session (.cnet): "), "Click the ", tags$b("Download"), " button in the top navigation to export a JSON snapshot (.cnet v2) of your current data and analysis settings. You can reload it anytime via Upload."),
                 tags$li(tags$b("Export Tabular Data: "), "Switch to the ", tags$b("Publication Data"), " tab and use the ", tags$code("CSV"), ", ", tags$code("Excel"), ", or ", tags$code("PDF"), " buttons to export clean publication tables with human-readable headers."),
                 tags$li(tags$b("Export Graph Images: "), "Use the visNetwork camera tool or your browser screenshot to export presentation-ready co-authorship figures.")
               )
@@ -1566,8 +1543,8 @@ server <- function(input, output, session) {
     # JS arrays use display names to match the text input values
     js_req_display <- cn_display_colnames(collabnet_required_cols)
     js_opt_display <- cn_display_colnames(collabnet_optional_cols)
-    js_req_array <- paste0("['", paste(js_req_display, collapse = "','"), "']")
-    js_opt_array <- paste0("['", paste(js_opt_display, collapse = "','"), "']")
+    js_req_array <- cn_js_value(as.character(js_req_display))
+    js_opt_array <- cn_js_value(as.character(js_opt_display))
     
     # 5. Javascript with Click Toggles
     js_script <- tags$script(HTML(paste0("
@@ -1624,7 +1601,8 @@ server <- function(input, output, session) {
       selContainer.empty();
       selectedCols.forEach(function(colName) {
          // Added clickable class for the selected badges
-         selContainer.append('<span class=\"clickable-selected-badge\" style=\"display: inline-block; padding: 4px 8px; margin: 2px; border-radius: 12px; font-size: 12px; font-weight: bold; background-color: #17a2b8; color: white; cursor: pointer; user-select: none; transition: transform 0.2s;\">' + colName + '</span>');
+         // SECURITY (P0-8a): column names are user data -> set via .text(), never HTML concat
+         selContainer.append($('<span class=\"clickable-selected-badge\" style=\"display: inline-block; padding: 4px 8px; margin: 2px; border-radius: 12px; font-size: 12px; font-weight: bold; background-color: #17a2b8; color: white; cursor: pointer; user-select: none; transition: transform 0.2s;\"></span>').text(colName));
       });
       
       var allRequiredFound = required.every(function(reqCol) { return foundReq.includes(reqCol); });
@@ -1763,13 +1741,11 @@ server <- function(input, output, session) {
     # Helper function to safely read from VFS if the file exists
     get_vfs_key <- function(filename) {
       path <- file.path("keys", filename)
-      if (fs::file_exists(path)) {
-        tryCatch({
-          dec <- sodium::data_decrypt(readRDS(path), key=sha256(glens_env$privkey_dec))
-          return(trimws(rawToChar(dec)))
-        }, error = function(e) return(NULL))
-      }
-      return(NULL)
+      r <- cn_read_api_key(path, glens_env$privkey_dec)
+      if (identical(r$status, "decrypt_failed"))
+        showNotification(paste0("Stored key '", filename, "' could not be decrypted on this machine; please re-enter it (the stored file was kept)."),
+                         type = "warning", duration = 15)
+      r$value
     }
     
     # Resolve keys: Try VFS first. If NULL, fallback to the browser-stored glens_env
@@ -1879,6 +1855,19 @@ server <- function(input, output, session) {
                tags$div(class = "api-save-wrap",
                         actionButton("save_openalex", "Save OpenAlex Key", class = "btn-success save-btn-custom")
                )
+               )
+      ),
+      # P0-8b: truthful storage notice + optional encrypted persistence
+      tags$div(class = "api-row", style = "border-top: 1px solid #eee; padding-top: 10px; font-size: 12px;",
+               tags$p(if (is_WASM) {
+                 "By default keys are kept in memory only for this browser tab and are forgotten on reload. Keys are sent only to the provider you use them with (e.g. Scopus/Elsevier, OpenAlex) as part of API requests."
+               } else {
+                 "Keys are stored on this computer in the app's keys/ folder, encrypted with a locally generated key, and sent only to the provider you use them with as part of API requests."
+               }),
+               if (is_WASM) tags$div(
+                 tags$label(tags$input(type = "checkbox", id = "cn_remember_keys"), " Remember on this device (encrypted with your passphrase)"),
+                 tags$input(type = "password", class = "form-control cn-keystore-pass", placeholder = "Passphrase (min. 8 characters, never sent to R or any server)", autocomplete = "new-password"),
+                 tags$small("Tick this and enter a passphrase BEFORE pressing Save. Keys are encrypted with AES-GCM using a PBKDF2-SHA-256 (250k iterations) key derived from your passphrase and stored in this browser's localStorage. Forgetting the passphrase means re-entering keys.")
                )
       ),
       
@@ -2016,23 +2005,25 @@ server <- function(input, output, session) {
   
   # Save handlers
   observeEvent(input$save_mail, {
+    glens_env$mail_key <- if (nzchar(trimws(input$mail_key %||% ""))) trimws(input$mail_key) else NULL  # A-2: load saved key into the session
     raw_key <- charToRaw(trimws(input$mail_key))
     encrypted_scopus <- sodium::data_encrypt(raw_key, key=sha256(glens_env$privkey_dec))
     saveRDS(encrypted_scopus, file = file.path("keys","mail.key"))
     if(is_WASM){
-      session$sendCustomMessage("save_key_to_browser", list(platform = "mail_key", key = raw_key))
+      session$sendCustomMessage("save_key_to_browser", list(platform = "mail_key", key = trimws(input$mail_key %||% "")))  # P0-8b: persisted only if user opted in (encrypted)
     }
-    if(is.null(input$scopus_key) || !nzchar(input$mail_key)){
+    if(is.null(input$mail_key) || !nzchar(input$mail_key)){   # A-8: was input$scopus_key (copy-paste)
       if(fs::file_exists(file.path("keys","mail.key")))
         fs::file_delete(file.path("keys","mail.key"))
       # removeModal()
       # return()
     }else{
-      showNotification("E-mail Encrypted and Saved.", type = "message")
+      showNotification(if (is_WASM) "E-mail set for this session." else "E-mail encrypted and saved locally.", type = "message")
     }
     # removeModal()
   })
   observeEvent(input$save_scopus, {
+    glens_env$scopus_key <- if (nzchar(trimws(input$scopus_key %||% ""))) trimws(input$scopus_key) else NULL  # A-2: load saved key into the session
     # req(input$scopus_key)
     raw_key <- charToRaw(trimws(input$scopus_key))
     # print(input$scopus_key)
@@ -2042,7 +2033,7 @@ server <- function(input, output, session) {
     encrypted_scopus <- sodium::data_encrypt(raw_key, key=sha256(glens_env$privkey_dec))
     saveRDS(encrypted_scopus, file = file.path("keys","scopus.key"))
     if(is_WASM){
-      session$sendCustomMessage("save_key_to_browser", list(platform = "scopus_key", key = raw_key))
+      session$sendCustomMessage("save_key_to_browser", list(platform = "scopus_key", key = trimws(input$scopus_key %||% "")))  # P0-8b: persisted only if user opted in (encrypted)
     }
     if(is.null(input$scopus_key) || !nzchar(input$scopus_key)){
       if(fs::file_exists(file.path("keys","scopus.key")))
@@ -2050,16 +2041,18 @@ server <- function(input, output, session) {
       # removeModal()
       # return()
     }else{
-      showNotification("Scopus Key Encrypted and Saved.", type = "message")
+      showNotification(if (is_WASM) "Scopus key set for this session." else "Scopus key encrypted and saved locally.", type = "message")
+      shinyjs::show("scopus_bar_container"); shinyjs::show("scopusid_label_wrapper"); shinyjs::show("scopusid_text")
     }
     # removeModal()
   })
   observeEvent(input$save_openalex, {
+    glens_env$openalex_key <- if (nzchar(trimws(input$openalex_key %||% ""))) trimws(input$openalex_key) else NULL  # A-2: load saved key into the session
     raw_key <- charToRaw(trimws(input$openalex_key))
-    encrypted_scopus <- sodium::data_encrypt(raw_key, key=sha256(glens_env$privkey_dec))
-    saveRDS(encrypted_scopus, file = file.path("keys","scopus.key"))
+    encrypted_openalex <- sodium::data_encrypt(raw_key, key=sha256(glens_env$privkey_dec))
+    saveRDS(encrypted_openalex, file = file.path("keys","openalex.key"))  # A-1: was scopus.key (overwrote Scopus key)
     if(is_WASM){
-      session$sendCustomMessage("save_key_to_browser", list(platform = "openalex_key", key = raw_key))
+      session$sendCustomMessage("save_key_to_browser", list(platform = "openalex_key", key = trimws(input$openalex_key %||% "")))  # P0-8b: persisted only if user opted in (encrypted)
     }
     if(is.null(input$openalex_key) || !nzchar(input$openalex_key)){
       if(fs::file_exists(file.path("keys","openalex.key")))
@@ -2067,7 +2060,7 @@ server <- function(input, output, session) {
       # removeModal()
       # return()
     }else{
-      showNotification("OpenAlex Key Encrypted and Saved.", type = "message")
+      showNotification(if (is_WASM) "OpenAlex key set for this session." else "OpenAlex key encrypted and saved locally.", type = "message")
     }
     # removeModal()
   })
@@ -2241,7 +2234,7 @@ server <- function(input, output, session) {
   })
   
   # 3. Year Filtered Table
-  glens_year_filtered_rx <- reactive({
+  glens_year_filtered_base_rx <- reactive({
     # req(isTRUE(isTRUE(input$auto_refresh_lookup) || rv$is_glens_exec))
     req(rv$glens_full_table, nrow(rv$glens_full_table) > 0)
     df <- rv$glens_full_table
@@ -2331,6 +2324,19 @@ server <- function(input, output, session) {
     }
     
     return(df)
+  })
+
+  # ---- C1-4: Sh-index author-position weights (user-editable; default = SH_DEFAULT_WEIGHTS) ----------------
+  # C1-5: .cnet load modes (data only / replay full session into the UI controls)
+  register_cnet_replay(input, session, rv, delay_fn = function(ms, expr) shinyjs::delay(ms, expr))
+  # D1-4: sh_weights() is the single canonical weights state list(mode = default|custom|newman, weights, newman,
+  # errors); banner, weights table, help text and the weighted table below all read it.
+  sh_weights <- register_sh_weights(input, output, session)
+  register_session_heartbeat(input, session)  # D2-A3: liveness ping/pong for collabnet-session-guard.js
+  session$userData$cn_sh_weights <- sh_weights  # read by .cnet settings and the MCP metrics tool
+  # Every consumer of the filtered table (indices, Sh badge, tables, plots, exports, MCP) sees the active weights.
+  glens_year_filtered_rx <- reactive({
+    sh_weighted_table(glens_year_filtered_base_rx(), sh_weights())
   })
   
   # This observer handles all visual side-effects and plot updates
@@ -2467,7 +2473,8 @@ server <- function(input, output, session) {
       input$custom_max_keywords[2]
     } else 100L
 
-    bounds <- cn_slider_bounds(df, col, target_delim, size_max = as.integer(max_k))
+    bounds <- cn_slider_bounds(df, col, target_delim, size_max = as.integer(max_k),
+                               oversize_mode = input$oversize_mode %||% "star")
     max_node_occurrences <- bounds$max_node_occurrence
     max_edge_frequency <- bounds$max_edge_frequency
     max_cluster_size <- bounds$max_cluster_size
@@ -2491,7 +2498,9 @@ server <- function(input, output, session) {
     # Update inputs with fixed defaults
     updateSliderInput(session, "node_freq_range", min = 1, max = max_node_occurrences, value = c(1, max_node_occurrences))
     updateSliderInput(session, "edge_freq_range", min = 0, max = max_edge_frequency, value = c(1, max_edge_frequency)) 
-    updateSliderInput(session, "cluster_size_range", min = 1, max = max_cluster_size, value = c(1, dplyr::if_else(max_cluster_size < 500, max_cluster_size, 500)))
+    # P0-1: default = full range (no component filter); slider max at its top means "no upper limit".
+    rv$net_cluster_max <- max_cluster_size
+    updateSliderInput(session, "cluster_size_range", min = 1, max = max_cluster_size, value = c(1, max_cluster_size))
     rv$is_glens_exec <- FALSE
   })
   
@@ -2595,22 +2604,7 @@ server <- function(input, output, session) {
     }
   })
   
-  # --- Web Worker Pool Handshake & Client-Side POST Report ---
-  observeEvent(input$collabnet_pool_ready, {
-    pool_info <- input$collabnet_pool_ready
-    if (!is.null(pool_info)) {
-      cn_log_info("JS Worker Pool active: %s workers on %s CPU cores", 
-                  pool_info$workers %||% 4, pool_info$cores %||% 4)
-      if (!is.null(pool_info$postDiagnostics)) {
-        diag <- pool_info$postDiagnostics
-        cn_log_info("Browser Client POST: eps=%.4e [%s], latency=%.2fms",
-                    diag$machinePrecision$epsilon %||% 0,
-                    if (isTRUE(diag$passed)) "PASS" else "FAIL",
-                    diag$workers$avgRoundTripMs %||% 0)
-        rv$client_post_diagnostics <- diag
-      }
-    }
-  }, ignoreInit = FALSE)
+  # P2-6: the dormant JS Web Worker Pool (collabnet-worker-pool.js) was removed: R never dispatched work to it.
   
   # ==============================================================================
   # DYNAMIC UI UPDATES 
@@ -2703,10 +2697,19 @@ server <- function(input, output, session) {
           paging = TRUE,
           dom = 'Blfrtip',
           lengthMenu = list(c(10, 25, 50, 100, -1), c('10', '25', '50', '100', 'All')),
-          buttons = c('copy', 'csv', 'excel', 'pdf', 'print')
+          # D1-6: CSV/Excel are exported server-side (download_table_csv/xlsx, formula-injection safe)
+          buttons = c('copy', 'pdf', 'print')
         )
       ))
   }, server = FALSE)
+
+  # D1-6: publication table exports (current filters + current weight mode; sanitized, UTF-8)
+  output$download_table_csv <- downloadHandler(
+    filename = function() cn_export_filename("publications", "csv"),
+    content = function(file) cn_export_csv(tryCatch(glens_year_filtered_rx(), error = function(e) NULL), file))
+  output$download_table_xlsx <- downloadHandler(
+    filename = function() cn_export_filename("publications", "xlsx"),
+    content = function(file) cn_export_xlsx(tryCatch(glens_year_filtered_rx(), error = function(e) NULL), file))
   
   # output$network_full <- renderVisNetwork({
   #   df <- glens_full_table_rx() #glens_extended_rx() #glens_etable_final_rx()
@@ -2773,6 +2776,37 @@ server <- function(input, output, session) {
 
   # Calculate Filtered Network Data (Debounced)
   # 1. Initialize Network Cache (Updated for Range inputs)
+# P1-4: methods paragraph export (same text as the MCP tool collabnet_methods_text)
+output$download_methods <- downloadHandler(
+  filename = function() cn_export_filename("methods", "txt"),  # D1-6: UTC timestamp
+  content = function(file) {
+    net <- tryCatch(net_data_filtered_debounced(), error = function(e) NULL)
+    writeLines(cn_methods_text(cnet_settings_from_input(input), if (is.list(net)) net$stats else list(), rv$dedup_report,
+                               list(orcid = input$orcid_text, scopus_id = input$scopusid_text,
+                                    doi_count = length(split_doi_textarea(input$doi_text))), rv$retrieved_utc), file, useBytes = TRUE)
+  })
+
+# P1-6: sensitivity bands (on demand; bounded inside cn_sensitivity). DT escapes by default.
+sensitivity_rv <- eventReactive(input$run_sensitivity, {
+  df <- glens_year_filtered_rx(); col <- input$net_col_filtered %||% "Authors"
+  d <- rv$detected_mv_cols[[col]] %||% ";"
+  withProgress(message = "Sensitivity bands: 9 network builds", value = 0.2,
+    tryCatch(cn_sensitivity(df, col, d, metric = "betweenness", top_n = 10L), error = function(e) { showNotification(conditionMessage(e), type = "error"); NULL }))
+})
+output$sensitivity_table <- DT::renderDataTable({ s <- sensitivity_rv(); req(s)
+  DT::datatable(s$bands, rownames = FALSE, escape = TRUE, caption = sprintf("Top-%d by %s: %d of them are top-%d in all %d configurations", s$top_n, s$metric, s$robust_top_n, s$top_n, s$n_configs)) })
+output$sensitivity_configs <- DT::renderDataTable({ s <- sensitivity_rv(); req(s)
+  DT::datatable(s$per_config_top, rownames = FALSE, escape = TRUE, caption = "Counting-method comparison: top-N per configuration (policy/mode)") })
+
+# P1-1: merge review table (raw strings that were mapped onto the same node, with the reason). DT escapes by default.
+output$identity_review_table <- DT::renderDataTable({
+  net <- net_data_filtered_debounced()
+  rv <- if (is.list(net)) net$identity else NULL
+  if (!is.data.frame(rv) || !nrow(rv)) return(DT::datatable(data.frame(Note = "No network built yet."), rownames = FALSE))
+  DT::datatable(rv[rv$n_raw_forms > 1L, c("node", "raw", "reason", "n_raw_forms")], rownames = FALSE, escape = TRUE,
+                options = list(pageLength = 10, scrollX = TRUE))
+})
+
 net_data_filtered_raw <- reactive({
     if (!isTRUE(input$enable_network))
       return(list(nodes = data.frame(), edges = data.frame(),
@@ -2794,7 +2828,10 @@ net_data_filtered_raw <- reactive({
     target_delim <- isolate(rv$detected_mv_cols)[[col]]
     if (is.null(target_delim) || !nzchar(trimws(target_delim))) target_delim <- ","
 
-    build_collaboration_network(
+    csr <- input$cluster_size_range
+    if (length(csr) >= 2 && csr[2] >= (isolate(rv$net_cluster_max) %||% Inf)) csr[2] <- Inf
+    if (length(csr) >= 1 && csr[1] <= 1 && (length(csr) < 2 || !is.finite(csr[2]))) csr <- c(1, Inf)
+    net <- build_collaboration_network(
       df                 = df,
       authors_per_pub    = input$custom_max_keywords,
       node_freq_range    = input$node_freq_range,
@@ -2804,7 +2841,7 @@ net_data_filtered_raw <- reactive({
       target_delim       = target_delim,
       fr_iterations      = input$fr_iterations,
       prune_leaves       = isTRUE(input$prune_leaves),
-      cluster_size_range = input$cluster_size_range,
+      cluster_size_range = csr,
       weight_scheme      = input$weight_scheme      %||% "newman",
       oversize_mode      = input$oversize_mode      %||% "star",
       backbone_alpha     = if (isTRUE(input$use_backbone)) input$backbone_alpha else NULL,
@@ -2812,12 +2849,46 @@ net_data_filtered_raw <- reactive({
       detect_communities = isTRUE(input$detect_communities),
       compute_centrality = isTRUE(input$compute_centrality),
       layout_engine      = input$layout_engine      %||% "auto",
+      community_algorithm = input$community_algorithm %||% "leiden",
+      identity_policy    = input$identity_policy %||% "normalised",
+      resolution         = input$community_resolution %||% 1,
+      seed               = as.integer(input$community_seed %||% 42L),
+      betweenness_approx = if (isTRUE(input$betweenness_approx)) list(method = "sample", k = 200L, seed = input$community_seed %||% 42L) else NULL,
       verbose            = TRUE
     )
+    cf <- net$stats$component_filter
+    if (isTRUE(cf$active) && cf$removed_nodes > 0) {
+      showNotification(sprintf("Cluster-size filter [%s, %s] hid %d node(s) in %d component(s)%s.",
+                               cf$range[1], cf$range[2], cf$removed_nodes, cf$removed_components,
+                               if (isTRUE(cf$removed_largest)) " (including the largest component)" else ""),
+                       type = "warning", duration = 8)
+    }
+    net
   })
 
   net_data_filtered_debounced <- net_data_filtered_raw %>% debounce(600)
   glens_env$net_data_filtered_debounced <- net_data_filtered_debounced
+  # Debug mode + floating R console (GScholarLENS-Console.R). Evaluation env is a child of this server() env,
+  # so rv, reactives (via isolate()) and data are visible from the console.
+  collabnet_console <- register_console(input, output, session, envir = new.env(parent = environment()))
+  # Unified MCP registry/dispatcher (GScholarLENS-MCP.R): serves the in-app AI chat, WebMCP and the local bridge.
+  # Must run inside server() after the debounced network exists. author_col/delim default to the active
+  # network column and its detected delimiter.
+  register_collabnet_mcp(input, output, session, rv, glens_year_filtered_rx, net_data_filtered_debounced,
+                         console = collabnet_console)
+
+  # D3-(a): network downloads (filtered graph as shown) via cn_net_export_text() -> MCP export_graph
+  for (.dl in list(c("dl_net_nodes_csv", "network_nodes", "csv", "nodes_csv"), c("dl_net_edges_csv", "network_edges", "csv", "csv"),
+                   c("dl_net_graphml", "network", "graphml", "graphml"))) local({
+    d <- .dl
+    output[[d[1]]] <- downloadHandler(
+      filename = function() cn_export_filename(d[2], d[3]),
+      content = function(file) {
+        txt <- tryCatch(cn_net_export_text(d[4], net_data_filtered_debounced()), error = function(e) {
+          showNotification(paste("Network export failed:", conditionMessage(e)), type = "error"); NULL })
+        writeLines(enc2utf8(txt %||% ""), file, useBytes = TRUE)
+      })
+  })
 
   observeEvent(list(input$node_freq_range, input$edge_freq_range,
                     input$cluster_size_range, input$custom_max_keywords,
@@ -3003,7 +3074,7 @@ net_data_filtered_raw <- reactive({
       return()
     }
     
-    current_nodes <- net_data$nodes
+    current_nodes <- cn_merge_worker_positions(net_data$nodes, input$network_worker_positions)
     # If layout coordinates (x,y) haven't been bound to the dataframe, abort safely
     if (!("x" %in% colnames(current_nodes)) || !("y" %in% colnames(current_nodes))) {
       shinyjs::enable("neighbourhood_slider")
@@ -3695,6 +3766,13 @@ net_data_filtered_raw <- reactive({
     proxy %>% visSetData(nodes = net_data$nodes[keep_n], edges = net_data$edges[keep_e])
     
     proxy %>% visPhysics(enabled = FALSE)
+
+    # C2-1: hand the layout to the browser worker pool (www/js/collabnet-worker-pool.js);
+    # vis-network keeps physics off and only renders the returned coordinates.
+    if (cn_use_worker_layout(input$layout_engine %||% "auto", nrow(net_data$nodes))) {
+      session$sendCustomMessage("collabnet_worker_layout",
+        cn_worker_layout_msg(net_data$nodes, net_data$edges, seed = input$community_seed %||% 42L))
+    }
     
     if (!use_custom_shape) {
       proxy %>%
@@ -3811,7 +3889,7 @@ net_data_filtered_raw <- reactive({
   
   output$download_btn <- downloadHandler(
     filename = function() {
-      paste0("CollabNET_", Sys.Date(), ".cnet")
+      cn_export_filename("session", "cnet")  # D1-6: UTC timestamp
     },
     content = function(file) {
       cn_log_info("--- Session export started ---")
@@ -3840,10 +3918,18 @@ net_data_filtered_raw <- reactive({
         export_data <- data.frame(Status = "No data matched the current filters.")
       }
       
-      cn_log_info("Writing compressed RDS session file. Total rows: %d", nrow(export_data))
+      cn_log_info("Writing .cnet v2 session file (gzipped JSON). Total rows: %d", nrow(export_data))
       
-      saveRDS(export_data, file = file, compress = "gzip", version = 3)
-      # Foolproof single-connection level 9 compression
+      # P0-8d: portable, validated JSON session format (no R serialisation)
+      cnet_write(file, list(
+        data = export_data,
+        settings = cnet_settings_from_input(input),
+        source = list(export_frame = input$data_export_frame,
+                      doi_count = length(strsplit(input$doi_text %||% "", "[\\s,;]+", perl = TRUE)[[1]]),
+                      orcid = input$orcid_text %||% NULL, scopus_id = input$scopusid_text %||% NULL),
+        retrieved_utc = rv$retrieved_utc %||% NULL,
+        dedup = rv$dedup_report %||% NULL
+      ))
       
       cn_log_info("--- Session export complete ---")
     }
@@ -3916,7 +4002,7 @@ net_data_filtered_raw <- reactive({
       chk_id <- paste0("lookup_chk_", hex_str)
       delim_id <- paste0("lookup_delim_", hex_str)
       
-      if (grepl("^(Authors\\(s\\) ID)$", col_name, ignore.case = TRUE)) {
+      if (grepl("^(Authors|Author\\(s\\) ID)$", col_name, ignore.case = TRUE)) {   # B-9: regex typo unchecked Authors
         updateCheckboxInput(session, chk_id, value = TRUE)
         updateTextInput(session, delim_id, value = ",")
       } else {
@@ -4256,7 +4342,10 @@ net_data_filtered_raw <- reactive({
       #   showNotification(paste("Missing columns:", missing_str), type = "error", duration = 10)
       # }
       
-      glens_full_table <- dplyr::distinct(glens_full_table)
+      dd <- cn_dedup_papers(glens_full_table)   # P1-2: DOI, then title + year
+      glens_full_table <- dd$data; rv$dedup_report <- dd$report
+      rv$retrieved_utc <- format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")   # P1-3: retrieval timestamp
+      if (dd$report$n_in > dd$report$n_out) showNotification(cn_dedup_message(dd$report), type = "message", duration = 10)
       rv$glens_full_table <- glens_full_table
       
       render_skeleton_plots(rv, glens_full_table, output)
@@ -4348,7 +4437,10 @@ net_data_filtered_raw <- reactive({
       return()
     }
     
-    glens_full_table <- dplyr::distinct(glens_full_table)
+    dd <- cn_dedup_papers(glens_full_table)   # P1-2: DOI, then title + year
+    glens_full_table <- dd$data; rv$dedup_report <- dd$report
+      rv$retrieved_utc <- format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")   # P1-3: retrieval timestamp
+    if (dd$report$n_in > dd$report$n_out) showNotification(cn_dedup_message(dd$report), type = "message", duration = 10)
     rv$glens_full_table <- glens_full_table
     
     render_skeleton_plots(rv, glens_full_table, output)
@@ -4522,7 +4614,7 @@ net_data_filtered_raw <- reactive({
       cn_log_warn("Submit table extension failed: %s", conditionMessage(e))
       rv$is_glens_exec <- FALSE
       shinyWidgets::updateProgressBar(session, id = "prog_doi", value = 100, status = "danger", title = "Process Failed!")
-      rv$log_text <- paste(rv$log_text, sprintf("\n(Master) Failed in Final Processing: %s", conditionMessage(e)), sep="<br>")
+      rv$log_text <- paste(rv$log_text, sprintf("\n(Master) Failed in Final Processing: %s", cn_html_escape(conditionMessage(e))), sep="<br>")
       shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
       shinyjs::enable("submit_button")
     })
@@ -4662,7 +4754,7 @@ net_data_filtered_raw <- reactive({
       
       # We use a reactiveValues object to safely track progress across all async streams on the main thread
       progress_state$orcid_done = 0
-      progress_statedoi_done = 0
+      progress_state$doi_done = 0   # B-13: typo (progress_statedoi_done)
       progress_state$scopus_done = 0
       progress_state$doi_found = 0
       
@@ -4861,7 +4953,7 @@ net_data_filtered_raw <- reactive({
           cn_log_debug("SCOPUS ID fetch returned result: class=%s", paste(class(res), collapse=", "))
           # Handle the error passed back from the tryCatch
           if (is.list(res) && "error" %in% names(res)) {
-            rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'>SCOPUS Error:", res$error, "</span>"), sep="<br>")
+            rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'>SCOPUS Error:", cn_html_escape(res$error), "</span>"), sep="<br>")
             return(NULL)
           }
           
@@ -4876,7 +4968,7 @@ net_data_filtered_raw <- reactive({
           shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
           shinyjs::enable("submit_button")
           if (is.list(res) && "error" %in% names(res)) {
-            rv$log_text <- paste(rv$log_text, paste("Scopus ID Error:", res$error), sep="<br>")
+            rv$log_text <- paste(rv$log_text, paste("Scopus ID Error:", cn_html_escape(res$error)), sep="<br>")
             cn_log_warn("Scopus ID Error: %s", as.character(res$error))
             # output$log <- renderText({rv$log_text})
             return(NULL)
@@ -5014,7 +5106,7 @@ net_data_filtered_raw <- reactive({
             )
             
             if (!is.null(res$error)) {
-              rv$log_text <- paste(rv$log_text, paste("ORCID Error:", res$error), sep="<br>")
+              rv$log_text <- paste(rv$log_text, paste("ORCID Error:", cn_html_escape(res$error)), sep="<br>")
               return(NULL)
             } 
             cn_log_debug("ORCID result received: %d rows", if (is.data.frame(res$df)) nrow(res$df) else 0L)
@@ -5023,7 +5115,7 @@ net_data_filtered_raw <- reactive({
           }) %...!% (function(err) {
             # If the future itself crashes, log it safely on the main thread
             cn_log_warn("ORCID Error: %s", conditionMessage(err))
-            rv$log_text <- paste(rv$log_text, paste("System Error during ORCID fetch:", err), sep="<br>")
+            rv$log_text <- paste(rv$log_text, paste("System Error during ORCID fetch:", cn_html_escape(conditionMessage(err))), sep="<br>")
           })
         })
         
@@ -5148,54 +5240,64 @@ net_data_filtered_raw <- reactive({
         
         progress_state$scopus_done <- 0
         # --- STREAM B: PARALLEL SCOPUS PROCESSING ---
-        scopus_promise <- future({
-            tryCatch({ 
-              # if (rv$is_cancelled) return(NULL)
-              if(!fs::file_exists(file.path("run.lock"))) return(NULL)
-            
-              # Handle missing key gracefully & update progress bar
-              if (!rv$has_key_scopus) {
-                shinyWidgets::updateProgressBar(
-                  session, id = "prog_scopus", value = orcid_count , total = max(1, orcid_count),
-                  title = sprintf("Scopus Skipped (No Key): %d%%", 100), status = "warning"
-                )
-                return(promise_resolve(NULL))
-              }
-              cn_log_debug("SCOPUS promise dispatching ORCID fetch")
-              # INCREMENT PROGRESS BAR
-              prog_scopus_reactive <- reactive({ progress_state$scopus_done + 1 })
-              # progress_state$scopus_done <- progress_state$scopus_done + 1
-              pct <- round(( isolate(prog_scopus_reactive()) / max(1, orcid_count) ) * 100)
-              shinyWidgets::updateProgressBar(
-                session, id = "prog_scopus", value = orcid_count, total = max(1, orcid_count),
-                title = sprintf("Scopus: %d%% (%d/%d)", pct, isolate(prog_scopus_reactive()) , orcid_count),
-                status = if(pct == 100) "success" else "info"
-              ) #value = isolate(prog_scopus_reactive())
-              progress_state$scopus_done <- isolate(prog_scopus_reactive())
-              return(get_scopus_data_orcid(orcid_list, rv, glens_env$scopus_key))
-              
-            }, error = function(e){
-              # message("ERROR (get_scopus_data_orcid()):",str(e),e)
-              rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'>SCOPUS: Error fetching ORCiD(s):",e,"</span>"), sep="<br>")
-              })
-          }, 
-          globals = c("get_scopus_data_orcid", "orcid_list","orcid_count", "has_key_scopus", "glens_env", "glens_env$scopus_key", "rv", "session", "progress_state", "print_log"),
-          packages = c("shinyWidgets","dplyr", "jsonlite", "tidyr", "purrr", "shiny"), seed = TRUE 
+        # C2 (audit B-7): the future is started ONLY when there are ORCIDs and a
+        # Scopus key. Plain values are captured here, on the main session; the
+        # future never touches rv / session / reactive() (those do not exist in
+        # a multisession worker). Progress bar updates happen on the main
+        # process; cancellation uses the run.lock file (cancel_fn inside
+        # get_scopus_data_orcid checks it before every page).
+        scopus_orcid_ids <- as.character(orcid_list)
+        scopus_orcid_n   <- length(scopus_orcid_ids)
+        scopus_api_key   <- if (isTRUE(rv$has_key_scopus)) glens_env$scopus_key else NULL
+        if (scopus_orcid_n == 0) {
+          scopus_promise <- promise_resolve(NULL)
+        } else if (is.null(scopus_api_key) || !nzchar(scopus_api_key)) {
+          shinyWidgets::updateProgressBar(
+            session, id = "prog_scopus", value = 1, total = 1,
+            title = "Scopus Skipped (No Key): 100%", status = "warning"
+          )
+          scopus_promise <- promise_resolve(NULL)
+        } else {
+          cn_log_debug("SCOPUS promise dispatching ORCID fetch (%d ORCID(s))", scopus_orcid_n)
+          shinyWidgets::updateProgressBar(
+            session, id = "prog_scopus", value = 0, total = scopus_orcid_n,
+            title = sprintf("Scopus: fetching %d ORCID(s)...", scopus_orcid_n), status = "info"
+          )
+          scopus_promise <- future({
+              if (!fs::file_exists(file.path("run.lock"))) return(NULL)
+              tryCatch(get_scopus_data_orcid(scopus_orcid_ids, api_key = scopus_api_key),
+                       error = function(e) list(error = conditionMessage(e)))
+            },
+            globals = list(get_scopus_data_orcid = get_scopus_data_orcid, scopus_orcid_ids = scopus_orcid_ids,
+                           scopus_api_key = scopus_api_key),
+            packages = c("dplyr", "jsonlite", "purrr", "fs"), seed = TRUE
           ) %...>% (function(res) {
-            # if (rv$is_cancelled) return(NULL)
             if(!fs::file_exists(file.path("run.lock"))) return(NULL)
-            return(res) 
+            if (is.list(res) && !is.data.frame(res) && "error" %in% names(res)) {
+              shinyWidgets::updateProgressBar(session, id = "prog_scopus", value = scopus_orcid_n, total = scopus_orcid_n,
+                                              status = "danger", title = "Scopus: failed")
+              rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'>SCOPUS: Error fetching ORCiD(s):", cn_html_escape(res$error), "</span>"), sep="<br>")
+              return(NULL)
+            }
+            st <- attr(res, "scopus_status") %||% "ok"
+            shinyWidgets::updateProgressBar(session, id = "prog_scopus", value = scopus_orcid_n, total = scopus_orcid_n,
+                                            title = sprintf("Scopus: %s (%d record(s))", if (identical(st, "ok")) "100%" else st, NROW(res)),
+                                            status = if (identical(st, "ok")) "success" else "warning")
+            if (!identical(st, "ok"))
+              rv$log_text <- paste(rv$log_text, paste("<span style='color: orange;'>SCOPUS: incomplete (", cn_html_escape(st), "):",
+                                                      cn_html_escape(attr(res, "scopus_message") %||% ""), "- partial results kept.</span>"), sep="<br>")
+            return(res)
           }) %...!% (function(err) {
-            # if (rv$is_cancelled) return(NULL)
             if(!fs::file_exists(file.path("run.lock"))) return(NULL)
-            progress_state$scopus_done <- progress_state$scopus_done + 1 
+            progress_state$scopus_done <- progress_state$scopus_done + 1
             shinyWidgets::updateProgressBar(session, id = "prog_scopus", value =  progress_state$scopus_done , status = "danger", title = "Process Failed!")
             cn_log_warn("Failed SCOPUS Processing: %s", conditionMessage(err))
             shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
             shinyjs::enable("submit_button")
-            rv$log_text <- paste(rv$log_text, paste("Scopus Error:", err), sep="<br>")
+            rv$log_text <- paste(rv$log_text, paste("Scopus Error:", cn_html_escape(conditionMessage(err))), sep="<br>")
             return(NULL)
           })
+        }
         
         # Wrap all Scopus promises into one master promise
         master_scopus_promise <- promise_all(scopus_promise)   
@@ -5533,7 +5635,7 @@ net_data_filtered_raw <- reactive({
         #   }, error = function(e) {
         #     print(e)
         #     shinyWidgets::updateProgressBar(session, id = "prog_doi", value = 100, status = "danger", title = "Process Failed!")
-        #     rv$log_text <- paste(rv$log_text, sprintf("\n(Master) Failed in Final Processing: %s", conditionMessage(e)), sep="<br>")
+        #     rv$log_text <- paste(rv$log_text, sprintf("\n(Master) Failed in Final Processing: %s", cn_html_escape(conditionMessage(e))), sep="<br>")
         #     shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
         #     shinyjs::enable("submit_button")
         #   })
@@ -5575,8 +5677,8 @@ net_data_filtered_raw <- reactive({
           }
           
           # Safely clean manual DOIs from the UI
-          doi_ui_lines <- if (!is.null(input$doi_text)) input$doi_text else character(0)
-          doi_ui_lines <- doi_ui_lines[!is.na(doi_ui_lines) & trimws(doi_ui_lines) != ""]
+          # B-8: the textarea is ONE string; split it into one DOI per line (also commas/semicolons), trim, de-duplicate.
+          doi_ui_lines <- split_doi_textarea(input$doi_text)
           
           if(nrow(doi_df) > 0) {
             # Using dplyr::filter instead of base subsetting to avoid row-length crashes
@@ -5696,7 +5798,7 @@ net_data_filtered_raw <- reactive({
         }) %...!% (function(err) {
           cn_log_warn("Failed in ORCID/DOI Extraction: %s", conditionMessage(err))
           shinyWidgets::updateProgressBar(session, id = "prog_doi", value = 100, status = "danger", title = "Process Failed!")
-          rv$log_text <- paste(rv$log_text, sprintf("\n(Master) Failed in ORCID/DOI Extraction: %s", conditionMessage(err)), sep="<br>")
+          rv$log_text <- paste(rv$log_text, sprintf("\n(Master) Failed in ORCID/DOI Extraction: %s", cn_html_escape(conditionMessage(err))), sep="<br>")
           shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
           shinyjs::enable("submit_button")
         })
@@ -5726,7 +5828,7 @@ net_data_filtered_raw <- reactive({
         }) %...!% (function(err) {
           cn_log_warn("Failed in Scopus Processing: %s", conditionMessage(err))
           shinyWidgets::updateProgressBar(session, id = "prog_doi", value = 100, status = "danger", title = "Process Failed!")
-          rv$log_text <- paste(rv$log_text, sprintf("\n(Master) Failed in Scopus Processing: %s", conditionMessage(err)), sep="<br>")
+          rv$log_text <- paste(rv$log_text, sprintf("\n(Master) Failed in Scopus Processing: %s", cn_html_escape(conditionMessage(err))), sep="<br>")
           shinyjs::delay(3000, shinyjs::hide("progress_overlay"))
           shinyjs::enable("submit_button")
         })

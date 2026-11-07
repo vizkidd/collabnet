@@ -1,0 +1,54 @@
+/* D2-B1: responsive layer over the Bootstrap 3 layout (no BS5 migration).
+   Target widths: 360 / 768 / 1024 / 1440 / 2560 px, light and dark (body.dark-mode). Loaded after the inline ui.R
+   styles so these rules win. Breakpoints follow BS3 (xs < 768 <= sm < 992 <= md < 1200 <= lg). */
+
+/* ---- no horizontal page overflow at any width ---- */
+html, body { max-width: 100%; overflow-x: hidden; }
+img, svg, canvas, video { max-width: 100%; }
+.container-fluid > .row { margin-left: 0; margin-right: 0; }
+
+/* ---- tables scroll inside their own container instead of widening the page ---- */
+.shiny-table-output, .minimal-table, .dataTables_wrapper, .dataTables_scrollBody, .datatables {
+  max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch;
+}
+.shiny-table-output table, .minimal-table table { min-width: max-content; }
+
+/* ---- htmlwidgets never exceed their column ---- */
+.html-widget, .plotly, .visNetwork { max-width: 100%; }
+
+/* ---- modals fit the viewport ---- */
+.modal-dialog { max-width: calc(100vw - 20px); }
+.modal-content { max-height: calc(100vh - 40px); display: flex; flex-direction: column; }
+.modal-body { overflow-y: auto; overflow-x: auto; }
+
+/* ---- small screens (< 768px): sidebar stacks above the content (BS3 col-sm-* already stack) ---- */
+@media (max-width: 767.98px) {
+  .left-sidebar-col { min-height: 0 !important; padding-bottom: 12px !important; }
+  .custom-card { padding: 12px !important; margin-bottom: 14px !important; }
+  .modal-dialog { margin: 10px auto; width: auto; }
+  .btn, .form-control, .selectize-input { min-height: 40px; }
+  /* floating R console: full width, docked at the bottom, bigger tap targets */
+  .collabnet-console {
+    left: 0 !important; right: 0 !important; bottom: 0 !important; top: auto !important;
+    width: 100vw !important; max-width: 100vw !important; height: 45vh !important; border-radius: 10px 10px 0 0;
+  }
+  .collabnet-console button, .collabnet-console .btn { min-width: 44px; min-height: 44px; }
+  .collabnet-console textarea, .collabnet-console input { font-size: 16px; } /* avoids iOS zoom-on-focus */
+  #log_wrapper { left: 0 !important; width: 100vw !important; }
+}
+
+/* ---- tablet (768-1023): sidebar a bit wider so its controls are usable ---- */
+@media (min-width: 768px) and (max-width: 1023.98px) {
+  .left-sidebar-col.col-sm-3 { width: 34%; }
+  .left-sidebar-col.col-sm-3 + .col-sm-9 { width: 66%; }
+}
+
+/* ---- large / 4K: cap line length and scale type ---- */
+@media (min-width: 1920px) { html { font-size: 16px; } body { font-size: 15px; } }
+@media (min-width: 2400px) {
+  html { font-size: 18px; } body { font-size: 17px; }
+  .container-fluid { max-width: 2400px; margin: 0 auto; }
+}
+
+/* ---- dark mode keeps the same structure; only scroll containers need a background ---- */
+body.dark-mode .shiny-table-output, body.dark-mode .minimal-table { background: transparent; }

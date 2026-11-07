@@ -1,0 +1,193 @@
+/* collabnet-console.css -- CollabNET debug mode floating R console */
+
+.collabnet-console {
+  --cn-bg: #ffffff;
+  --cn-fg: #1f2328;
+  --cn-header-bg: #f1f3f5;
+  --cn-border: #c9ced6;
+  --cn-muted: #6a737d;
+  --cn-echo: #0b5cad;
+  --cn-ai: #8a3ffc;
+  --cn-msg: #6a5d00;
+  --cn-warn: #b35900;
+  --cn-err: #c62828;
+  --cn-val: #1f2328;
+  --cn-input-bg: #fbfbfc;
+
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  max-width: 100vw;
+  box-sizing: border-box;
+  z-index: 10500; /* above content, navbars, modals (1050) and the busy overlay (9990-9996) */
+  display: flex;
+  flex-direction: column;
+  height: 32vh;
+  background: var(--cn-bg);
+  color: var(--cn-fg);
+  border-top: 2px solid var(--cn-border);
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.18);
+  font-family: SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  transition: height 0.15s ease;
+}
+.collabnet-console.is-hidden { display: none !important; }
+.collabnet-console.is-normal { height: 32vh; }
+.collabnet-console.is-maximized { height: 85vh; }
+.collabnet-console.is-minimized { height: auto; }
+.collabnet-console.is-minimized .cn-console-body { display: none; }
+.collabnet-console.ai-on { border-top-color: var(--cn-ai); }
+
+/* header */
+.cn-console-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--cn-header-bg);
+  border-bottom: 1px solid var(--cn-border);
+  font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  user-select: none;
+}
+.cn-console-title { font-weight: 700; }
+.cn-console-status { color: var(--cn-muted); font-size: 12px; }
+.collabnet-console.ai-on .cn-console-status { color: var(--cn-ai); font-weight: 600; }
+.cn-console-spacer { flex: 1 1 auto; }
+.cn-console-btn {
+  background: transparent;
+  border: 1px solid var(--cn-border);
+  color: var(--cn-fg);
+  padding: 1px 6px;
+}
+.cn-console-btn:hover, .cn-console-btn:focus { background: rgba(127, 127, 127, 0.15); color: var(--cn-fg); }
+.cn-btn-label { margin-left: 4px; }
+.collabnet-console.is-minimized #collabnet-console-min,
+.collabnet-console.is-normal #collabnet-console-restore,
+.collabnet-console.is-maximized #collabnet-console-max { opacity: 0.45; }
+
+/* switches (debug toggle + AI access): Shiny checkbox markup styled as a switch */
+.collabnet-switch.form-group { margin: 0; width: auto !important; }
+.collabnet-switch .checkbox { margin: 0; }
+.collabnet-switch .checkbox label { padding-left: 0; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-weight: 600; }
+.collabnet-switch input[type="checkbox"] {
+  position: relative;
+  margin: 0;
+  -webkit-appearance: none;
+  appearance: none;
+  width: 30px;
+  height: 16px;
+  border-radius: 8px;
+  background: #9aa0a6;
+  outline: none;
+  cursor: pointer;
+  transition: background 0.15s;
+  flex: 0 0 auto;
+}
+.collabnet-switch input[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  transition: left 0.15s;
+}
+.collabnet-switch input[type="checkbox"]:checked { background: #2e7d32; }
+.collabnet-switch input[type="checkbox"]:checked::after { left: 16px; }
+.collabnet-switch input[type="checkbox"]:focus-visible { box-shadow: 0 0 0 2px #4b8bbe; }
+.collabnet-switch input[type="checkbox"]:disabled { opacity: 0.45; cursor: not-allowed; }
+.cn-ai-switch input[type="checkbox"]:checked { background: var(--cn-ai); }
+.cn-ai-switch .checkbox label { font-size: 12px; }
+.collabnet-debug-toggle { display: inline-flex; align-items: center; padding: 4px 10px; cursor: default; }
+.collabnet-debug-toggle .checkbox label { color: inherit; font-weight: 600; }
+
+/* body */
+.cn-console-body { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.cn-console-output {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+.cn-entry { margin: 0; white-space: pre-wrap; }
+.cn-echo { color: var(--cn-echo); margin-top: 4px; }
+.cn-echo-prompt { font-weight: 700; }
+.cn-origin-ai, .cn-origin-ai .cn-echo-prompt { color: var(--cn-ai); }
+.cn-output { color: var(--cn-fg); }
+.cn-value { color: var(--cn-val); }
+.cn-message { color: var(--cn-msg); }
+.cn-warning { color: var(--cn-warn); }
+.cn-error { color: var(--cn-err); font-weight: 600; }
+.cn-note { color: var(--cn-muted); font-style: italic; }
+
+.cn-console-inputrow {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 4px 8px;
+  border-top: 1px solid var(--cn-border);
+  background: var(--cn-input-bg);
+}
+.cn-console-prompt { color: var(--cn-echo); font-weight: 700; padding-top: 4px; }
+.cn-console-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  resize: vertical;
+  min-height: 2.4em;
+  max-height: 30vh;
+  font: inherit;
+  color: var(--cn-fg);
+  background: var(--cn-bg);
+  border: 1px solid var(--cn-border);
+  border-radius: 3px;
+  padding: 3px 6px;
+}
+.cn-console-run { align-self: stretch; }
+
+/* keep page content reachable while the console is open (optional nicety) */
+body.cn-console-open { padding-bottom: 32vh; }
+body.cn-console-min { padding-bottom: 40px; }
+
+/* dark mode: the app toggles body.dark-mode (server.R theme_toggle) */
+body.dark-mode .collabnet-console {
+  --cn-bg: #1e1f22;
+  --cn-fg: #e6e6e6;
+  --cn-header-bg: #2b2d31;
+  --cn-border: #45484f;
+  --cn-muted: #9aa0a6;
+  --cn-echo: #7cb7ff;
+  --cn-ai: #c39bff;
+  --cn-msg: #e2d36b;
+  --cn-warn: #ffb15c;
+  --cn-err: #ff6b6b;
+  --cn-val: #e6e6e6;
+  --cn-input-bg: #25272b;
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.6);
+}
+body.dark-mode .collabnet-console textarea.cn-console-input { background: var(--cn-bg); color: var(--cn-fg); border-color: var(--cn-border); }
+
+/* mobile */
+@media (max-width: 768px) {
+  .collabnet-console { font-size: 11px; }
+  .collabnet-console.is-normal { height: 40vh; }
+  .collabnet-console.is-maximized { height: 85vh; }
+  .cn-btn-label { display: none; }
+  .cn-console-header { padding: 3px 6px; gap: 4px; }
+  .cn-console-output { padding: 4px 6px; }
+  body.cn-console-open { padding-bottom: 40vh; }
+}
+
+/* D2-A3: non-blocking "R is busy..." heartbeat banner (collabnet-session-guard.js) */
+.collabnet-r-busy { position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: 2147483000;
+  background: #fff8e1; color: #5d4200; border: 1px solid #e0b252; border-radius: 4px; padding: 6px 12px;
+  font-size: 14px; box-shadow: 0 2px 6px rgba(0,0,0,.2); max-width: calc(100vw - 24px); }
+#collabnet-session-ended button { margin: 4px; }

@@ -36,42 +36,133 @@ suppressPackageStartupMessages({
 })
 
 
+
+# -----------------------------------------------------------------------------
+# P0-5: community detection.
+# algorithm "leiden" (default; modularity objective, weighted, iterated to
+# convergence) or "louvain". Falls back to Louvain with a note if
+# cluster_leiden is unavailable (igraph < 1.3).
+# -----------------------------------------------------------------------------
+cn_detect_communities <- function(g, algorithm = "leiden", resolution = 1, seed = 42L) {
+  algorithm <- tolower(algorithm %||% "leiden")
+  note <- NULL
+  w <- igraph::E(g)$weight
+  if (algorithm == "leiden" && !exists("cluster_leiden", envir = asNamespace("igraph"))) {
+    algorithm <- "louvain"; note <- "cluster_leiden unavailable in this igraph build; fell back to Louvain"
+  }
+  cl <- tryCatch(with_seed(seed, switch(algorithm,
+    leiden  = igraph::cluster_leiden(g, objective_function = "modularity", weights = w,
+                                     resolution_parameter = resolution, n_iterations = -1),
+    louvain = igraph::cluster_louvain(g, weights = w, resolution = resolution),
+    stop("unknown community algorithm '", algorithm, "'"))),
+    error = function(e) { note <<- paste("community detection failed:", conditionMessage(e)); NULL })
+  if (is.null(cl)) return(list(membership = NULL, modularity = NA_real_, algorithm = algorithm, note = note))
+  memb <- as.integer(igraph::membership(cl))
+  q <- tryCatch(igraph::modularity(g, memb, weights = w, resolution = resolution),
+                error = function(e) NA_real_)
+  list(membership = memb, modularity = q,
+       algorithm = if (algorithm == "leiden") "Leiden" else "Louvain", note = note)
+}
+
+# Stability of the partition across k seeds: mean pairwise adjusted Rand index.
+cn_community_stability <- function(g, k = 10L, algorithm = "leiden", resolution = 1,
+                                   seeds = seq_len(k)) {
+  ms <- lapply(seeds, function(s) cn_detect_communities(g, algorithm, resolution, s)$membership)
+  ms <- Filter(Negate(is.null), ms)
+  if (length(ms) < 2L) return(list(mean_ari = NA_real_, n_runs = length(ms)))
+  pr <- utils::combn(length(ms), 2)
+  ari <- apply(pr, 2, function(ij) igraph::compare(ms[[ij[1]]], ms[[ij[2]]], method = "adjusted.rand"))
+  list(mean_ari = mean(ari), min_ari = min(ari), n_runs = length(ms),
+       n_communities = vapply(ms, function(m) length(unique(m)), 1L))
+}
+
+# -----------------------------------------------------------------------------
+# Run expr with a local RNG seed, restoring the caller's .Random.seed (or its
+# absence) afterwards, so the engine never mutates global RNG state.
+# -----------------------------------------------------------------------------
+# P0-8a (engine part): author names are untrusted dataset strings; visNetwork renders node `title` tooltips as
+# HTML, so escape them before interpolation (base R, no htmltools dependency in the engine).
+cn_escape_html <- function(x) {
+  x <- as.character(x)
+  x <- gsub("&", "&amp;", x, fixed = TRUE); x <- gsub("<", "&lt;", x, fixed = TRUE); x <- gsub(">", "&gt;", x, fixed = TRUE)
+  x <- gsub("\"", "&quot;", x, fixed = TRUE); gsub("'", "&#39;", x, fixed = TRUE)
+}
+
+with_seed <- function(seed, expr) {
+  genv <- globalenv()
+  had  <- exists(".Random.seed", envir = genv, inherits = FALSE)
+  old  <- if (had) get(".Random.seed", envir = genv, inherits = FALSE) else NULL
+  on.exit({
+    if (had) assign(".Random.seed", old, envir = genv)
+    else if (exists(".Random.seed", envir = genv, inherits = FALSE))
+      rm(".Random.seed", envir = genv)
+  }, add = TRUE)
+  set.seed(seed)
+  expr
+}
+
 # -----------------------------------------------------------------------------
 # Smart per-row delimiter splitting for multi-value columns (Authors, Keywords, etc.)
 # Seamlessly handles delimiter variations (e.g. Scopus ';' vs CrossRef/ORCiD ',').
 # -----------------------------------------------------------------------------
 cn_split_multivalue <- function(raw, target_delim = ",") {
   if (is.null(raw) || length(raw) == 0) return(list())
-  
-  is_standard_delim <- is.null(target_delim) || 
-                       !nzchar(trimws(target_delim)) || 
+
+  is_standard_delim <- is.null(target_delim) ||
+                       !nzchar(trimws(target_delim)) ||
                        grepl("[,;]", target_delim)
-  
-  if (is_standard_delim) {
-    # Per-row smart splitting:
-    # 1. If row contains ';', split on ';' (Scopus standard, keeps "Last, First" intact)
-    # 2. Else if row contains ',', split on ',' (CrossRef / ORCiD / RIS standard)
-    # 3. Otherwise treat as single entity
-    lapply(raw, function(x) {
+
+  clean <- function(res) { res <- trimws(res); res[nzchar(res)] }
+
+  if (!is_standard_delim) {
+    return(lapply(raw, function(x) {
       if (is.na(x) || !nzchar(trimws(x))) return(character(0))
-      if (grepl(";", x, fixed = TRUE)) {
-        res <- strsplit(x, ";", fixed = TRUE)[[1]]
-      } else if (grepl(",", x, fixed = TRUE)) {
-        res <- strsplit(x, ",", fixed = TRUE)[[1]]
-      } else {
-        res <- x
-      }
-      res <- trimws(res)
-      res[nzchar(res)]
-    })
-  } else {
-    lapply(raw, function(x) {
-      if (is.na(x) || !nzchar(trimws(x))) return(character(0))
-      res <- strsplit(x, target_delim, fixed = TRUE)[[1]]
-      res <- trimws(res)
-      res[nzchar(res)]
-    })
+      clean(strsplit(x, target_delim, fixed = TRUE)[[1]])
+    }))
   }
+
+  # P0-6: decide per *column*, not per row. A row without ';' in a column
+  # where ';' is the majority separator is a single "Last, First" record
+  # ("Smith, J.") and must not be split on its comma. In comma columns we
+  # re-pair flattened "Last, Initials" sequences and keep a lone
+  # "Surname, Firstname" record intact.
+  raw <- as.character(raw)
+  nonempty <- !is.na(raw) & nzchar(trimws(raw))
+  has_semi <- nonempty & grepl(";", raw, fixed = TRUE)
+  has_any  <- nonempty & grepl("[,;]", raw)
+  semi_col <- identical(target_delim, ";") ||
+              (any(has_any) && sum(has_semi) >= 0.5 * sum(has_any))
+
+  initials_re <- "^(\\p{Lu}\\.?[ -]?){1,4}$"
+  one_word    <- function(z) !grepl("\\s", z)
+  # tokens from comma rows in this column: are names typically multi-word?
+  multiword_col <- local({
+    cr <- raw[nonempty & !has_semi & grepl(",", raw, fixed = TRUE)]
+    tl <- lapply(strsplit(utils::head(cr, 2000L), ",", fixed = TRUE), function(z) { z <- trimws(z); z[nzchar(z)] })
+    # ignore the ambiguous rows themselves (two one-word tokens) and initials
+    tl <- tl[!vapply(tl, function(z) length(z) == 2L && all(one_word(z)), logical(1))]
+    tk <- unlist(tl)
+    tk <- tk[!grepl(initials_re, tk, perl = TRUE)]
+    length(tk) > 0 && mean(!one_word(tk)) >= 0.5
+  })
+
+  lapply(seq_along(raw), function(r) {
+    x <- raw[r]
+    if (!nonempty[r]) return(character(0))
+    if (has_semi[r]) return(clean(strsplit(x, ";", fixed = TRUE)[[1]]))
+    if (semi_col || !grepl(",", x, fixed = TRUE)) return(clean(x))
+    parts <- clean(strsplit(x, ",", fixed = TRUE)[[1]])
+    np <- length(parts)
+    if (np >= 2L && np %% 2L == 0L) {
+      ev <- parts[seq(2L, np, by = 2L)]
+      od <- parts[seq(1L, np, by = 2L)]
+      if (all(grepl(initials_re, ev, perl = TRUE)) && all(one_word(od) | grepl("-", od)))
+        return(paste(od, ev, sep = ", "))                       # Last, I. pairs
+      if (np == 2L && all(one_word(parts)) && multiword_col)
+        return(paste(parts, collapse = ", "))                   # Surname, Firstname
+    }
+    parts
+  })
 }
 
 
@@ -85,12 +176,92 @@ cn_split_multivalue <- function(raw, target_delim = ",") {
 #   label character, display label per code
 #   n_ent integer, number of distinct entities
 # -----------------------------------------------------------------------------
-cn_tokenise <- function(df, target_col, target_delim = ",", case_fold = TRUE) {
+# -----------------------------------------------------------------------------
+# P1-1: author identity. Key nodes on a persistent author ID when one is available (ORCID iD, OpenAlex author ID,
+# Scopus author ID, positionally aligned with the author list), otherwise on a normalised name:
+#   "exact"      legacy: lower-case + trailing punctuation stripped (pre-6B behaviour)
+#   "normalised" accent folding, case/whitespace/punctuation normalisation, "Last, First" vs "First Last" and
+#                "Surname I.J." order reconciliation; given names reduced to initials only when they ARE initials
+#   "initials"   surname + first initial (merges "Smith J.A." with "Smith J." and "John Smith"; may merge homonyms)
+# Base R only (webR-safe): accent folding via an explicit chartr table, iconv TRANSLIT as a fallback.
+# -----------------------------------------------------------------------------
+CN_ACCENT_FROM <- "\u00e0\u00e1\u00e2\u00e3\u00e4\u00e5\u0101\u0103\u0105\u00e7\u0107\u010d\u010f\u00e8\u00e9\u00ea\u00eb\u0113\u0117\u0119\u011b\u011f\u00ec\u00ed\u00ee\u00ef\u012b\u0131\u0142\u00f1\u0144\u0148\u00f2\u00f3\u00f4\u00f5\u00f6\u00f8\u014d\u0151\u0155\u0159\u015b\u0161\u015f\u0163\u0165\u00f9\u00fa\u00fb\u00fc\u016b\u016f\u0171\u00fd\u00ff\u017a\u017c\u017e"
+CN_ACCENT_TO   <- "aaaaaaaaacccdeeeeeeeegiiiiiilnnnoooooooorrsssttuuuuuuuyyzzz"
+cn_fold_accents <- function(x) {
+  x <- tolower(enc2utf8(as.character(x)))
+  x <- gsub("ß", "ss", x, fixed = TRUE); x <- gsub("æ", "ae", x, fixed = TRUE); x <- gsub("œ", "oe", x, fixed = TRUE)
+  x <- chartr(CN_ACCENT_FROM, CN_ACCENT_TO, x)
+  if (any(grepl("[^\\x01-\\x7f]", x, perl = TRUE))) {            # anything left: best-effort transliteration
+    y <- suppressWarnings(iconv(x, "UTF-8", "ASCII//TRANSLIT", sub = ""))
+    x <- ifelse(is.na(y), x, tolower(y))
+  }
+  x
+}
+CN_SURNAME_PARTICLES <- c("van", "von", "der", "den", "de", "del", "della", "di", "da", "dos", "das", "du", "la", "le", "ter", "ten", "bin", "al", "el")
+cn_name_parts <- function(ent) {
+  x <- cn_fold_accents(ent)
+  x <- gsub("[‐-―-]", " ", x, perl = TRUE)             # hyphens / dashes -> space
+  has_comma <- grepl(",", x, fixed = TRUE)
+  sur <- character(length(x)); giv <- character(length(x))
+  sur[has_comma] <- sub(",.*$", "", x[has_comma]); giv[has_comma] <- sub("^[^,]*,", "", x[has_comma])
+  nc <- which(!has_comma)
+  if (length(nc)) {
+    toks <- strsplit(trimws(gsub("[[:space:]]+", " ", gsub("\\.", ". ", x[nc]))), " ", fixed = TRUE)
+    for (k in seq_along(nc)) {
+      t <- toks[[k]]; t <- t[nzchar(t)]
+      if (length(t) <= 1L) { sur[nc[k]] <- paste(t, collapse = ""); next }
+      is_init <- grepl("^[a-z]{1,2}\\.?$", t)                     # "j." / "ja" style tokens
+      n <- length(t); r <- n
+      while (r >= 1L && is_init[r]) r <- r - 1L                     # trailing run of initials
+      if (r < n && r >= 1L) {                                       # Scopus "Surname [Surname2] I.J."
+        sur[nc[k]] <- paste(t[seq_len(r)], collapse = " "); giv[nc[k]] <- paste(t[(r + 1L):n], collapse = " ")
+      } else {                                                      # "First [Middle] [particles] Last"
+        j <- n
+        while (j > 2L && t[j - 1L] %in% CN_SURNAME_PARTICLES) j <- j - 1L
+        sur[nc[k]] <- paste(t[j:n], collapse = " "); giv[nc[k]] <- paste(t[seq_len(j - 1L)], collapse = " ")
+      }
+    }
+  }
+  clean <- function(z) trimws(gsub("[[:space:]]+", " ", gsub("[^a-z0-9 ]", " ", z)))
+  sur <- gsub(" ", "", clean(sur)); giv <- clean(gsub("\\.", ". ", giv))
+  gtok <- strsplit(giv, " ", fixed = TRUE)
+  initials_only <- vapply(gtok, function(t) length(t) > 0L && all(nchar(t[nzchar(t)]) <= 2L), logical(1))
+  inits <- vapply(gtok, function(t) paste(substr(t[nzchar(t)], 1L, 1L), collapse = ""), "")
+  list(surname = sur, given = gsub(" ", "", giv), initials = inits, initials_only = initials_only)
+}
+cn_identity_key <- function(ent, policy = c("normalised", "exact", "initials"), ids = NULL) {
+  policy <- match.arg(policy)
+  if (policy == "exact") {
+    key <- trimws(gsub("[.;:,]+$", "", tolower(ent)))
+    reason <- rep("exact (case/trailing punctuation)", length(ent))
+  } else {
+    p <- cn_name_parts(ent)
+    given <- if (policy == "initials") substr(p$initials, 1L, 1L) else ifelse(p$initials_only, p$initials, p$given)
+    key <- ifelse(nzchar(p$surname), paste0(p$surname, "|", given), trimws(tolower(ent)))
+    reason <- rep(if (policy == "initials") "name: surname + first initial" else "name: normalised (accents, punctuation, order)", length(ent))
+  }
+  if (!is.null(ids)) {
+    ids <- trimws(as.character(ids)); use <- !is.na(ids) & nzchar(ids)
+    key[use] <- paste0("id:", tolower(ids[use])); reason[use] <- "author ID"
+  }
+  list(key = key, reason = reason)
+}
+# Positional author IDs (e.g. Scopus "Author(s) ID", "ORCIDs", "OpenAlex_IDs"): one ID list per row, aligned with the
+# author list; rows whose ID count differs from the author count are ignored (fall back to names).
+CN_ID_COLUMNS <- c("Author(s) ID", "Author IDs", "author_ids", "ORCIDs", "orcids", "OpenAlex_IDs", "openalex_author_ids")
+
+cn_tokenise <- function(df, target_col, target_delim = ",", case_fold = TRUE,
+                        identity_policy = "normalised", id_col = NULL) {
 
   if (is.null(df) || !nrow(df) || !target_col %in% colnames(df)) return(NULL)
 
   raw <- as.character(df[[target_col]])
   pid <- seq_along(raw)
+  # Name normalisation / ID keying only make sense for person columns; keywords, sources etc. stay "exact".
+  is_person_col <- grepl("author|name|orcid|person|inventor", target_col, ignore.case = TRUE)
+  if (!is_person_col) { identity_policy <- "exact"; id_col <- NA_character_ }
+  if (is.null(id_col)) { hit <- intersect(CN_ID_COLUMNS, colnames(df)); id_col <- if (length(hit)) hit[1] else NA_character_ }
+  id_raw <- if (!is.na(id_col) && id_col %in% colnames(df)) as.character(df[[id_col]]) else NULL
 
   keep <- !is.na(raw) & nzchar(trimws(raw))
   raw  <- raw[keep]
@@ -99,6 +270,11 @@ cn_tokenise <- function(df, target_col, target_delim = ",", case_fold = TRUE) {
 
   # Smart splitting handles semicolon and comma variations seamlessly
   pieces <- cn_split_multivalue(raw, target_delim)
+  ids <- NULL
+  if (!is.null(id_raw)) {
+    idp <- lapply(strsplit(ifelse(is.na(id_raw[keep]), "", id_raw[keep]), "[;|]"), trimws)
+    ids <- unlist(Map(function(a, b) if (length(b) == length(a)) b else rep(NA_character_, length(a)), pieces, idp), use.names = FALSE)
+  }
   pid    <- rep.int(pid, lengths(pieces))
   ent    <- unlist(pieces, use.names = FALSE)
 
@@ -106,13 +282,13 @@ cn_tokenise <- function(df, target_col, target_delim = ",", case_fold = TRUE) {
   ok  <- !is.na(ent) & nzchar(ent)
   ent <- ent[ok]
   pid <- pid[ok]
+  if (!is.null(ids)) ids <- ids[ok]
   if (!length(ent)) return(NULL)
 
-  # Canonical identity key. Case folding plus trailing-punctuation removal
-  # merges "SMITH, J", "Smith, J." and "smith, j" into one node instead of
-  # three, which str_to_title() alone did not do.
-  key <- if (case_fold) tolower(ent) else ent
-  key <- trimws(gsub("[.;:,]+$", "", key))
+  # P1-1: canonical identity key (author ID if aligned, else normalised name; see cn_identity_key()).
+  if (!isTRUE(case_fold)) identity_policy <- "exact"
+  idk <- cn_identity_key(ent, identity_policy, ids)
+  key <- idk$key
 
   f     <- factor(key)
   code  <- as.integer(f)
@@ -133,7 +309,15 @@ cn_tokenise <- function(df, target_col, target_delim = ",", case_fold = TRUE) {
     code  <- code[dedup]
   }
 
-  list(pid = pid, code = code, label = label, n_ent = n_ent)
+  # Merge/split review table: which raw strings were mapped onto which node, and why.
+  rv <- unique(data.frame(raw = ent, key = key, reason = idk$reason, stringsAsFactors = FALSE))
+  rv$node <- label[match(rv$key, levels(f))]
+  nraw <- table(rv$key); rv$n_raw_forms <- as.integer(nraw[rv$key])
+  rv <- rv[order(-rv$n_raw_forms, rv$key, rv$raw), c("node", "raw", "key", "reason", "n_raw_forms")]
+  rownames(rv) <- NULL
+
+  list(pid = pid, code = code, label = label, n_ent = n_ent, identity = rv, identity_policy = identity_policy,
+       id_col = if (!is.null(id_raw)) id_col else NA_character_)
 }
 
 
@@ -263,6 +447,17 @@ cn_project <- function(pid, code, n_ent,
       cnt = c(edges$cnt, hub_edges$cnt),
       w   = c(edges$w,   hub_edges$w)
     )
+    # C-4: in clique mode a pair that co-authored both a normal and an oversize paper got TWO parallel edges
+    # (inflating degree, k-core, density). Merge duplicates: counts and Newman weights are additive over papers.
+    # (Jaccard weights are not additive; for weight_scheme = "jaccard" the merged value is an approximation.)
+    if (oversize_mode == "clique" && length(edges$i)) {
+      key <- paste(edges$i, edges$j)
+      if (anyDuplicated(key)) {
+        f <- factor(key, levels = unique(key)); first <- !duplicated(key)
+        edges <- list(i = edges$i[first], j = edges$j[first],
+                      cnt = as.numeric(tapply(edges$cnt, f, sum)), w = as.numeric(tapply(edges$w, f, sum)))
+      }
+    }
   }
 
   list(
@@ -337,10 +532,16 @@ cn_layout <- function(g, engine = "auto", fr_iterations = 500L, seed = 42L) {
   if (nv == 0L) return(matrix(numeric(0), ncol = 2))
   if (nv == 1L) return(matrix(c(0, 0), ncol = 2))
 
-  set.seed(seed)   # stable coordinates across re-renders
+  # P0-5: local seed - stable coordinates without touching global RNG state.
+  with_seed(seed, cn_layout_impl(g, nv, engine, fr_iterations))
+}
 
+cn_layout_impl <- function(g, nv, engine, fr_iterations) {
   if (identical(engine, "auto")) {
-    engine <- if (nv <= 1500L) "fr" else if (nv <= 30000L) "drl" else "grid"
+    # C2-1: in the browser app (option set by server.R) large graphs are laid
+    # out by the JS worker pool, so R only produces a cheap placeholder.
+    engine <- if (isTRUE(getOption("collabnet.worker_layout")) && nv >= CN_WORKER_LAYOUT_MIN_NODES) "worker"
+              else if (nv <= 1500L) "fr" else if (nv <= 30000L) "drl" else "grid"
   }
 
   lay_fun <- switch(
@@ -356,6 +557,9 @@ cn_layout <- function(g, engine = "auto", fr_iterations = 500L, seed = 42L) {
     drl  = function(gg) igraph::layout_with_drl(gg, options = igraph::drl_defaults$default),
     kk   = function(gg) igraph::layout_with_kk(gg),
     grid = function(gg) igraph::layout_on_grid(gg),
+    # C2-1: "worker" = the browser Web Worker computes the final layout; the
+    # server only sends a cheap placeholder grid (replaced client-side).
+    worker = function(gg) igraph::layout_on_grid(gg),
     function(gg) igraph::layout_nicely(gg)
   )
 
@@ -386,7 +590,7 @@ cn_layout <- function(g, engine = "auto", fr_iterations = 500L, seed = 42L) {
 #
 # Returns list(nodes, edges, graph, stats).
 # =============================================================================
-build_collaboration_network <- function(
+.cn_build_collaboration_network_impl <- function(
     df,
     authors_per_pub    = c(1, 100),
     node_freq_range    = c(1, Inf),
@@ -408,6 +612,13 @@ build_collaboration_network <- function(
     layout_engine      = "auto",
     build_tooltips     = TRUE,
     verbose            = FALSE,
+    drop_isolates      = FALSE,
+    betweenness_approx = NULL,
+    community_algorithm = "leiden",
+    resolution         = 1,
+    seed               = 42L,
+    identity_policy    = "normalised",
+    id_col             = NULL,
     ...
 ) {
 
@@ -418,7 +629,7 @@ build_collaboration_network <- function(
   main_authors_list <- main_authors_list[!is.na(main_authors_list) &
                                            nzchar(trimws(main_authors_list))]
 
-  tk <- cn_tokenise(df, target_col, target_delim)
+  tk <- cn_tokenise(df, target_col, target_delim, identity_policy = identity_policy, id_col = id_col)
   if (is.null(tk)) return(empty)
 
   pid   <- tk$pid
@@ -508,28 +719,51 @@ build_collaboration_network <- function(
   }
   if (!length(e$i)) return(empty)
 
+  # --- solo-only authors -----------------------------------------------------
+  # P0-6: entities that only ever appear on single-entity publications have
+  # no edges but are real members of the corpus; keep them as isolates unless
+  # drop_isolates = TRUE.
+  solo_codes <- integer(0)
+  if (!isTRUE(drop_isolates)) {
+    kp <- tabulate(match(pid, sort(unique(pid))))[match(pid, sort(unique(pid)))]
+    has_co <- tabulate(code[kp >= 2L], nbins = n_ent) > 0L
+    solo_codes <- setdiff(unique(code[kp == 1L]), which(has_co))
+    solo_codes <- setdiff(solo_codes, c(e$i, e$j))
+  }
+
   # --- build the igraph object once and reuse it for everything -------------
-  used  <- sort(unique(c(e$i, e$j)))
+  used  <- sort(unique(c(e$i, e$j, solo_codes)))
   remap <- integer(n_all); remap[used] <- seq_along(used)
 
-  g <- igraph::graph_from_edgelist(
-    cbind(remap[e$i], remap[e$j]), directed = FALSE)
+  g <- igraph::make_empty_graph(n = length(used), directed = FALSE)
+  g <- igraph::add_edges(g, as.vector(rbind(remap[e$i], remap[e$j])))
   igraph::V(g)$name   <- label[used]
   igraph::E(g)$weight <- e$w
   igraph::E(g)$count  <- e$cnt
 
   # --- component / cluster-size window --------------------------------------
-  if (!is.null(cluster_size_range)) {
+  # P0-1: this is a *display* filter only. The default c(1, Inf) (or NULL)
+  # keeps every component, including the giant one. When the user does set a
+  # finite window and it removes vertices, the counts are recorded in
+  # stats$component_filter so the UI can warn and the methods log is honest.
+  component_filter <- list(range = if (is.null(cluster_size_range)) c(1, Inf) else cluster_size_range,
+                           active = FALSE, removed_nodes = 0L, removed_components = 0L)
+  if (!is.null(cluster_size_range) && length(cluster_size_range) >= 1) {
     comp <- igraph::components(g)
-    clo  <- cluster_size_range[1]
-    chi  <- if (length(cluster_size_range) >= 2 && is.finite(cluster_size_range[2]))
-              cluster_size_range[2] else max(comp$csize)
+    clo  <- suppressWarnings(as.numeric(cluster_size_range[1]))
+    if (!is.finite(clo)) clo <- 1
+    chi  <- if (length(cluster_size_range) >= 2) suppressWarnings(as.numeric(cluster_size_range[2])) else Inf
+    if (is.na(chi)) chi <- Inf
     good <- which(comp$csize >= clo & comp$csize <= chi)
     keepv <- comp$membership %in% good
     if (length(main_authors_list)) {
       keepv <- keepv | cn_match_targets(igraph::V(g)$name, main_authors_list)
     }
-    if (any(keepv) && !all(keepv)) {
+    if (!all(keepv)) {
+      component_filter$active <- TRUE
+      component_filter$removed_nodes <- sum(!keepv)
+      component_filter$removed_components <- length(unique(comp$membership[!keepv]))
+      component_filter$removed_largest <- !any(keepv[comp$membership == which.max(comp$csize)])
       g <- igraph::induced_subgraph(g, which(keepv))
     }
   }
@@ -543,21 +777,27 @@ build_collaboration_network <- function(
     ordv  <- order(prot, str_v, decreasing = TRUE)[seq_len(max_nodes)]
     n_node_capped <- igraph::vcount(g) - max_nodes
     g <- igraph::induced_subgraph(g, sort(ordv))
-    g <- igraph::delete_vertices(g, which(igraph::degree(g) == 0L))
+    if (isTRUE(drop_isolates)) g <- igraph::delete_vertices(g, which(igraph::degree(g) == 0L))
   }
   if (igraph::vcount(g) == 0L) return(empty)
 
   # --- communities ----------------------------------------------------------
+  # P0-5: Leiden (modularity objective) is the default; Louvain optional.
+  # Both run under a local seed so the same inputs give the same partition
+  # and the caller's RNG state is untouched.
   memb <- rep(1L, igraph::vcount(g))
   modularity_score <- NA_real_
+  community_info <- list(algorithm = if (isTRUE(detect_communities)) community_algorithm else "none",
+                         resolution = resolution, seed = seed, note = NULL)
   if (isTRUE(detect_communities) && igraph::ecount(g) > 0L) {
-    cl <- tryCatch(
-      igraph::cluster_louvain(g, weights = igraph::E(g)$weight),
-      error = function(err) NULL)
-    if (!is.null(cl)) {
-      memb <- as.integer(igraph::membership(cl))
-      modularity_score <- suppressWarnings(igraph::modularity(cl))
+    cd <- cn_detect_communities(g, algorithm = community_algorithm,
+                                resolution = resolution, seed = seed)
+    if (!is.null(cd$membership)) {
+      memb <- cd$membership
+      modularity_score <- cd$modularity
     }
+    community_info$algorithm <- cd$algorithm
+    community_info$note <- cd$note
   }
 
   # --- centralities ---------------------------------------------------------
@@ -571,9 +811,16 @@ build_collaboration_network <- function(
   eig    <- rep(NA_real_, nv)
   coren  <- rep(NA_integer_, nv)
   is_cut <- rep(FALSE, nv)
+  constr <- rep(NA_real_, nv); effsize <- rep(NA_real_, nv)
+  betweenness_method <- "not computed"
 
   if (isTRUE(compute_centrality)) {
     coren <- igraph::coreness(g)
+    # P2-3: structural holes. Burt's constraint (tie strength = Newman weight) and effective size (Borgatti 1997:
+    # degree - 2 * ties among alters / degree, unweighted; NA for isolates). count_triangles(v) = ties among v's alters.
+    constr <- tryCatch(as.numeric(igraph::constraint(g, weights = igraph::E(g)$weight)), error = function(err) rep(NA_real_, nv))
+    tri <- tryCatch(as.numeric(igraph::count_triangles(g)), error = function(err) rep(NA_real_, nv))
+    effsize <- ifelse(deg > 0, deg - 2 * tri / pmax(deg, 1), NA_real_)
     eig <- tryCatch(
       igraph::eigen_centrality(g, weights = igraph::E(g)$weight)$vector,
       error = function(err) rep(NA_real_, nv))
@@ -588,17 +835,15 @@ build_collaboration_network <- function(
       igraph::harmonic_centrality(g, weights = 1 / pmax(igraph::E(g)$weight, 1e-9),
                                   normalized = TRUE),
       error = function(err) rep(NA_real_, nv))
-    # Exact betweenness is O(V*E). Above ~2500 vertices use the cutoff
-    # approximation, which is what makes this usable on HEP-scale graphs.
-    btw <- tryCatch({
-      if (nv <= 2500L) {
-        igraph::betweenness(g, weights = 1 / pmax(igraph::E(g)$weight, 1e-9),
-                            normalized = TRUE)
-      } else {
-        igraph::betweenness(g, weights = 1 / pmax(igraph::E(g)$weight, 1e-9),
-                            cutoff = 4, normalized = TRUE)
-      }
-    }, error = function(err) rep(NA_real_, nv))
+    # P0-3: exact Brandes betweenness (distances 1/w) at every size. The old
+    # silent cutoff = 4 above 2,500 vertices is gone. An approximation is only
+    # used when the caller opts in via betweenness_approx and is then labelled
+    # in stats$betweenness_method.
+    btw_res <- cn_betweenness(g, approx = betweenness_approx)
+    btw <- btw_res$values
+    # P0-7: isolates (kept since P0-6) have undefined closeness (NaN); define 0.
+    clo[is.nan(clo)] <- 0
+    betweenness_method <- btw_res$method
     # Articulation points (critical bottleneck cut-vertices)
     cut_v_indices <- tryCatch(igraph::articulation_points(g), error = function(e) integer(0))
     if (length(cut_v_indices) > 0) {
@@ -607,7 +852,7 @@ build_collaboration_network <- function(
   }
 
   # --- layout ---------------------------------------------------------------
-  coords <- cn_layout(g, engine = layout_engine, fr_iterations = fr_iterations)
+  coords <- cn_layout(g, engine = layout_engine, fr_iterations = fr_iterations, seed = seed)
 
   # --- assemble the visNetwork frames --------------------------------------
   ids     <- igraph::V(g)$name
@@ -625,6 +870,8 @@ build_collaboration_network <- function(
     pagerank          = round(pr, 5),
     eigen_centrality  = round(eig, 4),
     coreness          = as.integer(coren),
+    constraint        = round(constr, 5),
+    effective_size    = round(effsize, 4),
     is_cut_vertex     = as.logical(is_cut),
     community         = as.integer(memb),
     total_connections = as.integer(deg),
@@ -640,7 +887,7 @@ build_collaboration_network <- function(
     nodes$title <- paste0(
       "<div style='padding:8px;border-radius:5px;background:#fff;color:#111;",
       "box-shadow:1px 1px 5px rgba(0,0,0,.2);font-size:12px;'>",
-      "<b>", nodes$label, "</b><br>",
+      "<b>", cn_escape_html(nodes$label), "</b><br>",
       "Degree: ", nodes$degree, "<br>",
       "Weighted strength: ", sprintf("%.2f", nodes$strength), "<br>",
       "Betweenness: ", sprintf("%.4f", nodes$betweenness), "<br>",
@@ -680,7 +927,20 @@ build_collaboration_network <- function(
     n_hub_nodes        = proj$n_hubs,
     weight_scheme      = weight_scheme,
     oversize_mode      = oversize_mode,
+    component_filter   = component_filter,
+    drop_isolates      = isTRUE(drop_isolates),
+    n_isolates         = sum(igraph::degree(g) == 0L),
+    betweenness_method = betweenness_method,
     modularity         = modularity_score,
+    community_algorithm = community_info$algorithm,
+    community_resolution = community_info$resolution,
+    community_note     = community_info$note,
+    seed               = seed,
+    identity_policy    = tk$identity_policy,
+    identity_id_column = tk$id_col,
+    identity_raw_forms = nrow(tk$identity),
+    identity_merged_nodes = sum(!duplicated(tk$identity$key[tk$identity$n_raw_forms > 1L])),
+    identity_merged_raw_forms = sum(tk$identity$n_raw_forms > 1L),
     n_communities      = length(unique(memb)),
     build_secs         = round(as.numeric(difftime(Sys.time(), t0, units = "secs")), 3)
   )
@@ -689,7 +949,7 @@ build_collaboration_network <- function(
     sprintf("build_collaboration_network(): %d nodes / %d edges in %.2fs (%s weighting)",
             stats$n_nodes, stats$n_edges, stats$build_secs, weight_scheme))
 
-  list(nodes = nodes, edges = edges, graph = g, stats = stats)
+  list(nodes = nodes, edges = edges, graph = g, stats = stats, identity = tk$identity)
 }
 
 
@@ -755,7 +1015,7 @@ cn_collapse_communities <- function(net, min_size = 2L) {
     members = sizes,
     group = "Community",
     x = coords[, 1], y = coords[, 2],
-    title = paste0("<b>", igraph::V(cg)$name, "</b><br>", sizes, " members"),
+    title = paste0("<b>", cn_escape_html(igraph::V(cg)$name), "</b><br>", sizes, " members"),
     stringsAsFactors = FALSE
   )
   el <- igraph::as_edgelist(cg, names = TRUE)
@@ -792,6 +1052,145 @@ cn_expand_community <- function(net, community_id) {
 
 # =============================================================================
 # Graph-level metrics, for a "Network Metrics" panel.
+
+# -----------------------------------------------------------------------------
+# P0-2: path-length conventions.
+#
+# Edge weights in this engine are *tie strengths* (larger = closer), so every
+# path-based quantity must use distances 1/w - exactly what betweenness,
+# closeness and harmonic centrality use. igraph silently uses E(g)$weight as a
+# *distance* when weights = NULL, which inverted the meaning; we therefore
+# always pass weights explicitly: cn_dist_weights(g) for the weighted version
+# and NA for unweighted hop counts.
+# -----------------------------------------------------------------------------
+cn_dist_weights <- function(g) {
+  w <- igraph::E(g)$weight
+  if (is.null(w)) return(NA)
+  1 / pmax(w, 1e-9)
+}
+
+# -----------------------------------------------------------------------------
+# P0-3: betweenness centrality (normalised, distances 1/w).
+#
+# approx = NULL (default)  -> exact Brandes, any size.
+# approx = list(method = "sample", k = K, seed = S)
+#                          -> Brandes-Pich source sampling: exact dependency
+#                             accumulation from K random sources, scaled by n/K.
+#                             Explicitly opt-in and labelled "approximate".
+#                             (The former weighted-length cutoff was removed:
+#                             it discarded most paths, see Phase-2 E5.)
+# Returns list(values, method, approximate).
+# -----------------------------------------------------------------------------
+# Exact Brandes dependency accumulation from the given sources only (weighted, distances = wts).
+# Returns undirected betweenness contributions (pairs counted once, like igraph). Used by the opt-in
+# source-sampling approximation in cn_betweenness().
+cn_brandes_sources <- function(g, sources, wts, tol = 1e-9) {
+  nv <- igraph::vcount(g); el <- igraph::as_edgelist(g, names = FALSE)
+  w <- if (is.null(wts) || (length(wts) == 1L && is.na(wts))) rep(1, nrow(el)) else as.numeric(wts)
+  a <- c(el[, 1], el[, 2]); b <- c(el[, 2], el[, 1]); ww <- c(w, w)
+  bc <- numeric(nv)
+  for (s in sources) {
+    d <- as.numeric(igraph::distances(g, v = s, weights = wts))
+    ok <- is.finite(d[a]) & is.finite(d[b]) & abs(d[a] + ww - d[b]) <= tol * pmax(1, d[b])   # a is a predecessor of b
+    pa <- a[ok]; pb <- b[ok]
+    ord <- order(d, na.last = NA); ord <- ord[is.finite(d[ord])]
+    preds <- split(pa, factor(pb, levels = seq_len(nv)))
+    sigma <- numeric(nv); sigma[s] <- 1
+    for (v in ord) if (v != s) { p <- preds[[v]]; if (length(p)) sigma[v] <- sum(sigma[p]) }
+    delta <- numeric(nv)
+    for (v in rev(ord)) { p <- preds[[v]]; if (length(p) && sigma[v] > 0) delta[p] <- delta[p] + sigma[p] / sigma[v] * (1 + delta[v]) }
+    delta[s] <- 0; bc <- bc + delta
+  }
+  bc / 2   # undirected: each pair is seen from both endpoints when all sources are used
+}
+
+cn_betweenness <- function(g, approx = NULL, normalized = TRUE) {
+  nv <- igraph::vcount(g)
+  if (nv == 0L) return(list(values = numeric(0), method = "exact (Brandes, 1/w)", approximate = FALSE))
+  wts <- cn_dist_weights(g)
+  if (is.null(approx) || identical(approx$method, "exact")) {
+    v <- tryCatch(igraph::betweenness(g, weights = wts, normalized = FALSE),
+                  error = function(e) rep(NA_real_, nv))
+    meth <- "exact (Brandes, 1/w)"; apx <- FALSE
+  } else if (identical(approx$method, "sample")) {
+    # Opt-in Brandes-Pich source sampling: exact single-source dependency accumulation (Brandes 2001) from k
+    # uniformly sampled sources over the FULL graph, scaled by n/k. Unbiased for exact betweenness; the error
+    # shrinks ~ 1/sqrt(k) (see VALIDATION_AFTER.md for measured rank correlation). Labelled approximate.
+    k <- min(nv, max(1L, as.integer(approx$k %||% 200L)))
+    src <- with_seed(approx$seed %||% 42L, sample.int(nv, k))
+    v <- cn_brandes_sources(g, src, wts) * nv / k
+    meth <- sprintf("approximate (Brandes-Pich source sampling, k = %d of %d sources, 1/w)", k, nv); apx <- TRUE
+  } else {
+    stop("cn_betweenness(): unknown approx$method '", approx$method, "'")
+  }
+  if (isTRUE(normalized)) {
+    # undirected normalisation 2 / ((n-1)(n-2)); defined as 0 for n <= 2
+    # (no vertex can lie strictly between two others).
+    v <- if (nv <= 2L) rep(0, nv) else v * 2 / ((nv - 1) * (nv - 2))
+  }
+  list(values = v, method = meth, approximate = apx)
+}
+
+# Average path length over reachable pairs. Exact up to `exact_max_nodes`.
+# Returns list(value, lo, hi, estimate, n_sources).
+cn_mean_path_length <- function(g, weighted = TRUE, exact_max_nodes = 5000L,
+                                n_sources = 300L, seed = 42L) {
+  nv <- igraph::vcount(g)
+  wts <- if (weighted) cn_dist_weights(g) else NA
+  if (nv < 2L || igraph::ecount(g) == 0L)
+    return(list(value = NA_real_, lo = NA_real_, hi = NA_real_, estimate = FALSE, n_sources = 0L))
+  if (nv <= exact_max_nodes) {
+    v <- igraph::mean_distance(g, weights = wts, directed = FALSE, unconnected = TRUE)
+    return(list(value = v, lo = v, hi = v, estimate = FALSE, n_sources = nv))
+  }
+  cn_mean_path_length_sampled(g, wts, n_sources = n_sources, seed = seed)
+}
+
+# P0-4: APL estimate for large graphs. Samples k *source* vertices uniformly
+# from the full graph and computes their distances to *all* vertices (no
+# induced-subgraph sampling, which destroyed paths and biased APL upward).
+# Per-source mean distances over reachable targets are averaged, weighted by
+# reachable-target counts (ratio estimator); 95% CI by normal approximation
+# on the per-source means. Labelled "estimate" by the caller.
+cn_mean_path_length_sampled <- function(g, wts, n_sources = 300L, seed = 42L) {
+  nv <- igraph::vcount(g)
+  k  <- min(nv, max(2L, as.integer(n_sources)))
+  src <- with_seed(seed, sort(sample.int(nv, k)))
+  sums <- numeric(k); cnts <- numeric(k)
+  for (b in split(seq_len(k), ceiling(seq_len(k) / 50L))) {   # 50 x n chunks
+    D <- igraph::distances(g, v = src[b], weights = wts)
+    D[!is.finite(D)] <- NA
+    D[cbind(seq_along(b), src[b])] <- NA                     # drop self-pairs
+    sums[b] <- rowSums(D, na.rm = TRUE)
+    cnts[b] <- rowSums(!is.na(D))
+  }
+  ok <- cnts > 0
+  if (!any(ok)) return(list(value = NA_real_, lo = NA_real_, hi = NA_real_, estimate = TRUE, n_sources = k))
+  est <- sum(sums[ok]) / sum(cnts[ok])
+  m   <- sums[ok] / cnts[ok]
+  # linearised SE of the ratio estimator
+  r   <- (sums[ok] - est * cnts[ok]) / mean(cnts[ok])
+  se  <- if (sum(ok) > 1) stats::sd(r) / sqrt(sum(ok)) * sqrt(1 - sum(ok) / nv) else NA_real_
+  list(value = est, lo = est - 1.96 * se, hi = est + 1.96 * se, estimate = TRUE,
+       n_sources = sum(ok), per_source_mean = m)
+}
+
+# Weighted (1/w) or hop diameter / radius. Radius is only defined for a
+# connected graph (NA otherwise).
+cn_diameter_radius <- function(g, weighted = TRUE) {
+  wts <- if (weighted) cn_dist_weights(g) else NA
+  diam <- tryCatch(igraph::diameter(g, directed = FALSE, unconnected = TRUE, weights = wts),
+                   error = function(e) NA_real_)
+  rad <- tryCatch({
+    if (igraph::components(g)$no == 1L) {
+      ecc <- tryCatch(igraph::eccentricity(g, weights = wts),
+                      error = function(e) if (weighted) NULL else igraph::eccentricity(g))
+      if (is.null(ecc)) NA_real_ else min(ecc)
+    } else NA_real_
+  }, error = function(e) NA_real_)
+  list(diameter = diam, radius = rad)
+}
+
 # =============================================================================
 cn_network_metrics <- function(net) {
 
@@ -812,12 +1211,15 @@ cn_network_metrics <- function(net) {
     (2 * sum(seq_len(n) * x) / (n * sum(x))) - (n + 1) / n
   }
 
-  # Exact mean path length is O(V*E); sample above 1500 vertices.
-  apl <- tryCatch({
-    if (nv <= 1500L) igraph::mean_distance(g, directed = FALSE, unconnected = TRUE)
-    else igraph::mean_distance(igraph::induced_subgraph(
-      g, sample.int(nv, 1500L)), directed = FALSE, unconnected = TRUE)
-  }, error = function(e) NA_real_)
+  # P0-2: weighted (1/w) and hop path lengths, both reported and labelled.
+  apl_w <- tryCatch(cn_mean_path_length(g, weighted = TRUE),  error = function(e) list(value = NA_real_, estimate = FALSE))
+  apl_h <- tryCatch(cn_mean_path_length(g, weighted = FALSE), error = function(e) list(value = NA_real_, estimate = FALSE))
+  fmt_apl <- function(a) {
+    if (is.null(a$value) || is.na(a$value)) return("\u2014")
+    if (isTRUE(a$estimate))
+      sprintf("%.3f (estimate, 95%% CI %.3f\u2013%.3f, %d sampled sources)", a$value, a$lo, a$hi, a$n_sources)
+    else formatC(a$value, format = "f", digits = 3)
+  }
 
   # Freeman Centralizations
   centr_d <- tryCatch(igraph::centr_degree(g, normalized = TRUE)$centralization, error = function(e) NA_real_)
@@ -841,14 +1243,15 @@ cn_network_metrics <- function(net) {
       "Components", "Largest component (%)",
       "Global clustering (transitivity)",
       "Degree assortativity",
-      "Mean shortest path",
+      "Average path length (weighted, 1/w)",
+      "Average path length (hops)",
       "Mean degree", "Max degree",
       "Degree Gini (inequality)",
       "Degree Centralization (Freeman)",
       "Betweenness Centralization",
       "Closeness Centralization",
       "Critical Brokers (Cut-Vertices)",
-      "Communities (Louvain)", "Modularity",
+      sprintf("Communities (%s)", net$stats$community_algorithm %||% "Leiden"), "Modularity",
       "Mean edge weight",
       "Edges pruned by backbone filter",
       "Mega-collaborations folded to hubs"
@@ -861,7 +1264,8 @@ cn_network_metrics <- function(net) {
       fmt(100 * max(comp$csize) / nv, 1),
       fmt(igraph::transitivity(g, type = "global")),
       fmt(suppressWarnings(igraph::assortativity_degree(g, directed = FALSE))),
-      fmt(apl, 2),
+      fmt_apl(apl_w),
+      fmt_apl(apl_h),
       fmt(mean(deg), 2),
       format(max(deg), big.mark = ","),
       fmt(gini(deg)),
@@ -877,6 +1281,56 @@ cn_network_metrics <- function(net) {
     ),
     stringsAsFactors = FALSE
   )
+}
+
+# C-8 (audit High): exact Dirac / Ore check. Previously Ore was "verified" on
+# <= 500 random vertex pairs, so a single violating non-adjacent pair could be
+# missed and the graph declared "Guaranteed Hamiltonian". This helper is exact
+# for every graph it evaluates: for each vertex u, the smallest deg(u) + deg(v)
+# over non-neighbours v is attained at the lowest-degree non-neighbour, which is
+# found by scanning the degree-sorted vertex list - at most deg(u) + 2 steps.
+# Total cost O(n log n + m), memory O(n + m). Degrees are taken on the
+# simplified undirected graph (loops / parallel edges must not inflate them).
+cn_ore_dirac_exact <- function(g, max_n = 200000L) {
+  out <- list(n = 0L, dirac_met = FALSE, ore_met = FALSE, ore_min_sum = NA_integer_,
+              ore_pair = c(NA_integer_, NA_integer_), n_nonadj_pairs = NA_real_,
+              exact = FALSE, min_deg = 0L, dirac_threshold = 0L, reason = "")
+  if (is.null(g)) { out$reason <- "no graph"; return(out) }
+  nv <- igraph::vcount(g); out$n <- nv
+  if (nv < 3L) {
+    # Dirac/Ore require n >= 3; neither applies (not a proof either way).
+    out$exact <- TRUE; out$reason <- "n < 3 (theorems require n >= 3)"
+    out$dirac_threshold <- as.integer(ceiling(nv / 2))
+    return(out)
+  }
+  if (nv > max_n) { out$reason <- paste0("n = ", nv, " exceeds exact-check limit ", max_n); return(out) }
+  gs <- if (igraph::is_directed(g)) igraph::as_undirected(g, mode = "collapse") else g
+  gs <- igraph::simplify(gs, remove.multiple = TRUE, remove.loops = TRUE)
+  deg <- as.integer(igraph::degree(gs))
+  out$min_deg <- min(deg)
+  out$dirac_threshold <- as.integer(ceiling(nv / 2))
+  out$dirac_met <- out$min_deg >= out$dirac_threshold
+  out$n_nonadj_pairs <- nv * (nv - 1) / 2 - igraph::ecount(gs)
+  adj <- igraph::as_adj_list(gs, mode = "all")
+  ord <- order(deg)
+  best <- .Machine$integer.max; bu <- NA_integer_; bv <- NA_integer_
+  for (u in seq_len(nv)) {
+    k <- min(nv, deg[u] + 2L)
+    cand <- ord[seq_len(k)]
+    cand <- cand[cand != u & !(cand %in% as.integer(adj[[u]]))]
+    if (length(cand)) {
+      s <- deg[u] + deg[cand[1L]]
+      if (s < best) { best <- s; bu <- u; bv <- cand[1L] }
+    }
+  }
+  out$exact <- TRUE
+  if (is.na(bu)) {            # complete graph: Ore holds vacuously
+    out$ore_min_sum <- NA_integer_; out$ore_met <- TRUE
+  } else {
+    out$ore_min_sum <- as.integer(best); out$ore_pair <- c(bu, bv)
+    out$ore_met <- best >= nv
+  }
+  out
 }
 
 # =============================================================================
@@ -908,28 +1362,14 @@ cn_hamiltonian_diagnostics <- function(net) {
     sum(lengths(bic$edges) == 1L)
   }, error = function(e) NA_integer_)
 
-  # Dirac's condition: min degree >= nv / 2 (for nv >= 3)
-  dirac_threshold <- ceiling(nv / 2)
-  dirac_met <- (nv >= 3L && min_deg >= dirac_threshold)
-
-  # Ore's condition: deg(u) + deg(v) >= nv for all non-adjacent pairs (u, v)
-  ore_met <- FALSE
-  ore_min_sum <- NA_integer_
-  if (nv >= 3L && comp$no == 1L) {
-    ore_min_sum <- tryCatch({
-      n_samp <- min(nv * 5L, 500L)
-      u_samp <- sample.int(nv, n_samp, replace = TRUE)
-      v_samp <- sample.int(nv, n_samp, replace = TRUE)
-      diff_pairs <- (u_samp != v_samp)
-      u_samp <- u_samp[diff_pairs]
-      v_samp <- v_samp[diff_pairs]
-      are_adj <- vapply(seq_along(u_samp), function(i) igraph::are_adjacent(g, u_samp[i], v_samp[i]), logical(1))
-      non_u <- u_samp[!are_adj]
-      non_v <- v_samp[!are_adj]
-      if (length(non_u) > 0) min(deg[non_u] + deg[non_v]) else nv
-    }, error = function(e) NA_integer_)
-    if (!is.na(ore_min_sum)) ore_met <- (ore_min_sum >= nv)
-  }
+  # Dirac's / Ore's conditions (C-8): exact check over ALL non-adjacent pairs.
+  od <- tryCatch(cn_ore_dirac_exact(g), error = function(e) NULL)
+  ore_exact <- isTRUE(od$exact)
+  dirac_threshold <- if (!is.null(od)) od$dirac_threshold else ceiling(nv / 2)
+  dirac_met <- ore_exact && isTRUE(od$dirac_met)
+  ore_met   <- ore_exact && isTRUE(od$ore_met)
+  ore_min_sum <- if (ore_exact) od$ore_min_sum else NA_integer_
+  if (ore_exact && nv >= 3L) min_deg <- od$min_deg
 
   # Biconnectivity
   is_biconnected <- (comp$no == 1L && n_cut_v == 0L && nv >= 3L)
@@ -942,14 +1382,17 @@ cn_hamiltonian_diagnostics <- function(net) {
   girth_val <- tryCatch(igraph::girth(g)$girth, error = function(e) NA_real_)
 
   # Diameter & Radius
-  diam <- tryCatch(igraph::diameter(g, directed = FALSE, unconnected = TRUE), error = function(e) NA_real_)
-  rad  <- tryCatch(if (comp$no == 1L) igraph::radius(g) else NA_real_, error = function(e) NA_real_)
+  # P0-2: igraph's default would treat tie strength as a distance. Report the
+  # weighted (1/w) and the hop versions explicitly.
+  dr_w <- cn_diameter_radius(g, weighted = TRUE)
+  dr_h <- cn_diameter_radius(g, weighted = FALSE)
+  fnum <- function(x) if (is.na(x)) "-" else trimws(formatC(x, format = "fg", digits = 4))
 
   # Overall Hamiltonian Assessment
   ham_verdict <- if (isTRUE(dirac_met)) {
-    "Guaranteed Hamiltonian (Dirac's condition satisfied)"
+    "Guaranteed Hamiltonian (Dirac's condition proven exactly)"
   } else if (isTRUE(ore_met)) {
-    "Guaranteed Hamiltonian (Ore's condition satisfied)"
+    "Guaranteed Hamiltonian (Ore's condition proven exactly over all non-adjacent pairs)"
   } else if (isTRUE(comp$no > 1L)) {
     paste0("Provably Non-Hamiltonian (Graph is disconnected: ", comp$no, " components)")
   } else if (isTRUE(min_deg < 2L)) {
@@ -959,7 +1402,8 @@ cn_hamiltonian_diagnostics <- function(net) {
   } else if (!is.na(bridges_count) && isTRUE(bridges_count > 0L)) {
     paste0("Provably Non-Hamiltonian (Contains ", bridges_count, " bridge edge(s))")
   } else {
-    "Feasible Candidate (2-connected, bridge-free, degree >= 2)"
+    paste0("Feasible Candidate (2-connected, bridge-free, degree >= 2; heuristic / not proven",
+           if (!ore_exact && nv >= 3L) "; Dirac/Ore not evaluated exactly" else "", ")")
   }
 
   data.frame(
@@ -973,21 +1417,25 @@ cn_hamiltonian_diagnostics <- function(net) {
       "Eulerian Circuit",
       "Eulerian Path",
       "Girth (Shortest Cycle)",
-      "Graph Diameter",
-      "Graph Radius"
+      "Graph Diameter (hops)",
+      "Graph Diameter (weighted, 1/w)",
+      "Graph Radius (hops)",
+      "Graph Radius (weighted, 1/w)"
     ),
     Status = c(
       ham_verdict,
-      if (isTRUE(dirac_met)) "Satisfied (Guaranteed Cycle)" else paste0("Not met (delta = ", min_deg, ", need >= ", dirac_threshold, ")"),
-      if (isTRUE(ore_met)) "Satisfied" else if (!is.na(ore_min_sum)) paste0("Not met (min sum = ", ore_min_sum, ", need >= ", nv, ")") else "N/A",
+      if (nv < 3L) "N/A (requires n >= 3)" else if (!ore_exact) paste0("Not evaluated (heuristic / not proven: ", od$reason %||% "error", ")") else if (isTRUE(dirac_met)) "Satisfied (proven exactly; Guaranteed Cycle)" else paste0("Not met (delta = ", min_deg, ", need >= ", dirac_threshold, ")"),
+      if (nv < 3L) "N/A (requires n >= 3)" else if (!ore_exact) paste0("Not evaluated (heuristic / not proven: ", od$reason %||% "error", ")") else if (isTRUE(ore_met)) (if (is.na(ore_min_sum)) "Satisfied (proven exactly; complete graph, no non-adjacent pairs)" else paste0("Satisfied (proven exactly over all ", format(od$n_nonadj_pairs, big.mark = ",", scientific = FALSE), " non-adjacent pairs; min sum = ", ore_min_sum, ")")) else paste0("Not met (exact: min sum = ", ore_min_sum, ", need >= ", nv, ")"),
       if (isTRUE(is_biconnected)) "Yes (Robust, no single cut vertex)" else "No (Vulnerable to single point of failure)",
       if (isTRUE(n_cut_v == 0L)) "0 (Robust)" else paste0(n_cut_v, " critical broker(s)"),
       if (is.na(bridges_count)) "-" else if (bridges_count == 0L) "0 (Bridge-free)" else paste0(bridges_count, " bridge edge(s)"),
       if (isTRUE(has_eul_cycle)) "Yes (All vertices have even degree)" else "No",
       if (isTRUE(has_eul_path)) "Yes (At most 2 vertices with odd degree)" else "No",
       if (is.na(girth_val) || is.infinite(girth_val) || girth_val == 0) "None (Acyclic/Forest)" else as.character(girth_val),
-      if (is.na(diam)) "-" else as.character(diam),
-      if (is.na(rad)) "-" else as.character(rad)
+      fnum(dr_h$diameter),
+      fnum(dr_w$diameter),
+      fnum(dr_h$radius),
+      fnum(dr_w$radius)
     ),
     stringsAsFactors = FALSE
   )
@@ -1135,7 +1583,8 @@ cn_bibliometrics <- function(df, target_col = "Authors", target_delim = ",",
   tk <- cn_tokenise(df, target_col, target_delim)
   if (is.null(tk)) return(data.frame())
 
-  k_per_paper <- tabulate(match(tk$pid, sort(unique(tk$pid))))
+  paper_ids   <- sort(unique(tk$pid))       # rows of df that have >= 1 entity
+  k_per_paper <- tabulate(match(tk$pid, paper_ids))
   n_papers    <- length(k_per_paper)
   n_authors   <- tk$n_ent
 
@@ -1148,6 +1597,10 @@ cn_bibliometrics <- function(df, target_col = "Authors", target_delim = ",",
 
   years <- if (year_col %in% names(df)) suppressWarnings(as.numeric(df[[year_col]])) else NULL
   cites <- if (cite_col %in% names(df)) suppressWarnings(as.numeric(df[[cite_col]])) else NULL
+  # C-13: align citations with k_per_paper (one entry per paper that has
+  # entities, in paper_ids order) instead of dividing the full column and
+  # letting R recycle the shorter vector.
+  cites_k <- if (!is.null(cites)) cites[paper_ids] else NULL
 
   rows <- list(
     c("Publications", format(n_papers, big.mark = ",")),
@@ -1169,7 +1622,7 @@ cn_bibliometrics <- function(df, target_col = "Authors", target_delim = ",",
     rows <- c(rows, list(
       c("Total citations", format(sum(cites, na.rm = TRUE), big.mark = ",")),
       c("Citations per author-adjusted paper",
-        sprintf("%.2f", sum(cites / k_per_paper, na.rm = TRUE) / n_papers))
+        sprintf("%.2f", sum(cites_k / k_per_paper, na.rm = TRUE) / n_papers))
     ))
   }
   if (!is.null(years) && any(is.finite(years))) {
@@ -1194,7 +1647,8 @@ cn_bibliometrics <- function(df, target_col = "Authors", target_delim = ",",
 # the paper-size cap, and returns everything the UI needs in one pass.
 # =============================================================================
 cn_slider_bounds <- function(df, target_col, target_delim = ",",
-                             size_max = 100L, weight_scheme = "count") {
+                             size_max = 100L, weight_scheme = "count",
+                             oversize_mode = "star") {
 
   out <- list(max_node_occurrence = 1L, max_edge_frequency = 1L,
               max_cluster_size = 2L, max_paper_size = 1L, n_entities = 0L)
@@ -1209,8 +1663,11 @@ cn_slider_bounds <- function(df, target_col, target_delim = ",",
   out$max_paper_size      <- max(ks, 1L)
   out$n_entities          <- tk$n_ent
 
+  # P0-1: must use the same oversize_mode as the build, otherwise hub mode
+  # yields components larger than the slider max and the fused block is
+  # silently deleted by the default window.
   proj <- cn_project(tk$pid, tk$code, tk$n_ent, 1L, size_max,
-                     weight_scheme = "count", oversize_mode = "drop")
+                     weight_scheme = "count", oversize_mode = oversize_mode)
   e <- proj$edges
   if (!length(e$i)) return(out)
 
@@ -1219,4 +1676,126 @@ cn_slider_bounds <- function(df, target_col, target_delim = ",",
   g <- igraph::graph_from_edgelist(cbind(e$i, e$j), directed = FALSE)
   out$max_cluster_size <- max(igraph::components(g)$csize, 2L)
   out
+}
+
+# P0-5b: run the WHOLE build under a local seed. Besides the explicit seeding of communities/layout, igraph
+# routines (ARPACK eigenvector centrality, layouts, Leiden) draw from R's RNG; wrapping the build makes every
+# result reproducible for a given seed AND leaves the caller's .Random.seed untouched.
+build_collaboration_network <- function(df, ..., seed = 42L) {
+  with_seed(seed, .cn_build_collaboration_network_impl(df, ..., seed = seed))
+}
+
+# -----------------------------------------------------------------------------
+# P1-6: sensitivity bands. Rebuild the network under alternative identity policies and counting modes and report,
+# for every author that is top-N under ANY configuration, the min-max rank across configurations and in how many
+# configurations they are top-N. Counting modes: "full" (count weights, oversize papers expanded as cliques),
+# "fractional" (Newman 1/(n-1), cliques), "hub" (Newman, oversize papers as hub nodes; CollabNET default).
+# Bounded: no communities, grid layout, at most max_papers rows. Authors are matched across policies by their
+# 'initials' identity key of the node label (the coarsest key), so the bands are conservative.
+# -----------------------------------------------------------------------------
+CN_COUNTING_MODES <- list(full = c(weight = "count", oversize = "clique"), fractional = c(weight = "newman", oversize = "clique"),
+                          hub = c(weight = "newman", oversize = "star"))
+cn_sensitivity <- function(df, target_col = "Authors", target_delim = ";", metric = c("betweenness", "degree", "strength"),
+                           top_n = 10L, policies = c("exact", "normalised", "initials"), modes = names(CN_COUNTING_MODES),
+                           authors_per_pub = c(1, 100), max_papers = 5000L, seed = 42L) {
+  metric <- match.arg(metric)
+  if (!is.data.frame(df) || !nrow(df)) stop("no data", call. = FALSE)
+  if (nrow(df) > max_papers) stop(sprintf("sensitivity mode is limited to %d papers (have %d); narrow the filters", max_papers, nrow(df)), call. = FALSE)
+  runs <- list()
+  for (pol in policies) for (md in modes) {
+    cm <- CN_COUNTING_MODES[[md]]
+    n <- suppressWarnings(build_collaboration_network(df, target_col = target_col, target_delim = target_delim, authors_per_pub = authors_per_pub,
+           weight_scheme = cm[["weight"]], oversize_mode = cm[["oversize"]], identity_policy = pol, cluster_size_range = c(1, Inf),
+           detect_communities = FALSE, compute_centrality = metric == "betweenness", layout_engine = "grid", build_tooltips = FALSE, seed = seed))
+    nd <- n$nodes; if (!nrow(nd)) next
+    nd <- nd[!grepl("^\\[collaboration", nd$id), , drop = FALSE]                 # hub placeholders are not people
+    v <- nd[[metric]]; r <- rank(-v, ties.method = "min")
+    runs[[paste(pol, md, sep = "/")]] <- data.frame(config = paste(pol, md, sep = "/"), policy = pol, mode = md,
+      key = cn_identity_key(nd$id, "initials")$key, label = nd$id, value = v, rank = r, stringsAsFactors = FALSE)
+  }
+  all <- do.call(rbind, runs)
+  all <- all[order(all$config, all$rank), ]; all <- all[!duplicated(all[c("config", "key")]), ]
+  keys <- unique(all$key[all$rank <= top_n])
+  sub <- all[all$key %in% keys, ]
+  nconf <- length(runs)
+  out <- do.call(rbind, lapply(split(sub, sub$key), function(d) data.frame(
+    author = d$label[which.min(d$rank)], min_rank = min(d$rank), max_rank = max(d$rank), median_rank = stats::median(d$rank),
+    configs_in_top_n = sum(d$rank <= top_n), configs_present = nrow(d), stringsAsFactors = FALSE)))
+  out$max_rank[out$configs_present < nconf] <- NA                               # absent in some configuration
+  out <- out[order(-out$configs_in_top_n, out$median_rank), ]; rownames(out) <- NULL
+  per_mode <- do.call(rbind, lapply(split(all, all$config), function(d) data.frame(config = d$config[1], top = paste(head(d$label[order(d$rank)], top_n), collapse = "; "))))
+  list(metric = metric, top_n = top_n, n_configs = nconf, configs = names(runs), bands = out,
+       robust_top_n = sum(out$configs_in_top_n == nconf), per_config_top = per_mode)
+}
+
+# -----------------------------------------------------------------------------
+# P2-2: time slicing. Ego trajectory of one author over sliding year windows [y - window + 1, y]: per window the
+# number of papers, degree, strength, betweenness (1/w, normalised), Burt's constraint and effective size. The
+# author is matched by identity key (P1-1). Bounded: at most max_windows windows, no communities, grid layout.
+# -----------------------------------------------------------------------------
+cn_year_window <- function(df, year_col = "Year", from = NULL, to = NULL) {
+  y <- suppressWarnings(as.integer(as.character(df[[year_col]])))
+  keep <- !is.na(y) & (is.null(from) | y >= (from %||% -Inf)) & (is.null(to) | y <= (to %||% Inf))
+  df[keep, , drop = FALSE]
+}
+cn_ego_trajectory <- function(df, author, target_col = "Authors", target_delim = ";", year_col = "Year", window = 3L,
+                              step = 1L, identity_policy = "normalised", max_windows = 40L, ...) {
+  if (!year_col %in% names(df)) stop("year column not found", call. = FALSE)
+  y <- suppressWarnings(as.integer(as.character(df[[year_col]])))
+  if (all(is.na(y))) stop("no usable years", call. = FALSE)
+  ends <- seq(min(y, na.rm = TRUE) + window - 1L, max(y, na.rm = TRUE), by = step)
+  if (!length(ends)) ends <- max(y, na.rm = TRUE)
+  ends <- utils::tail(ends, max_windows)
+  akey <- cn_identity_key(author, identity_policy)$key
+  rows <- lapply(ends, function(e) {
+    d <- df[!is.na(y) & y >= e - window + 1L & y <= e, , drop = FALSE]
+    base <- data.frame(window_start = e - window + 1L, window_end = e, papers_in_window = nrow(d), author_papers = 0L,
+                       degree = NA_integer_, strength = NA_real_, betweenness = NA_real_, constraint = NA_real_, effective_size = NA_real_, nodes = 0L)
+    if (!nrow(d)) return(base)
+    n <- suppressWarnings(build_collaboration_network(d, target_col = target_col, target_delim = target_delim, identity_policy = identity_policy,
+           cluster_size_range = c(1, Inf), detect_communities = FALSE, layout_engine = "grid", build_tooltips = FALSE, ...))
+    base$nodes <- nrow(n$nodes)
+    hit <- which(cn_identity_key(n$nodes$id, identity_policy)$key == akey)
+    tk <- cn_tokenise(d, target_col, target_delim, identity_policy = identity_policy)
+    if (!is.null(tk)) base$author_papers <- length(unique(tk$pid[tk$code == match(akey, levels(factor(cn_identity_key(tk$label, identity_policy)$key)))]))
+    if (length(hit)) { nd <- n$nodes[hit[1], ]
+      base$degree <- nd$degree; base$strength <- nd$strength; base$betweenness <- nd$betweenness
+      base$constraint <- nd$constraint; base$effective_size <- nd$effective_size }
+    base
+  })
+  out <- do.call(rbind, rows); attr(out, "author") <- author; attr(out, "window") <- window; out
+}
+
+# C2-1: background (browser Web Worker) layout. "auto" hands graphs with at
+# least this many nodes to the worker; below it R/igraph FR/DrL is used (in
+# Shinylive that already runs inside the webR worker). Threshold from the
+# C2-1 measurements (TEST_RESULTS_C2.md).
+CN_WORKER_LAYOUT_MIN_NODES <- 1500L
+
+cn_use_worker_layout <- function(engine, n_nodes) {
+  identical(engine, "worker") ||
+    (identical(engine %||% "auto", "auto") && isTRUE(n_nodes >= CN_WORKER_LAYOUT_MIN_NODES))
+}
+
+# Payload for the collabnet_worker_layout custom message (positions are
+# integer indices into ids on the JS side; ids/from/to are plain vectors).
+cn_worker_layout_msg <- function(nodes, edges, seed = 42L, el = "network_filtered", iterations = NULL) {
+  n <- nrow(nodes)
+  list(el = el, ids = as.character(nodes$id),
+       from = as.character(edges$from), to = as.character(edges$to),
+       seed = as.integer(seed %||% 42L),
+       iterations = as.integer(iterations %||% if (n > 3000L) 200L else 300L))
+}
+
+# C2-1: the browser reports worker coordinates back (input$network_worker_positions,
+# list(ids, x, y)); server-side geometry (neighbourhood radius) uses them when
+# they describe exactly the current node set.
+cn_merge_worker_positions <- function(nodes, wp) {
+  if (is.null(wp) || is.null(nodes) || !nrow(nodes)) return(nodes)
+  ids <- as.character(unlist(wp$ids)); x <- as.numeric(unlist(wp$x)); y <- as.numeric(unlist(wp$y))
+  if (length(ids) != nrow(nodes) || length(x) != length(ids) || length(y) != length(ids) ||
+      !setequal(ids, as.character(nodes$id)) || anyNA(x) || anyNA(y)) return(nodes)
+  m <- match(as.character(nodes$id), ids)
+  nodes$x <- x[m]; nodes$y <- y[m]
+  nodes
 }
