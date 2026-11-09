@@ -147,6 +147,9 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v4
 
+      - name: Verify build output
+        run: ls -la ./wasm_build
+  
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
         with:
