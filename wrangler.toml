@@ -1,0 +1,4 @@
+{
+  "name": "collabnet",
+  "pages_build_output_dir": "./wasm_build"
+}
