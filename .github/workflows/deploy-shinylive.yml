@@ -147,9 +147,10 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v4
 
-      - name: Deploy to Cloudflare Workers / Pages
+      - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy
+          wranglerVersion: "4"
+          command: pages deploy ./wasm_build --project-name=collabnet
