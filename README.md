@@ -113,3 +113,14 @@ When an upload contains a `.cnet` file, the import dialog asks how to load it. *
 
 ### Full-app browser smoke and layout benchmark (C2-0 / C2-1)
 `tests/browser/smoke_full.py` runs the **full** app natively (`shiny::runApp`) in headless Chromium and walks upload → network → console → Sh banner → worker layout → .cnet save/reload; it records console/page errors, CSP violations and peak RSS. Status: page load verified with zero errors; the scripted upload step is not yet reliable (see FIXES_C2.md). `tests/browser/bench/run_bench.py <vis-network.min.js> 500,2000,5000 vis_physics,server_coords,worker,main_kernel out.json` measures long tasks / total blocking time per layout mode. Neither tests webR/Shinylive.
+
+## Export wait and optional support (E1/E3)
+When data is loaded, each export waits 5 minutes and then downloads **for free**. You can optionally support the
+developer with a voluntary gift of **any amount** on [Buy Me a Coffee](https://buymeacoffee.com/vishveshkac) to skip the
+wait for the rest of the browser session. On a Cloudflare deploy the dialog shows a one-time code (e.g. `CN-7KQ4X2`) to
+put in the BMC message; the tab unlocks when BMC's signed webhook arrives ("Check by email" and "Already a monthly
+supporter? Check" are fallbacks). Where no verification Worker is reachable (GitHub Pages, local runs) an "I've donated"
+honour button is shown instead (`options(collabnet.gate_honour_fallback = "auto"|"on"|"off")`). A gift is not a purchase
+of data, a service or a licence; no 80G or other tax receipt; refunds only under BMC's refund policy (a refund re-enables
+the wait). See `deploy_static/donation-policy/`, `GATE_INVENTORY.md`, `DEPLOY_CLOUDFLARE.md` and `BMC_WEBHOOK_NOTES.md`.
+Build/deploy targets: `Rscript buildWASM.R --target=ghpages|workers|pages|both`.

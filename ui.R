@@ -36,6 +36,7 @@ is_WASM <- grepl(pattern="wasm",x=Sys.info()["machine"])
 # Debug console UI helpers (console_ui(), debug_toggle_ui()); in the WASM bundle the file is concatenated before ui.R.
 if (!exists("console_ui", mode = "function")) source("GScholarLENS-Console.R", local = TRUE)
 if (!exists("SH_DEFAULT_WEIGHTS")) source("GScholarLENS-ShWeights.R", local = TRUE)  # C1-4
+if (!exists("cn_gate_api_origin")) source("GScholarLENS-Gate.R", local = TRUE)  # E3c: gate API origin for the app CSP
 if (!exists("cn_csp_meta")) source("GScholarLENS-CSP.R", local = TRUE)  # C3-2
 
 ui <- fluidPage(
@@ -109,13 +110,16 @@ ui <- fluidPage(
     tags$script(src = "js/collabnet-webmcp.js"),
     tags$script(src = "js/collabnet-mcp-ui.js"),
     tags$script(src = "js/collabnet-topbar.js", defer = NA),   # D2-B2 icon-only top bar
+    tags$script(src = "js/collabnet-export-ready.js"),   # E3e: empty-export pre-check (before the gate)
+    tags$script(src = "js/collabnet-gate.js"),   # E1: export gate (CollabnetGate.request)
+    tags$link(rel = "stylesheet", href = "css/collabnet-gate.css"),
     tags$link(rel = "stylesheet", href = "css/collabnet-topbar.css"),
     tags$script(src = "js/collabnet-resize.js", defer = NA),   # D2-B1 widget re-fit on container resize
     tags$script(src = "js/collabnet-layout.js", defer = NA),   # D3-4 reserve space for the docked Execution Log
     tags$script(HTML("
       $(document).ready(function(){
         // Initialize all Bootstrap 3 tooltips on the page
-        // D3-3: top-bar tooltips are initialised by js/collabnet-topbar.js (placement below, kept in viewport)
+        // D4: the top bar has no tooltips (labels expand inside the buttons, js/collabnet-topbar.js + css/collabnet-topbar-labels.css)
         $('[data-toggle=\"tooltip\"]').not('.header-container [data-toggle=\"tooltip\"]').tooltip({
           placement: 'top', // You can change this to 'right', 'bottom', or 'left'
           container: 'body' // Prevents the tooltip from breaking inside hidden divs
@@ -1167,12 +1171,12 @@ ui <- fluidPage(
                 // 1. Check for explicit Rate Limit (429)
                 if (res.status === 429) {
                   console.warn(`[429 Rate Limit] OpenAlex rate limited for ${journal}, using default.`);
-                  results.push({ Name_norm: journal, JCR_Journal: journal, Qscore: 'NA', JIF5Years: '0' });
+                  results.push({ Name_norm: journal, OA_Journal: journal, OA_Citedness_Band: 'NA', OA_2yr_Mean_Citedness: '0' });
                   consecutive429 = (typeof consecutive429 !== 'undefined' ? consecutive429 : 0) + 1;
                   if (consecutive429 >= 2) {
                     console.warn(`[429 Rate Limit] OpenAlex rate limit detected; auto-filling remaining ${total - i - 1} journals with defaults.`);
                     for (let j = i + 1; j < total; j++) {
-                      results.push({ Name_norm: journals[j], JCR_Journal: journals[j], Qscore: 'NA', JIF5Years: '0' });
+                      results.push({ Name_norm: journals[j], OA_Journal: journals[j], OA_Citedness_Band: 'NA', OA_2yr_Mean_Citedness: '0' });
                     }
                     i = total; // End outer loop immediately
                   }
@@ -1199,16 +1203,16 @@ ui <- fluidPage(
                     else if (jifValue >= 0.75) fetched_q = 'Q3';
                     else if (jifValue > 0.0) fetched_q = 'Q4';
                     
-                    results.push({ Name_norm: journal, JCR_Journal: title, Qscore: fetched_q, JIF5Years: jifValue.toFixed(2) });
+                    results.push({ Name_norm: journal, OA_Journal: title, OA_Citedness_Band: fetched_q, OA_2yr_Mean_Citedness: jifValue.toFixed(2) });
                   } else {
-                    results.push({ Name_norm: journal, JCR_Journal: journal, Qscore: 'NA', JIF5Years: '0' });
+                    results.push({ Name_norm: journal, OA_Journal: journal, OA_Citedness_Band: 'NA', OA_2yr_Mean_Citedness: '0' });
                   }
                   success = true; // Break the while loop
                 } 
                 // 3. Handle other server errors (404, 500) - Do not retry
                 else {
                   console.warn(`Server returned ${res.status} for: ${journal}`);
-                  results.push({ Name_norm: journal, JCR_Journal: journal, Qscore: 'NA', JIF5Years: '0' });
+                  results.push({ Name_norm: journal, OA_Journal: journal, OA_Citedness_Band: 'NA', OA_2yr_Mean_Citedness: '0' });
                   success = true; 
                 }
                 
@@ -1226,7 +1230,7 @@ ui <- fluidPage(
             // If we completely exhausted our 3 retries
             if (!success) {
                console.error(`Failed to fetch ${journal} after ${maxRetries} retries.`);
-               results.push({ Name_norm: journal, JCR_Journal: journal, Qscore: 'NA', JIF5Years: '0' });
+               results.push({ Name_norm: journal, OA_Journal: journal, OA_Citedness_Band: 'NA', OA_2yr_Mean_Citedness: '0' });
             }
             
             // Update R progress bar
@@ -1305,26 +1309,23 @@ ui <- fluidPage(
         type = "button",
         class = "btn btn-default btn-outline-white action-button", 
         style = "margin-bottom: 0; font-weight: normal; cursor: pointer;",
-        "data-toggle" = "tooltip", "data-placement" = "bottom", `aria-label` = "Upload publication data",
-        title = "Upload publication data (CSV/Excel) from Scopus, Web of Science, PubMed, Lens, or a saved .cnet session",
+        `aria-label` = "Upload publication data",   # D4: label expands inside the button on hover/focus (no tooltip)
         tags$i(id = "preupload_icon", class = "fa fa-upload"),
-        tags$span(id = "preupload_text", ""),
-        tags$span(class = "sr-only", "Upload publication data")
+        tags$span(id = "preupload_text", class = "sr-only", `aria-live` = "polite", ""),   # upload status (server writes it)
+        tags$span(class = "cn-topbar-label", "Upload data")
       ),
       tags$label(
         class = "btn btn-default btn-outline-white",
         style = "margin-bottom: 0; font-weight: normal; cursor: pointer;",
-        "data-toggle" = "tooltip", "data-placement" = "bottom", `aria-label` = "Save session (.cnet)",
-        title = "Export and save your current dataset, network, and analysis state as a portable .cnet file",
-        icon("download", lib = "font-awesome"), tags$span(class = "sr-only", "Save session (.cnet)"),
+        `aria-label` = "Save session (.cnet)",
+        icon("download", lib = "font-awesome"), tags$span(class = "cn-topbar-label", "Save session"),
         tags$input(id="predownload_btn", type="button", class="action-button", style = "display: none;")
       ),
       tags$label(
         class = "btn btn-default btn-outline-white",
         style = "margin-bottom: 0; font-weight: normal; cursor: pointer;",
-        "data-toggle" = "tooltip", "data-placement" = "bottom", `aria-label` = "API keys",
-        title = "Configure API keys for Scopus, Web of Science, Semantic Scholar, and OpenAlex",
-        icon("key", lib = "font-awesome"), tags$span(class = "sr-only", "API keys"),
+        `aria-label` = "API keys",
+        icon("key", lib = "font-awesome"), tags$span(class = "cn-topbar-label", "API keys"),
         tags$input(id="keys_btn", type="button", class="action-button", style = "display: none;")
       ),
       # tags$label(
@@ -1335,11 +1336,11 @@ ui <- fluidPage(
       #   icon("moon", lib = "font-awesome"),
       #   tags$input(id="theme_toggle", type="button", class="action-button", style = "display: none;")
       # ),
-      actionButton("tutorial_btn", tags$span(class = "cn-btn-label sr-only", "Tutorial"), `aria-label` = "Tutorial", "data-placement" = "bottom", icon = icon("chalkboard-user", lib = "font-awesome"), class = "btn-outline-white", "data-toggle" = "tooltip", title = "Launch interactive live tutorial explaining fetching, lookup controls, and charts"),
-      actionButton("readme_btn", tags$span(class = "cn-btn-label sr-only", "Readme"), `aria-label` = "Readme", "data-placement" = "bottom", icon = icon("circle-info", lib = "font-awesome"), class = "btn-outline-white", "data-toggle" = "tooltip", title = "View project overview, architecture, and features"),
-      actionButton("manual_btn", tags$span(class = "cn-btn-label sr-only", "Manual"), `aria-label` = "Manual", "data-placement" = "bottom", icon = icon("book-open", lib = "font-awesome"), class = "btn-outline-white", "data-toggle" = "tooltip", title = "Open full-length user manual, formulas, and analytical guides"),
-      actionButton("theme_toggle", tags$span(class = "cn-btn-label sr-only", "Dark Mode"), `aria-label` = "Dark Mode", "data-placement" = "bottom", icon = icon("moon", lib = "font-awesome"), class = "btn-outline-white", "data-toggle" = "tooltip", title = "Switch between Light and Dark interface themes"),
-      actionButton("connect_ai_btn", tags$span(class = "cn-btn-label sr-only", "Connect AI"), `aria-label` = "Connect AI", "data-placement" = "bottom", icon = icon("plug", lib = "font-awesome"), class = "btn-outline-white", "data-toggle" = "tooltip", title = "Connect AI agents (MCP): pairing, consent policy, activity log, client configs"),
+      actionButton("tutorial_btn", tags$span(class = "cn-topbar-label", "Tutorial"), `aria-label` = "Tutorial", icon = icon("chalkboard-user", lib = "font-awesome"), class = "btn-outline-white"),
+      actionButton("readme_btn", tags$span(class = "cn-topbar-label", "Readme"), `aria-label` = "Readme", icon = icon("circle-info", lib = "font-awesome"), class = "btn-outline-white"),
+      actionButton("manual_btn", tags$span(class = "cn-topbar-label", "Manual"), `aria-label` = "Manual", icon = icon("book-open", lib = "font-awesome"), class = "btn-outline-white"),
+      actionButton("theme_toggle", tags$span(class = "cn-topbar-label", "Dark mode"), `aria-label` = "Dark mode", icon = icon("moon", lib = "font-awesome"), class = "btn-outline-white"),
+      actionButton("connect_ai_btn", tags$span(class = "cn-topbar-label", "Connect AI"), `aria-label` = "Connect AI", icon = icon("plug", lib = "font-awesome"), class = "btn-outline-white"),
       debug_toggle_ui()
     )
   ),
@@ -2473,5 +2474,6 @@ ui <- fluidPage(
   ),  # closes fluidRow (line 986)
   # D2-B1: responsive layer, hoisted into <head> after every inline <style> above so its rules take precedence
   tags$head(tags$link(rel = "stylesheet", href = "css/collabnet-responsive.css"),
-            tags$link(rel = "stylesheet", href = "css/collabnet-d3.css"))   # D3: header wrap, log flow + dark mode, logo
+            tags$link(rel = "stylesheet", href = "css/collabnet-d3.css"),   # D3: header wrap, log flow + dark mode, logo
+            tags$link(rel = "stylesheet", href = "css/collabnet-topbar-labels.css"))   # D4: hover/focus-expanding top-bar labels
 )

@@ -431,10 +431,9 @@ register_session_heartbeat <- function(input, session) {
 debug_toggle_ui <- function() {
   shiny::tags$div(
     class = "btn btn-outline-white collabnet-debug-toggle",
-    `data-toggle` = "tooltip",
-    title = "Debug mode: show the floating R console (off by default, not saved)",
-    `data-placement` = "bottom",
-    shiny::tags$i(class = "fa fa-bug", `aria-hidden` = "true"),          # D3-2: icon-only; text kept for screen readers
+    `aria-label` = "Debug mode: show the floating R console",
+    shiny::tags$i(class = "fa fa-bug", `aria-hidden` = "true"),          # D4: icon-only; label expands on hover/focus
+    shiny::tags$span(class = "cn-topbar-label", `aria-hidden` = "true", "Debug mode"),   # visual only: the switch has its own name
     .console_switch("debug_mode", shiny::tags$span(class = "sr-only", "Debug mode"))
   )
 }

@@ -1,0 +1,4 @@
+#!/bin/sh
+# E3: blocks commits containing anything resembling a signing secret (>= 64 hex chars) or a .dev.vars file.
+# Install: ln -s ../../tools/pre-commit .git/hooks/pre-commit
+exec node tools/secret_scan.mjs --staged

@@ -144,6 +144,7 @@ source("GScholarLENS-Graph.R", local = TRUE)
 source("GScholarLENS-Fixes.R", local = TRUE)
 source("GScholarLENS-MCP.R", local = TRUE)
 source("GScholarLENS-Console.R", local = TRUE)
+source("GScholarLENS-Gate.R", local = TRUE)   # E1: export gate
 source("GScholarLENS-Parsers.R", local = TRUE)
 cn_install_quit_override()  # D1-1 layer 3: guard base::quit/q in webR only (no-op on desktop R)
 
@@ -389,6 +390,10 @@ server <- function(input, output, session) {
   
   
   observeEvent(input$predownload_btn, {
+    if (!cn_has_rows(rv$glens_full_table)) {   # E3e: nothing loaded -> message, no export dialog
+      showNotification(cn_export_empty_message(), type = "warning", id = "cn_export_empty")
+      return()
+    }
     
     showModal(modalDialog(
       title = tags$span(icon("file-export", lib = "font-awesome"), " Data Export"),
@@ -551,7 +556,8 @@ server <- function(input, output, session) {
                        NULL 
                      }
         )
-        return(df)
+        # E3: legacy column names (JCR_Journal/JIF5Years/Qscore) from older CollabNET exports -> OA_* names
+        return(cn_apply_column_aliases(df))
       })
       
       rv$imported_data_list <- Filter(Negate(is.null), imported_data_list)
@@ -1196,11 +1202,11 @@ server <- function(input, output, session) {
   observeEvent(input$theme_toggle, {
     shinyjs::toggleClass(selector = "body", class = "dark-mode")
     
-    # Update button label and icon (D2-B2: label is visually hidden; collabnet-topbar.js syncs title/aria-label)
+    # Update button label and icon (D4: label is the expandable .cn-topbar-label; collabnet-topbar.js syncs aria-label)
     if (input$theme_toggle %% 2 == 1) {
-      updateActionButton(session, "theme_toggle", label = tags$span(class = "cn-btn-label sr-only", "Light Mode"), icon = icon("sun", lib = "font-awesome"))
+      updateActionButton(session, "theme_toggle", label = tags$span(class = "cn-topbar-label", "Light mode"), icon = icon("sun", lib = "font-awesome"))
     } else {
-      updateActionButton(session, "theme_toggle", label = tags$span(class = "cn-btn-label sr-only", "Dark Mode"), icon = icon("moon", lib = "font-awesome"))
+      updateActionButton(session, "theme_toggle", label = tags$span(class = "cn-topbar-label", "Dark mode"), icon = icon("moon", lib = "font-awesome"))
     }
   })
 
@@ -2264,7 +2270,7 @@ server <- function(input, output, session) {
       }
     # }
     
-    if (nrow(df) == 0) return(df)
+    if (nrow(df) == 0) return(isolate(extend_input_table(rv, df, rv$author_match_regex, rv$target_variants_norm)))   # E3e: 0 rows keep the extended schema
     
     # --- C. AUTHOR FILTER ---
     if (!is.null(filters$authors) && length(filters$authors) > 0) {
@@ -2313,7 +2319,7 @@ server <- function(input, output, session) {
       })
     }
     
-    if (nrow(df) == 0) return(df)
+    if (nrow(df) == 0) return(isolate(extend_input_table(rv, df, rv$author_match_regex, rv$target_variants_norm)))   # E3e: 0 rows keep the extended schema
     
     cn_log_debug("glens_year_filtered_rx: extending table with author_list count=%d", length(rv$author_list))
     # --- D. CALCULATE CITATION WEIGHTS ---
@@ -2335,13 +2341,21 @@ server <- function(input, output, session) {
   register_session_heartbeat(input, session)  # D2-A3: liveness ping/pong for collabnet-session-guard.js
   session$userData$cn_sh_weights <- sh_weights  # read by .cnet settings and the MCP metrics tool
   # Every consumer of the filtered table (indices, Sh badge, tables, plots, exports, MCP) sees the active weights.
-  glens_year_filtered_rx <- reactive({
+  # E3e: glens_year_filtered_all_rx() may have 0 rows (lookup/filters match nothing); glens_year_filtered_rx() is the
+  # same table but stops with a friendly validate() message when empty, so every render*/DT consumer shows an empty
+  # state (never raw R error text or a DataTables Ajax alert) and observers simply stop.
+  glens_year_filtered_all_rx <- reactive({
     sh_weighted_table(glens_year_filtered_base_rx(), sh_weights())
+  })
+  glens_year_filtered_rx <- reactive({
+    df <- glens_year_filtered_all_rx()
+    cn_need_rows(df, cn_lookup_context(isolate(rv$author_list), isolate(input$author_logic_gate)))
+    df
   })
   
   # This observer handles all visual side-effects and plot updates
-  observeEvent(list(glens_year_filtered_rx(), input$enable_plots), {
-    df <- glens_year_filtered_rx()
+  observeEvent(list(glens_year_filtered_all_rx(), input$enable_plots), {
+    df <- glens_year_filtered_all_rx()
     cn_log_debug("glens_year_filtered_rx observer: %d rows", if (is.null(df)) 0L else nrow(df))
     # 1. Handle Visibility
     if (is.null(df) || nrow(df) == 0) {
@@ -2706,10 +2720,10 @@ server <- function(input, output, session) {
   # D1-6: publication table exports (current filters + current weight mode; sanitized, UTF-8)
   output$download_table_csv <- downloadHandler(
     filename = function() cn_export_filename("publications", "csv"),
-    content = function(file) cn_export_csv(tryCatch(glens_year_filtered_rx(), error = function(e) NULL), file))
+    content = cn_gate_content(session, "download_table_csv", function(file) cn_export_csv(tryCatch(glens_year_filtered_rx(), error = function(e) NULL), file)))
   output$download_table_xlsx <- downloadHandler(
     filename = function() cn_export_filename("publications", "xlsx"),
-    content = function(file) cn_export_xlsx(tryCatch(glens_year_filtered_rx(), error = function(e) NULL), file))
+    content = cn_gate_content(session, "download_table_xlsx", function(file) cn_export_xlsx(tryCatch(glens_year_filtered_rx(), error = function(e) NULL), file)))
   
   # output$network_full <- renderVisNetwork({
   #   df <- glens_full_table_rx() #glens_extended_rx() #glens_etable_final_rx()
@@ -2779,12 +2793,12 @@ server <- function(input, output, session) {
 # P1-4: methods paragraph export (same text as the MCP tool collabnet_methods_text)
 output$download_methods <- downloadHandler(
   filename = function() cn_export_filename("methods", "txt"),  # D1-6: UTC timestamp
-  content = function(file) {
+  content = cn_gate_content(session, "download_methods", function(file) {
     net <- tryCatch(net_data_filtered_debounced(), error = function(e) NULL)
     writeLines(cn_methods_text(cnet_settings_from_input(input), if (is.list(net)) net$stats else list(), rv$dedup_report,
                                list(orcid = input$orcid_text, scopus_id = input$scopusid_text,
                                     doi_count = length(split_doi_textarea(input$doi_text))), rv$retrieved_utc), file, useBytes = TRUE)
-  })
+  }))
 
 # P1-6: sensitivity bands (on demand; bounded inside cn_sensitivity). DT escapes by default.
 sensitivity_rv <- eventReactive(input$run_sensitivity, {
@@ -2874,8 +2888,19 @@ net_data_filtered_raw <- reactive({
   # Unified MCP registry/dispatcher (GScholarLENS-MCP.R): serves the in-app AI chat, WebMCP and the local bridge.
   # Must run inside server() after the debounced network exists. author_col/delim default to the active
   # network column and its detected delimiter.
-  register_collabnet_mcp(input, output, session, rv, glens_year_filtered_rx, net_data_filtered_debounced,
+  register_collabnet_mcp(input, output, session, rv, glens_year_filtered_all_rx, net_data_filtered_debounced,
                          console = collabnet_console)
+  register_cn_gate(input, session, function() rv$glens_full_table)   # E1: export gate (GScholarLENS-Gate.R)
+  # E3e: export pre-check -- the browser blocks an export whose data is empty and shows a message instead
+  # (www/js/collabnet-export-ready.js), before the E1 gate dialog and before any download starts.
+  cn_export_ready_rx <- reactive(cn_export_ready_state(
+    tryCatch(glens_year_filtered_all_rx(), error = function(e) NULL), rv$glens_full_table,
+    tryCatch(net_data_filtered_debounced(), error = function(e) NULL), input$data_export_frame %||% "Current View"))
+  observe(session$sendCustomMessage("cn_export_ready", cn_export_ready_rx()))
+  # E1 tests only (off unless the option is set): load a CSV straight into rv$glens_full_table, for browser tests
+  # where the real upload/import flow stalls in headless Chromium.
+  if (nzchar(getOption("collabnet.test_fixture_csv", ""))) observeEvent(TRUE, once = TRUE, {
+    rv$glens_full_table <- utils::read.csv(getOption("collabnet.test_fixture_csv"), check.names = FALSE, stringsAsFactors = FALSE) })
 
   # D3-(a): network downloads (filtered graph as shown) via cn_net_export_text() -> MCP export_graph
   for (.dl in list(c("dl_net_nodes_csv", "network_nodes", "csv", "nodes_csv"), c("dl_net_edges_csv", "network_edges", "csv", "csv"),
@@ -2883,11 +2908,11 @@ net_data_filtered_raw <- reactive({
     d <- .dl
     output[[d[1]]] <- downloadHandler(
       filename = function() cn_export_filename(d[2], d[3]),
-      content = function(file) {
+      content = cn_gate_content(session, d[1], function(file) {
         txt <- tryCatch(cn_net_export_text(d[4], net_data_filtered_debounced()), error = function(e) {
           showNotification(paste("Network export failed:", conditionMessage(e)), type = "error"); NULL })
         writeLines(enc2utf8(txt %||% ""), file, useBytes = TRUE)
-      })
+      }))
   })
 
   observeEvent(list(input$node_freq_range, input$edge_freq_range,
@@ -3891,13 +3916,14 @@ net_data_filtered_raw <- reactive({
     filename = function() {
       cn_export_filename("session", "cnet")  # D1-6: UTC timestamp
     },
-    content = function(file) {
+    content = cn_gate_content(session, "cnet", function(file) {   # E1: gated unless options(collabnet.gate_cnet = FALSE)
       cn_log_info("--- Session export started ---")
-      req(input$data_export_frame)
+      # E3e: a req() on data_export_frame here stopped silently -> -> HTML error page saved as download_btn.html
+      if (is.null(input$data_export_frame)) session$sendInputMessage("data_export_frame", list(value = "Current View"))
       
       export_data <- NULL
       
-      if (input$data_export_frame == "Current View") {
+      if (!identical(input$data_export_frame, "Full Data")) {
         cn_log_debug("Fetching data from glens_year_filtered_rx()...")
         # Use a tryCatch to prevent a silent reactive crash from hanging the browser
         export_data <- tryCatch({
@@ -3932,7 +3958,7 @@ net_data_filtered_raw <- reactive({
       ))
       
       cn_log_info("--- Session export complete ---")
-    }
+    })
   )
   
   output$dynamic_source_ui <- renderUI({
@@ -4236,35 +4262,35 @@ net_data_filtered_raw <- reactive({
     shinyWidgets::updateProgressBar(session = session, id = "prog_journal", value = 100, status = "success", title = "Journals Matched : 100%")
     
     # Remove existing metrics to avoid .x/.y duplicate column conflicts
-    extended_df <- extended_df %>% dplyr::select(-dplyr::any_of(c("JCR_Journal", "JCR_Qscore", "JCR_JIF5Years", "Qscore", "JIF5Years")))
+    extended_df <- extended_df %>% dplyr::select(-dplyr::any_of(c("OA_Journal", "OA_Citedness_Band", "OA_2yr_Mean_Citedness", names(CN_COLUMN_ALIASES), "JCR_Qscore", "JCR_JIF5Years")))
     
     # CRITICAL FIX: Parse the JSON string natively
     if (!is.null(js_data_string) && js_data_string != "[]") {
       
       # fromJSON perfectly maps the string to a 4-column data.frame!
-      jcr_subset <- jsonlite::fromJSON(js_data_string) 
+      jcr_subset <- cn_apply_column_aliases(jsonlite::fromJSON(js_data_string))  # E3: tolerate a stale client with old keys
       matched_df <- dplyr::left_join(extended_df, jcr_subset, by = "Name_norm")
       
     } else {
       matched_df <- extended_df
       if (nrow(matched_df) > 0) {
         if (!"Name_norm" %in% names(matched_df)) matched_df$Name_norm <- "Unknown"
-        matched_df$JCR_Journal <- matched_df$Name_norm
-        matched_df$Qscore <- "NA"
-        matched_df$JIF5Years <- "0"
+        matched_df$OA_Journal <- matched_df$Name_norm
+        matched_df$OA_Citedness_Band <- "NA"
+        matched_df$OA_2yr_Mean_Citedness <- "0"
       } else {
         if (!"Name_norm" %in% names(matched_df)) matched_df$Name_norm <- character(0)
-        matched_df$JCR_Journal <- character(0)
-        matched_df$Qscore <- character(0)
-        matched_df$JIF5Years <- character(0)
+        matched_df$OA_Journal <- character(0)
+        matched_df$OA_Citedness_Band <- character(0)
+        matched_df$OA_2yr_Mean_Citedness <- character(0)
       }
     }
     
     # Sanitize NAs
     matched_df <- matched_df %>%
       dplyr::mutate(
-        Qscore = dplyr::if_else(is.na(Qscore) | Qscore == "" | Qscore == "Unranked", "NA", as.character(Qscore)),
-        JIF5Years = dplyr::if_else(is.na(JIF5Years) | JIF5Years == "", "0", as.character(JIF5Years))
+        OA_Citedness_Band = dplyr::if_else(is.na(OA_Citedness_Band) | OA_Citedness_Band == "" | OA_Citedness_Band == "Unranked", "NA", as.character(OA_Citedness_Band)),
+        OA_2yr_Mean_Citedness = dplyr::if_else(is.na(OA_2yr_Mean_Citedness) | OA_2yr_Mean_Citedness == "", "0", as.character(OA_2yr_Mean_Citedness))
       ) %>%
       dplyr::distinct()
     

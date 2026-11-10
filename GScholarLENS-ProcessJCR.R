@@ -1,3 +1,6 @@
+# E3 note: despite the file name, CollabNET no longer uses Clarivate JCR data. Journal metrics come from
+# OpenAlex (OA_Journal, OA_2yr_Mean_Citedness, OA_Citedness_Band; see CN_COLUMN_ALIASES in GScholarLENS-helpers.R).
+# The commented-out code below is the historical JCR-file loader and keeps the original JCR column names.
 suppressPackageStartupMessages(require(readxl))
 suppressPackageStartupMessages(require(future))
 

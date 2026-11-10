@@ -14,17 +14,24 @@ CN_CSP_API_HOSTS <- c("https://api.elsevier.com", "https://api.crossref.org", "h
                       "https://api.openai.com", "https://api.anthropic.com",   # D2-B3 in-page chat providers
                       "https://generativelanguage.googleapis.com", "https://openrouter.ai")
 CN_CSP_LOCAL_BRIDGE <- c("ws://127.0.0.1:*", "ws://localhost:*", "http://127.0.0.1:*", "http://localhost:*")
+# E3: Buy Me a Coffee button in the export dialog (srcdoc iframe inherits this policy; its fonts are already allowed).
+CN_CSP_BMC_SCRIPT <- "https://cdnjs.buymeacoffee.com"
 CN_CSP_ALLOW_EVAL <- TRUE   # measured C3-2: without it the page throws "Evaluating a string as JavaScript violates ... unsafe-eval" (htmlwidgets/Shiny JS() evaluation) and the app breaks
 
 cn_app_csp_policy <- function(allow_eval = CN_CSP_ALLOW_EVAL) {
-  script <- c("'self'", "'unsafe-inline'", if (isTRUE(allow_eval)) "'unsafe-eval'", "'wasm-unsafe-eval'", "blob:")
+  script <- c("'self'", "'unsafe-inline'", if (isTRUE(allow_eval)) "'unsafe-eval'", "'wasm-unsafe-eval'", "blob:", CN_CSP_BMC_SCRIPT)
+  # E3/E3c: the gate API (donation Worker) on another origin must be reachable; derived from the gate config
+  # (GScholarLENS-Gate.R cn_gate_api_origin: option/env/baked/gate_config.json), legacy gate_verify_url otherwise.
+  vu <- getOption("collabnet.gate_verify_url", "auto")
+  verify_origin <- if (exists("cn_gate_api_origin", mode = "function")) cn_gate_api_origin()
+    else if (is.character(vu) && grepl("^https?://[^/]+", vu)) regmatches(vu, regexpr("^https?://[^/]+", vu)) else NULL
   paste(c(
     "default-src 'self'",
     paste("script-src", paste(script, collapse = " ")),
     "worker-src 'self' blob:",
     "child-src 'self' blob:",
     "frame-src 'self' blob:",
-    paste("connect-src", paste(c("'self'", "ws:", "wss:", "blob:", "data:", CN_CSP_API_HOSTS, CN_CSP_LOCAL_BRIDGE), collapse = " ")),
+    paste("connect-src", paste(c("'self'", "ws:", "wss:", "blob:", "data:", CN_CSP_API_HOSTS, CN_CSP_LOCAL_BRIDGE, verify_origin), collapse = " ")),
     "img-src 'self' data: blob: https:",
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' data: https://fonts.gstatic.com",

@@ -24,6 +24,10 @@ API_HOSTS = [
     "https://api.openai.com",                                    # default endpoint of the in-page AI chat
     "https://api.anthropic.com", "https://generativelanguage.googleapis.com", "https://openrouter.ai",  # D2-B3 providers
 ]
+# E3: Buy Me a Coffee button (gate dialog, rendered in a srcdoc iframe that inherits this policy) + its detect script.
+BMC_SCRIPT = ["https://cdnjs.buymeacoffee.com", "'sha256-eMWsPfmv41Z85fYg+d/gPBrG/kS8UkAha6JImKwQrrA='"]
+BMC_STYLE = ["https://fonts.googleapis.com"]
+BMC_FONT = ["https://fonts.gstatic.com"]
 LOCAL_BRIDGE = ["ws://127.0.0.1:*", "ws://localhost:*", "http://127.0.0.1:*", "http://localhost:*"]
 MARK = 'data-collabnet-csp="1"'
 # D1-1: external (CSP 'self') script that shows "The R session has ended. Reload to restart." when webR exits
@@ -40,7 +44,7 @@ def inline_script_hashes(html):
     return out
 
 def build_policy(html, extra_connect=()):
-    script = ["'self'", "'wasm-unsafe-eval'"] + inline_script_hashes(html)
+    script = ["'self'", "'wasm-unsafe-eval'"] + inline_script_hashes(html) + BMC_SCRIPT
     connect = ["'self'", "blob:", "data:"] + API_HOSTS + LOCAL_BRIDGE + list(extra_connect)
     return "; ".join([
         "default-src 'self'",
@@ -50,8 +54,8 @@ def build_policy(html, extra_connect=()):
         "frame-src 'self' blob:",
         "connect-src " + " ".join(connect),
         "img-src 'self' data: blob: https:",
-        "style-src 'self' 'unsafe-inline'",
-        "font-src 'self' data:",
+        "style-src 'self' 'unsafe-inline' " + " ".join(BMC_STYLE),
+        "font-src 'self' data: " + " ".join(BMC_FONT),
         "object-src 'none'",
         "base-uri 'self'",
         "form-action 'self'",

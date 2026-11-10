@@ -5,16 +5,39 @@
 #   gsub("([][{}()+*^$\\\\|?])", "\\\\\\1", x)
 # }
 
-# collabnet_required_cols <- c("Citations",	"User_Journal",	"orcid",	"Name",	"JIF5Years",	"Qscore",	"JCR_Journal", "Title",	"Authors",	"Year",	"Source")
+# collabnet_required_cols <- c("Citations",	"User_Journal",	"orcid",	"Name",	"OA_2yr_Mean_Citedness",	"OA_Citedness_Band",	"OA_Journal", "Title",	"Authors",	"Year",	"Source")
 collabnet_required_cols <- c("Citations", "User_Journal", "Title", "Authors")
-# P0-9: "Qscore"/"JIF5Years"/"JCR_Journal" are legacy INTERNAL column names kept for data-flow compatibility.
-# They are NOT Journal Citation Reports (JCR) quartiles or impact factors. The values are OpenAlex citedness bands:
-# the journal is matched to the top hit of the OpenAlex /sources search, and its summary_stats$2yr_mean_citedness (c)
-# is binned by FIXED cut-offs (ui.R, OpenAlex lookup JS): Q1: c >= 4.0, Q2: 2.0 <= c < 4.0, Q3: 0.75 <= c < 2.0,
-# Q4: 0 < c < 0.75, NA: no match or c = 0. These are not field-normalised and not percentile ranks.
+# E3: OpenAlex journal columns (renamed from the misleading legacy names JCR_Journal / JIF5Years / Qscore).
+# These are NOT Clarivate Journal Citation Reports (JCR) data, impact factors (JIF) or SJR/JCR quartiles.
+#   OA_Journal            = display_name of the top hit of the OpenAlex /sources search for the journal name
+#   OA_2yr_Mean_Citedness = that source's summary_stats.2yr_mean_citedness (c), rounded to 2 dp ("0" if unmatched)
+#   OA_Citedness_Band     = c binned by FIXED cut-offs (ui.R OpenAlex lookup JS / fetch_journal_metrics_openalex):
+#                           Q1: c >= 4.0, Q2: 2.0 <= c < 4.0, Q3: 0.75 <= c < 2.0, Q4: 0 < c < 0.75, NA: no match or c = 0.
+#                           Not field-normalised and not percentile ranks/quartiles.
+# Old names are still accepted on every import path via CN_COLUMN_ALIASES / cn_apply_column_aliases().
+CN_COLUMN_ALIASES <- c(JCR_Journal = "OA_Journal", JIF5Years = "OA_2yr_Mean_Citedness", Qscore = "OA_Citedness_Band")
+
+# Rename legacy column names (names(CN_COLUMN_ALIASES)) to the current ones. If both an old and the new
+# column exist, the new one wins and the old one is dropped. Safe on NULL / non-data.frame input.
+cn_apply_column_aliases <- function(df, aliases = CN_COLUMN_ALIASES) {
+  if (!is.data.frame(df)) return(df)
+  for (old in names(aliases)) {
+    if (!old %in% names(df)) next
+    new <- aliases[[old]]
+    if (new %in% names(df)) df[[old]] <- NULL else names(df)[names(df) == old] <- new
+  }
+  df
+}
+
+# Map a single column/metric name given by a user or agent (old names accepted). Returns list(name, deprecated_note).
+cn_resolve_column_alias <- function(x, aliases = CN_COLUMN_ALIASES) {
+  if (is.character(x) && length(x) == 1 && !is.na(x) && x %in% names(aliases))
+    return(list(name = aliases[[x]], note = sprintf("'%s' is a deprecated column name; use '%s' (OpenAlex data, not JCR/JIF).", x, aliases[[x]])))
+  list(name = x, note = NULL)
+}
 CITEDNESS_BAND_CUTOFFS <- c(Q1 = 4.0, Q2 = 2.0, Q3 = 0.75, Q4 = 0)
 CITEDNESS_BAND_LABEL <- "OpenAlex citedness bands (Q1\u2013Q4 by fixed cut-offs)"
-collabnet_optional_cols <- c("Qscore", "JIF5Years", "SCOPUS_ID", "doi", "orcid", "Year", "Source")
+collabnet_optional_cols <- c("OA_Citedness_Band", "OA_2yr_Mean_Citedness", "SCOPUS_ID", "doi", "orcid", "Year", "Source")
 
 # =============================================================================
 # CANONICAL DISPLAY-NAME MAP
@@ -32,9 +55,9 @@ collabnet_display_names <- c(
   "doi"                   = "DOI",
   "orcid"                 = "ORCID",
   "SCOPUS_ID"             = "Scopus ID",
-  "Qscore"               = "OpenAlex citedness band (Q1-Q4)",
-  "JIF5Years"             = "OpenAlex 2-yr mean citedness",
-  "JCR_Journal"           = "Matched journal (OpenAlex)",
+  "OA_Citedness_Band"     = "OpenAlex citedness band (Q1-Q4 by fixed cut-offs; not a JCR/SJR quartile)",
+  "OA_2yr_Mean_Citedness" = "OpenAlex 2-yr mean citedness (not a JIF)",
+  "OA_Journal"            = "Matched journal (OpenAlex source, not JCR)",
   "Author_Count"          = "Author Count",
   "Adjusted_Citations"    = "Adjusted Citations",
   "Adjustment_Weights"    = "Adjustment Weight",
@@ -147,6 +170,9 @@ show_fetch_merge_modal <- function(rv, session, new_count) {
 }
 
 execute_glens_merge <- function(table_existing, table_new, import_type, join_keys = NULL, join_type = "full", col_import_type = NULL) {
+  # E3: both sides may come from older CollabNET versions with legacy OpenAlex column names
+  table_existing <- cn_apply_column_aliases(table_existing); table_new <- cn_apply_column_aliases(table_new)
+  if (!is.null(join_keys)) join_keys <- unname(vapply(join_keys, function(k) cn_resolve_column_alias(k)$name, character(1)))
   table_new <- table_new %>% 
     dplyr::filter(dplyr::if_any(dplyr::everything(), ~ !is.na(.))) %>% 
     dplyr::select(dplyr::where(~ !all(is.na(.))))
@@ -244,15 +270,17 @@ extend_input_table <- function(rv, df, author_match_regex, target_variants_norm,
   cn_log_debug("extend_input_table(rv): df rows=%d, author_regex='%s'", 
                if (is.null(df)) 0L else nrow(df), 
                paste(author_match_regex, collapse="; "))
+  if (is.null(df)) return(df)
   if (nrow(df) <= 0) {
+    # E3e: keep going with 0 rows so the result always has the extended columns (label, Adjusted_Citations,
+    # position_rank, ...); downstream outputs then show an empty state instead of "column not found" errors.
     rv$log_text <- paste(rv$log_text, paste("No data to extend."), sep="<br>")
-    return(df)
   }
   
   # --- 1. DEFENSIVE CHECKS: Prevent missing column crashes ---
-  if (!"Citations" %in% colnames(df)) df$Citations <- 0
-  if (!"Authors" %in% colnames(df)) df$Authors <- NA_character_
-  if (!"Year" %in% colnames(df)) df$Year <- NA_integer_
+  if (!"Citations" %in% colnames(df)) df$Citations <- rep(0, nrow(df))   # E3e: rep() so 0-row frames work too
+  if (!"Authors" %in% colnames(df)) df$Authors <- rep(NA_character_, nrow(df))
+  if (!"Year" %in% colnames(df)) df$Year <- rep(NA_integer_, nrow(df))
   # -----------------------------------------------------------
   
   # --- 2. EXTRACT RAW KEYWORDS SAFELY ---
@@ -391,7 +419,7 @@ extend_input_table <- function(rv, df, author_match_regex, target_variants_norm,
   if (nrow(glens_extended_table) <= 0) {
     rv$log_text <- paste(rv$log_text, "Warning: No matches found during table extension.", sep="<br>")
     cn_log_warn("No matches found during table extension.")
-    return(glens_extended_table) 
+    # E3e: no early return -- the code below is 0-row safe and adds the full extended schema.
   }
 
   glens_extended_table$First_Author <- as.integer(glens_extended_table$label == "First_Author")
@@ -426,6 +454,9 @@ extend_input_table <- function(rv, df, author_match_regex, target_variants_norm,
     glens_extended_table[[col]] <- ifelse(v >= 1L, 1L, 0L)
   }
 
+  # E3e: n_ext was defined by the pre-C1-4 weights block (removed in ee7694c) -> "object 'n_ext' not found" whenever a
+  # lookup kept >= 1 row (FULL gate, a mix of known + unknown names, or any matching name).
+  n_ext <- nrow(glens_extended_table)
   pos_rank <- rep(99L, n_ext)
   pos_rank[glens_extended_table$First_Author == 1L] <- 1L
   pos_rank[glens_extended_table$Second_Author == 1L & pos_rank > 1L] <- 2L
@@ -845,8 +876,8 @@ trigger_openalex_js <- function(unique_journals, api_key = NULL, mail_key=NULL, 
 
 fetch_journal_metrics_openalex <- function(journal_names, rv, api_key = NULL, session = NULL) {
   api_results <- data.frame(
-    Name_norm = character(), JCR_Journal = character(),
-    Qscore = character(), JIF5Years = character(),
+    Name_norm = character(), OA_Journal = character(),
+    OA_Citedness_Band = character(), OA_2yr_Mean_Citedness = character(),
     stringsAsFactors = FALSE
   )
   
@@ -943,8 +974,8 @@ fetch_journal_metrics_openalex <- function(journal_names, rv, api_key = NULL, se
       }
       
       journal_record <- data.frame(
-        Name_norm = journal, JCR_Journal = matched_title,
-        Qscore = as.character(fetched_q), JIF5Years = as.character(fetched_jif),
+        Name_norm = journal, OA_Journal = matched_title,
+        OA_Citedness_Band = as.character(fetched_q), OA_2yr_Mean_Citedness = as.character(fetched_jif),
         stringsAsFactors = FALSE
       )
       
@@ -992,27 +1023,27 @@ match_journals <- function(rv, df, openalex_key=NULL, session = NULL){
   if (!is.null(session)) shinyWidgets::updateProgressBar(session = session, id = "prog_journal", value = 100, status = "success", title = "Journals Matched : 100%")
   
   # 5. Drop any pre-existing metric tracking labels to avoid .x/.y joining conflicts
-  df <- df %>% dplyr::select(-any_of(c("JCR_Journal", "JCR_Qscore", "JCR_JIF5Years", "Qscore", "JIF5Years")))
+  df <- df %>% dplyr::select(-any_of(c("OA_Journal", "OA_Citedness_Band", "OA_2yr_Mean_Citedness", names(CN_COLUMN_ALIASES), "JCR_Qscore", "JCR_JIF5Years")))
   
   # 6. Merge API Metrics back into the primary dataframe workflow
   if (!is.null(jcr_subset) && nrow(jcr_subset) > 0) {
     df <- dplyr::left_join(df, jcr_subset, by = "Name_norm")
   } else {
     # Absolute zero-network fallback generation layout
-    df$JCR_Journal <- df$Name_norm
-    df$Qscore <- "Unranked"
-    df$JIF5Years <- "0"
+    df$OA_Journal <- df$Name_norm
+    df$OA_Citedness_Band <- "Unranked"
+    df$OA_2yr_Mean_Citedness <- "0"
   }
   
   # Final safety sanitization checks
   df <- df %>%
     dplyr::mutate(
-      Qscore = dplyr::if_else(is.na(Qscore) | Qscore == "" | Qscore == "Unranked", "NA", as.character(Qscore)),
-      JIF5Years = dplyr::if_else(is.na(JIF5Years) | JIF5Years == "", "0", as.character(JIF5Years))
+      OA_Citedness_Band = dplyr::if_else(is.na(OA_Citedness_Band) | OA_Citedness_Band == "" | OA_Citedness_Band == "Unranked", "NA", as.character(OA_Citedness_Band)),
+      OA_2yr_Mean_Citedness = dplyr::if_else(is.na(OA_2yr_Mean_Citedness) | OA_2yr_Mean_Citedness == "", "0", as.character(OA_2yr_Mean_Citedness))
     ) %>%
     dplyr::distinct()
   
-  n_unmatched <- length(which(df$Qscore == "Unranked"))
+  n_unmatched <- length(which(df$OA_Citedness_Band == "Unranked"))
   cn_log_info("Journal matching finished. Total unranked entries: %d", n_unmatched)
   
   return(df)

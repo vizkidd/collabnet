@@ -263,6 +263,8 @@ cnet_read <- function(path, max_bytes = CNET_MAX_BYTES, max_rows = CNET_MAX_ROWS
   names(out) <- cnet_sanitize_colnames(nm)
   df <- as.data.frame(out, stringsAsFactors = FALSE, check.names = FALSE, optional = TRUE)
   if (!length(rows)) df <- df[0, , drop = FALSE]
+  # E3: sessions saved before the OpenAlex column rename carry JCR_Journal/JIF5Years/Qscore
+  if (exists("cn_apply_column_aliases", mode = "function")) df <- cn_apply_column_aliases(df)
   settings <- if (is.null(s$settings) || !length(s$settings)) list() else
     cnet_decode_inf(jsonlite::fromJSON(jsonlite::toJSON(s$settings, auto_unbox = TRUE, null = "null", digits = NA), simplifyVector = TRUE))
   list(data = df, settings = settings, source = s$source %||% list(),

@@ -1,0 +1,59 @@
+<!doctype html>
+<!-- Draft for owner approval (Phase 9 E3): Buy Me a Coffee replaces the previous payment link. Not legal advice; review before relying on it. -->
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Donation Policy — CollabNET</title>
+<link rel="stylesheet" href="../payment-pages.css">
+</head>
+<body>
+<main>
+  <h1>Donation Policy</h1>
+  <p>CollabNET is free to use. When publication data is loaded, each export starts after a 5-minute wait. You may
+    support the project with a voluntary gift; doing so skips the wait for the rest of that browser session.</p>
+
+  <h2>Who receives it</h2>
+  <p>Gifts go to <strong>Vishvesh Karthik</strong>, the individual developer of CollabNET
+    (<a href="mailto:vishveshkarthik@gmail.com">vishveshkarthik@gmail.com</a>), through
+    <a href="https://buymeacoffee.com/vishveshkac" target="_blank" rel="noopener noreferrer">Buy Me a Coffee</a>.</p>
+
+  <h2>What a gift is (and is not)</h2>
+  <ul>
+    <li>A voluntary personal gift of <strong>any amount</strong>, one-time or monthly, made on Buy Me a Coffee.
+      Buy Me a Coffee's own terms and fees apply to the payment.</li>
+    <li>It is <strong>not</strong> a purchase of data, of a service or of a licence, and it creates no contract for support.</li>
+    <li>No 80G or other tax (exemption) receipt is issued.</li>
+    <li>Exports are always free after the 5-minute wait, whether or not you give.</li>
+  </ul>
+
+  <h2>Refunds</h2>
+  <p>Gifts are non-refundable, except as provided by the
+    <a href="https://help.buymeacoffee.com/en/articles/8722330-buy-me-a-coffee-refund-policy" target="_blank" rel="noopener noreferrer">Buy Me a Coffee refund policy</a>.
+    If a gift is refunded, the export wait applies again (the 5-minute countdown; exports are never blocked).</p>
+
+  <h2>Monthly support</h2>
+  <p>Monthly support can be cancelled at any time on Buy Me a Coffee. It skips the wait until the end of the period you
+    have paid for and stops doing so after that. Before subscribing, use “Already a monthly supporter? Check” in the
+    export dialog so you don't subscribe twice.</p>
+
+  <h2>How the wait is skipped, and privacy</h2>
+  <p>The export dialog shows a short code (for example <code>CN-7KQ4X2</code>). Put it in your Buy Me a Coffee message;
+    when Buy Me a Coffee notifies CollabNET's server (a Cloudflare Worker), your open CollabNET tab unlocks.
+    Buy Me a Coffee's <a href="https://www.buymeacoffee.com/privacy-policy" target="_blank" rel="noopener noreferrer">privacy policy</a>
+    applies to your payment data. The CollabNET Worker stores <strong>no names, messages or raw email addresses</strong>, only:</p>
+  <ul>
+    <li>a salted SHA-256 hash of the payer email, so “Check by email” and “Already a monthly supporter? Check” can work
+      (one-time gifts: 60 minutes; monthly support: until the end of the paid period plus 3 days);</li>
+    <li>the one-time code and whether it was paid/claimed (2 hours);</li>
+    <li>a hashed payment id and refund flag (about 13 hours), and processed webhook ids (7 days, to ignore repeats);</li>
+    <li>short-lived request counters for rate limiting, kept only in the server's memory (about a minute; the IP is hashed, never written to storage);</li>
+    <li>one anonymous counter of possible duplicate monthly subscriptions (no personal data).</li>
+  </ul>
+  <p>Every stored item expires automatically. The app keeps the unlock only in the open page's memory: nothing is
+    written to cookies, browser storage or <code>.cnet</code> files, so a reload starts with the wait again.</p>
+
+  <h2>Contact</h2>
+  <p>Questions: Vishvesh Karthik, <a href="mailto:vishveshkarthik@gmail.com">vishveshkarthik@gmail.com</a>.</p>
+</main>
+</body>
+</html>

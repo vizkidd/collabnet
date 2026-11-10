@@ -50,7 +50,8 @@ sh_position_weights <- function(label, author_count, weights = SH_DEFAULT_WEIGHT
 
 # (Re)compute Adjustment_Weights and Adjusted_Citations of an extended table (needs label + Author_Count).
 sh_apply_weights <- function(df, weights = SH_DEFAULT_WEIGHTS, newman = FALSE) {
-  if (!is.data.frame(df) || !nrow(df) || !"label" %in% names(df)) return(df)
+  if (!is.data.frame(df) || !"label" %in% names(df)) return(df)
+  if (!nrow(df)) { df$Adjustment_Weights <- numeric(0); df$Adjusted_Citations <- numeric(0); return(df) }   # E3e: 0 rows keep the schema
   ac <- if ("Author_Count" %in% names(df)) df$Author_Count else rep(1L, nrow(df))
   wts <- sh_position_weights(df$label, ac, weights, newman)
   df$Adjustment_Weights <- wts

@@ -15,23 +15,23 @@ suppressPackageStartupMessages(require(visNetwork))
 # We'll produce a long table with columns: Position, Quartile, Count, SumCitations
 make_agg <- function(df, pos_col, pos_label) {
   if (is.null(df) || nrow(df) == 0 || !pos_col %in% colnames(df)) {
-    return(tibble(Qscore = character(0), Count = integer(0), SumCitations = numeric(0), Position = character(0)))
+    return(tibble(OA_Citedness_Band = character(0), Count = integer(0), SumCitations = numeric(0), Position = character(0)))
   }
   # Defensive: ensure Qscore and Citations exist
-  if (!"Qscore" %in% colnames(df)) df$Qscore <- "NA"
+  if (!"OA_Citedness_Band" %in% colnames(df)) df$OA_Citedness_Band <- "NA"
   if (!"Citations" %in% colnames(df)) df$Citations <- 0
   
   # 1. Standardize Qscore to character and replace true NAs with the string "NA"
   df <- df %>%
-    mutate(Qscore = as.character(Qscore),
-           Qscore = ifelse(is.na(Qscore) | Qscore == "", "NA", Qscore))
+    mutate(OA_Citedness_Band = as.character(OA_Citedness_Band),
+           OA_Citedness_Band = ifelse(is.na(OA_Citedness_Band) | OA_Citedness_Band == "", "NA", OA_Citedness_Band))
   
   # 2. PROCEED WITH AGGREGATION
   return(
     df %>%
       # Ensure we only count papers where the author position is active (1)
       filter(!is.na(.data[[pos_col]]) & as.numeric(.data[[pos_col]]) == 1) %>%
-      group_by(Qscore) %>% 
+      group_by(OA_Citedness_Band) %>% 
       summarise(
         Count = n(),
         SumCitations = sum(suppressWarnings(as.numeric(Citations)), na.rm = TRUE),
@@ -63,7 +63,7 @@ plot_glens_table <- function(rv,df,session){
     df$Adjusted_Citations <- if ("Citations" %in% colnames(df)) suppressWarnings(as.numeric(df$Citations)) else 0.0
   }
   if (!"Citations" %in% colnames(df)) df$Citations <- 0.0
-  if (!"Qscore" %in% colnames(df)) df$Qscore <- "NA"
+  if (!"OA_Citedness_Band" %in% colnames(df)) df$OA_Citedness_Band <- "NA"
   
   # Show the safe plots (Counts are safe even if 0)
   shinyjs::show("acounts_plot")
@@ -89,8 +89,8 @@ plot_glens_table <- function(rv,df,session){
   
   # 1. Standardize the Qscore column BEFORE aggregating
   df_ordered_debug <- df_ordered_debug %>%
-    mutate(Qscore = as.character(Qscore),
-           Qscore = ifelse(is.na(Qscore) | Qscore == "", "NA", Qscore))
+    mutate(OA_Citedness_Band = as.character(OA_Citedness_Band),
+           OA_Citedness_Band = ifelse(is.na(OA_Citedness_Band) | OA_Citedness_Band == "", "NA", OA_Citedness_Band))
   
   agg_first <- make_agg(df_ordered_debug, "First_Author", "First Author")
   agg_second <- make_agg(df_ordered_debug, "Second_Author", "Second Author")
@@ -101,9 +101,9 @@ plot_glens_table <- function(rv,df,session){
   
   all_positions <- c("First Author","Second Author","Co-Author","Corresponding Author")
   all_quartiles <- c("Q1","Q2","Q3","Q4", "NA")
-  full_grid <- expand.grid(Position = all_positions, Qscore = all_quartiles, stringsAsFactors = FALSE)
+  full_grid <- expand.grid(Position = all_positions, OA_Citedness_Band = all_quartiles, stringsAsFactors = FALSE)
   agg_all <- full_grid %>%
-    left_join(agg_all, by = c("Position","Qscore")) %>%
+    left_join(agg_all, by = c("Position","OA_Citedness_Band")) %>%
     mutate(Count = tidyr::replace_na(Count, 0L),
            SumCitations = tidyr::replace_na(SumCitations, 0.0))
   
@@ -133,7 +133,7 @@ plot_glens_table <- function(rv,df,session){
       Total_P_Pubs = sum(Count, na.rm = TRUE),
       Total_P_Cites = sum(SumCitations, na.rm = TRUE)
     ) %>%
-    group_by(Qscore) %>%
+    group_by(OA_Citedness_Band) %>%
     mutate(
       Total_Q_Pubs = sum(Count, na.rm = TRUE),
       Total_Q_Cites = sum(SumCitations, na.rm = TRUE)
@@ -151,7 +151,7 @@ plot_glens_table <- function(rv,df,session){
   # min_acounts <- 0
   # max_acounts <- 1
   acounts_animate_payload <- lapply(all_quartiles, function(q) {
-    sub_data <- agg_all %>% filter(Qscore == q) %>% arrange(Position)
+    sub_data <- agg_all %>% filter(OA_Citedness_Band == q) %>% arrange(Position)
     # print(q)
     # print(sub_data)
     # if(max_acounts < sub_data$Total_P_Pubs){
@@ -190,7 +190,7 @@ plot_glens_table <- function(rv,df,session){
   
   ccounts_proxy <- plotlyProxy("ccounts_plot", session)
   agg_complete <- agg_all %>%
-    tidyr::complete(Qscore = all_quartiles, Position = unique(all_positions), fill = list(Count = 0))
+    tidyr::complete(OA_Citedness_Band = all_quartiles, Position = unique(all_positions), fill = list(Count = 0))
   # ccounts_proxy_data <- lapply(all_quartiles, function(q) {
   #   agg_complete %>% filter(Qscore == q) %>% arrange(Position) %>% pull(Count)
   # })
@@ -198,7 +198,7 @@ plot_glens_table <- function(rv,df,session){
   # Use SumCitations instead of Count for the Citation plot
   # min_ccounts <- 0
   ccounts_animate_payload <- lapply(all_quartiles, function(q) {
-    sub_data <- agg_all %>% filter(Qscore == q) %>% arrange(Position)
+    sub_data <- agg_all %>% filter(OA_Citedness_Band == q) %>% arrange(Position)
     list(
       x = sub_data$Position,
       y = glens_finite(sub_data$SumCitations),
@@ -231,12 +231,12 @@ plot_glens_table <- function(rv,df,session){
   
   stats_by_position <- df_ordered_debug %>%
     group_by(position_rank) %>%
-    mutate(position_rank = factor(position_rank), Qscore = factor(Qscore), Adjusted_Citations = as.numeric(Adjusted_Citations), Citations = as.numeric(Citations)) %>%
+    mutate(position_rank = factor(position_rank), OA_Citedness_Band = factor(OA_Citedness_Band), Adjusted_Citations = as.numeric(Adjusted_Citations), Citations = as.numeric(Citations)) %>%
     summarise(min = min(Citations, na.rm = TRUE), q25 = quantile(Citations, 0.25, na.rm = TRUE), med = median(Citations, na.rm = TRUE), mean = mean(Citations, na.rm = TRUE), q75 = quantile(Citations, 0.75, na.rm = TRUE), max = max(Citations, na.rm = TRUE), .groups = "drop")
   
   df_plot <- df_ordered_debug %>%
     left_join(stats_by_position, by = "position_rank") %>%
-    mutate(position_rank = factor(position_rank), Qscore = factor(Qscore), Adjusted_Citations = as.numeric(Adjusted_Citations), Citations = as.numeric(Citations))
+    mutate(position_rank = factor(position_rank), OA_Citedness_Band = factor(OA_Citedness_Band), Adjusted_Citations = as.numeric(Adjusted_Citations), Citations = as.numeric(Citations))
   
   group_counts <- df_plot %>% count(position_rank)
   
@@ -249,7 +249,7 @@ plot_glens_table <- function(rv,df,session){
     shinyjs::show("cdist_plot")
     
     make_dist_hover_text <- function(df) {
-      return(paste0("<b>Position:</b> ", df$position_rank, "<br><b>Citations:</b> ", df$Citations, "<br><b>Qscore:</b> ", df$Qscore, "<br><b>Author Count:</b> ", df$Author_Count, "<br><b>Adjustment Weight:</b> ", df$Adjustment_Weights, "<br><b>Adjusted Citations:</b> ", df$Adjusted_Citations, "<br><b>Min:</b> ", df$min, "<br><b>25%:</b> ", df$q25, "<br><b>Median:</b> ", df$med, "<br><b>Mean:</b> ", round(df$mean, 1), "<br><b>75%:</b> ", df$q75, "<br><b>Max:</b> ", df$max))
+      return(paste0("<b>Position:</b> ", df$position_rank, "<br><b>Citations:</b> ", df$Citations, "<br><b>Citedness band (OpenAlex):</b> ", df$OA_Citedness_Band, "<br><b>Author Count:</b> ", df$Author_Count, "<br><b>Adjustment Weight:</b> ", df$Adjustment_Weights, "<br><b>Adjusted Citations:</b> ", df$Adjusted_Citations, "<br><b>Min:</b> ", df$min, "<br><b>25%:</b> ", df$q25, "<br><b>Median:</b> ", df$med, "<br><b>Mean:</b> ", round(df$mean, 1), "<br><b>75%:</b> ", df$q75, "<br><b>Max:</b> ", df$max))
     }
     
     cdist_proxy <- plotlyProxy("cdist_plot", session)
@@ -400,7 +400,7 @@ render_skeleton_plots <- function(rv, df, output){
     warning("render_skeleton_plots(): No data. Rendering empty skeleton plots.")
     
     # Create a perfect zero-value grid so bar charts render empty axes without crashing
-    full_grid <- expand.grid(Position = all_positions, Qscore = all_quartiles, stringsAsFactors = FALSE)
+    full_grid <- expand.grid(Position = all_positions, OA_Citedness_Band = all_quartiles, stringsAsFactors = FALSE)
     agg_all <- full_grid %>%
       mutate(Count = 0L, 
              SumCitations = 0.0,
@@ -408,8 +408,8 @@ render_skeleton_plots <- function(rv, df, output){
              Total_Citations = 0.0,
              Total_QCitations = 0.0) %>%
       mutate(Position = factor(Position, levels = all_positions),
-             Qscore = factor(Qscore, levels = all_quartiles)) %>%
-      arrange(Qscore, Position)
+             OA_Citedness_Band = factor(OA_Citedness_Band, levels = all_quartiles)) %>%
+      arrange(OA_Citedness_Band, Position)
     
   } else {
     # Ensure required columns exist gracefully
@@ -420,7 +420,7 @@ render_skeleton_plots <- function(rv, df, output){
       df$Adjusted_Citations <- if ("Citations" %in% colnames(df)) suppressWarnings(as.numeric(df$Citations)) else 0.0
     }
     if (!"Citations" %in% colnames(df)) df$Citations <- 0.0
-    if (!"Qscore" %in% colnames(df)) df$Qscore <- "NA"
+    if (!"OA_Citedness_Band" %in% colnames(df)) df$OA_Citedness_Band <- "NA"
 
     # Normal data processing
     df_ordered_debug <- df %>%
@@ -447,22 +447,22 @@ render_skeleton_plots <- function(rv, df, output){
     
     agg_all <- bind_rows(agg_first, agg_second, agg_co, agg_cor)
     
-    full_grid <- expand.grid(Position = all_positions, Qscore = all_quartiles, stringsAsFactors = FALSE)
+    full_grid <- expand.grid(Position = all_positions, OA_Citedness_Band = all_quartiles, stringsAsFactors = FALSE)
     
     agg_all <- full_grid %>%
-      left_join(agg_all, by = c("Position","Qscore")) %>%
+      left_join(agg_all, by = c("Position","OA_Citedness_Band")) %>%
       mutate(Count = tidyr::replace_na(Count, 0L),
              SumCitations = tidyr::replace_na(SumCitations, 0.0))
     
     agg_all$Position <- factor(agg_all$Position, levels = all_positions)
-    agg_all$Qscore <- factor(agg_all$Qscore, levels = all_quartiles)
+    agg_all$OA_Citedness_Band <- factor(agg_all$OA_Citedness_Band, levels = all_quartiles)
     
     agg_all <- agg_all %>%
       group_by(Position) %>% mutate(Total_Position = sum(Count, na.rm = TRUE)) %>% ungroup() %>%
       group_by(Position) %>% mutate(Total_Citations = sum(SumCitations, na.rm = TRUE)) %>% ungroup() %>%
-      group_by(Qscore) %>% mutate(Total_QCitations = sum(SumCitations, na.rm = TRUE)) %>% ungroup() %>%
-      mutate(Position = factor(Position, levels = all_positions), Qscore = factor(Qscore, levels = all_quartiles)) %>%
-      arrange(Qscore, Position)
+      group_by(OA_Citedness_Band) %>% mutate(Total_QCitations = sum(SumCitations, na.rm = TRUE)) %>% ungroup() %>%
+      mutate(Position = factor(Position, levels = all_positions), OA_Citedness_Band = factor(OA_Citedness_Band, levels = all_quartiles)) %>%
+      arrange(OA_Citedness_Band, Position)
   }
   
   # ---------------------------------------------------------
@@ -604,25 +604,26 @@ glens_safe_range <- function(x, min_span = 1) {
   c(0, max(hi, min_span))
 }
 
-# Position x Qscore aggregation (Count, SumCitations + totals); always a full, finite 4x5 grid.
+# Position x OpenAlex citedness band (formerly "Qscore") aggregation (Count, SumCitations + totals); always a full, finite 4x5 grid.
 glens_position_agg <- function(df) {
-  full_grid <- expand.grid(Position = GLENS_POSITIONS, Qscore = GLENS_QUARTILES, stringsAsFactors = FALSE)
+  if (exists("cn_apply_column_aliases", mode = "function")) df <- cn_apply_column_aliases(df)   # E3: legacy Qscore input
+  full_grid <- expand.grid(Position = GLENS_POSITIONS, OA_Citedness_Band = GLENS_QUARTILES, stringsAsFactors = FALSE)
   if (is.data.frame(df) && nrow(df) > 0) {
     for (col in c("First_Author", "Second_Author", "Co_Author", "Corresponding_Author"))
       if (!col %in% colnames(df)) df[[col]] <- 0L
     if (!"Citations" %in% colnames(df)) df$Citations <- 0.0
-    if (!"Qscore" %in% colnames(df)) df$Qscore <- "NA"
+    if (!"OA_Citedness_Band" %in% colnames(df)) df$OA_Citedness_Band <- "NA"
     df$Citations <- glens_finite(df$Citations)
-    df$Qscore <- as.character(df$Qscore); df$Qscore[is.na(df$Qscore) | df$Qscore == ""] <- "NA"
+    df$OA_Citedness_Band <- as.character(df$OA_Citedness_Band); df$OA_Citedness_Band[is.na(df$OA_Citedness_Band) | df$OA_Citedness_Band == ""] <- "NA"
     agg <- bind_rows(make_agg(df, "First_Author", "First Author"), make_agg(df, "Second_Author", "Second Author"),
                      make_agg(df, "Co_Author", "Co-Author"), make_agg(df, "Corresponding_Author", "Corresponding Author"))
-  } else agg <- tibble(Qscore = character(0), Count = integer(0), SumCitations = numeric(0), Position = character(0))
-  out <- full_grid %>% left_join(agg, by = c("Position", "Qscore"))
+  } else agg <- tibble(OA_Citedness_Band = character(0), Count = integer(0), SumCitations = numeric(0), Position = character(0))
+  out <- full_grid %>% left_join(agg, by = c("Position", "OA_Citedness_Band"))
   out$Count <- as.integer(glens_finite(out$Count)); out$SumCitations <- glens_finite(out$SumCitations)
   out %>% group_by(Position) %>% mutate(Total_P_Pubs = sum(Count), Total_P_Cites = sum(SumCitations)) %>%
-    group_by(Qscore) %>% mutate(Total_Q_Pubs = sum(Count), Total_Q_Cites = sum(SumCitations)) %>% ungroup() %>%
-    mutate(Position = factor(Position, levels = GLENS_POSITIONS), Qscore = factor(Qscore, levels = GLENS_QUARTILES)) %>%
-    arrange(Qscore, Position)
+    group_by(OA_Citedness_Band) %>% mutate(Total_Q_Pubs = sum(Count), Total_Q_Cites = sum(SumCitations)) %>% ungroup() %>%
+    mutate(Position = factor(Position, levels = GLENS_POSITIONS), OA_Citedness_Band = factor(OA_Citedness_Band, levels = GLENS_QUARTILES)) %>%
+    arrange(OA_Citedness_Band, Position)
 }
 
 glens_placeholder_figure <- function(title = "", msg = "No data for this selection") {
@@ -648,8 +649,8 @@ glens_counts_figure <- function(agg_all, metric = c("count", "citations"), place
   quartile_alpha <- c("Q1" = 0.9, "Q2" = 0.70, "Q3" = 0.50, "Q4" = 0.30, "NA" = 0.2)
   agg_all$y__ <- agg_all[[col]]
   tot <- if (metric == "count") agg_all$Total_P_Pubs else agg_all$Total_P_Cites
-  plot_ly(data = agg_all, x = ~Position, y = ~y__, split = ~Qscore, type = "bar",
-          marker = list(color = ~position_colors[as.character(Position)], opacity = ~quartile_alpha[as.character(Qscore)],
+  plot_ly(data = agg_all, x = ~Position, y = ~y__, split = ~OA_Citedness_Band, type = "bar",
+          marker = list(color = ~position_colors[as.character(Position)], opacity = ~quartile_alpha[as.character(OA_Citedness_Band)],
                         line = list(width = 1.2, color = ~position_border_colors[as.character(Position)]))) %>%
     layout(title = list(text = title, x = 0.5), barmode = "stack",
            xaxis = list(title = "", tickangle = 15, categoryorder = "array", categoryarray = GLENS_POSITIONS),

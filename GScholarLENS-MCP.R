@@ -134,6 +134,17 @@ mcp_get_active_net <- function() {
   tryCatch(shiny::isolate(cur_net_fn()), error = function(e) NULL)
 }
 
+# E3: agents may still pass the legacy OpenAlex column names (JCR_Journal/JIF5Years/Qscore).
+# Map them to OA_* and collect deprecation notes for the tool result.
+mcp_alias_columns <- function(x) {
+  if (is.null(x)) return(list(cols = NULL, notes = character()))
+  res <- lapply(as.character(x), function(v) {
+    if (exists("cn_resolve_column_alias", mode = "function")) cn_resolve_column_alias(v) else list(name = v, note = NULL)
+  })
+  list(cols = vapply(res, `[[`, character(1), "name"),
+       notes = unique(unlist(lapply(res, `[[`, "note"))) %||% character())
+}
+
 mcp_default_column <- function(df, candidates) {
   found <- candidates[candidates %in% names(df)]
   if (length(found)) found[[1L]] else if (ncol(df)) names(df)[[1L]] else NULL
@@ -263,6 +274,8 @@ mcp_dataset_summary <- function(dataset) {
       if (mcp_empty_df(df)) stop("The requested dataset is not loaded or has no rows.", call. = FALSE)
 
       requested_fields <- mcp_char_array(args$fields, "fields", max_items = 30L, max_chars = 200L)
+      field_alias <- mcp_alias_columns(requested_fields)
+      requested_fields <- field_alias$cols
       if (!is.null(requested_fields)) {
         search_cols <- intersect(unique(requested_fields), names(df))
         if (!length(search_cols)) stop("None of the requested search fields exist in this dataset.", call. = FALSE)
@@ -311,9 +324,11 @@ mcp_dataset_summary <- function(dataset) {
         if (!length(out)) out <- head(names(df), 12L)
         head(out, 15L)
       }
-      list(dataset = dataset, query = query, searched_columns = search_cols,
+      out_res <- list(dataset = dataset, query = query, searched_columns = search_cols,
            total_matches = total, offset = offset, limit = limit,
            returned = length(selected_idx), records = mcp_records(df[selected_idx, , drop = FALSE], max_rows = limit, columns = output_cols))
+      if (length(field_alias$notes)) out_res$deprecation <- as.list(field_alias$notes)
+      out_res
     },
 
     collabnet_get_bibliometrics = {
@@ -328,13 +343,17 @@ mcp_dataset_summary <- function(dataset) {
       entity_col <- as.character(mcp_default(args$entity_column, default_entity))[[1L]]
       year_col <- as.character(mcp_default(args$year_column, "Year"))[[1L]]
       cite_col <- as.character(mcp_default(args$citation_column, "Citations"))[[1L]]
+      col_alias <- mcp_alias_columns(c(entity_col, year_col, cite_col))
+      entity_col <- col_alias$cols[[1L]]; year_col <- col_alias$cols[[2L]]; cite_col <- col_alias$cols[[3L]]
       if (!entity_col %in% names(df)) stop(sprintf("entity_column '%s' does not exist.", entity_col), call. = FALSE)
       delim <- tryCatch(shiny::isolate(cur_rv$detected_mv_cols[[entity_col]]), error = function(e) NULL)
       if (is.null(delim) || !nzchar(trimws(delim))) delim <- ","
       metrics <- cn_bibliometrics(df, target_col = entity_col, target_delim = delim,
                                   year_col = year_col, cite_col = cite_col)
-      list(dataset = dataset, entity_column = entity_col, delimiter = delim,
+      out_res <- list(dataset = dataset, entity_column = entity_col, delimiter = delim,
            metrics = mcp_clean_df(metrics, max_rows = 100L))
+      if (length(col_alias$notes)) out_res$deprecation <- as.list(col_alias$notes)
+      out_res
     },
 
     collabnet_get_network_metrics = {
@@ -700,6 +719,7 @@ webmcp_ok  <- function(res) list(ok = TRUE, result = res, error = NULL)
       },
       export_graph = {
         .wm_check_keys(args, c("format"))
+        if (is.function(state$gate) && !isTRUE(state$gate("agent_export_graph"))) stop(CN_GATE_AGENT_MSG, call. = FALSE)  # E1
         fmt <- .wm_enum(args, "format", c("graphml", "json", "csv"), "graphml")
         g <- .wm_graph(state)
         if (igraph::ecount(g) > WEBMCP_MAX_EXPORT_EDGES) stop("graph too large to export", call. = FALSE)
@@ -788,7 +808,7 @@ MCP_TOOL_REGISTRY <- list(
         .S(list(dataset = .DATASET)), impl = "session"),
   .tool("collabnet_search_publications", "Search publications", paste0("Literal, case-insensitive substring search of the publication table; paginated.", .UNTRUSTED),
         .S(list(query = .str("Search text (literal, not a regex).", 300L, 1L), dataset = .DATASET,
-                fields = list(type = "array", items = list(type = "string", maxLength = 200L), maxItems = 30L, description = "Optional column names to search."),
+                fields = list(type = "array", items = list(type = "string", maxLength = 200L), maxItems = 30L, description = "Optional column names to search. Legacy names JCR_Journal/JIF5Years/Qscore are deprecated and mapped to OA_Journal/OA_2yr_Mean_Citedness/OA_Citedness_Band (OpenAlex data, not JCR/JIF)."),
                 year_from = .int("Inclusive minimum year.", 1000L, 3000L), year_to = .int("Inclusive maximum year.", 1000L, 3000L),
                 limit = .int("Max records (default 20).", 1L, 50L, default = 20L), offset = .int("Records to skip.", 0L, 100000L, default = 0L)),
            "query"), impl = "session"),
@@ -798,7 +818,7 @@ MCP_TOOL_REGISTRY <- list(
   .tool("collabnet_get_author_profile", "Author profile", paste0("One author's papers, citations, h/g/i10 index and co-authors in the active graph.", .UNTRUSTED),
         .S(list(author = .AUTHOR), "author"), impl = "graph", impl_name = "get_author_profile"),
   .tool("collabnet_get_bibliometrics", "Bibliometrics", "Bibliometric/collaboration metrics for a table and entity column; does not change filters.",
-        .S(list(dataset = .DATASET, entity_column = .str("Multi-value entity column, usually Authors.", 200L),
+        .S(list(dataset = .DATASET, entity_column = .str("Multi-value entity column, usually Authors. Deprecated legacy names JCR_Journal/JIF5Years/Qscore are mapped to OA_Journal/OA_2yr_Mean_Citedness/OA_Citedness_Band.", 200L),
                 year_column = .str("Year column (default Year).", 200L, default = "Year"),
                 citation_column = .str("Citation column (default Citations).", 200L, default = "Citations"))), impl = "session"),
   .tool("collabnet_get_network_summary", "Network summary", "Nodes, edges, density, components, transitivity, articulation-point count, engine stats and active graph filters.",
@@ -1109,7 +1129,8 @@ register_collabnet_mcp <- function(input, output, session, rv, data_rx, net_rx, 
   safe <- function(f) tryCatch(if (is.function(f)) f() else f, error = function(e) NULL)
   ctx <- function() shiny::isolate(list(
     state = list(net = safe(net_rx), table = safe(data_rx) %||% tryCatch(rv$glens_full_table, error = function(e) NULL),
-                 author_col = safe(author_col), delim = safe(delim)),
+                 author_col = safe(author_col), delim = safe(delim),
+                 gate = if (exists("cn_gate_agent_check")) function(kind) cn_gate_agent_check(session, kind) else NULL),
     input = input, console = console))
   version <- 0L; last_eval <- NA
   push_state <- function() {

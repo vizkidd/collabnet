@@ -656,6 +656,8 @@ cn_export_flatten <- function(df) {
 cn_export_prepare <- function(df, sanitize = getOption("collabnet.export_sanitize", TRUE)) {
   if (is.null(df) || !is.data.frame(df) || !nrow(df)) df <- data.frame(Status = "No data matched the current filters.")
   df <- cn_export_flatten(df)
+  # E3: exports always carry the OpenAlex column names (never JCR_Journal/JIF5Years/Qscore)
+  if (exists("cn_apply_column_aliases", mode = "function")) df <- cn_apply_column_aliases(df)
   if (isTRUE(sanitize)) for (k in names(df)) df[[k]] <- cn_export_sanitize_vec(df[[k]])
   df
 }
@@ -675,4 +677,22 @@ cn_export_xlsx <- function(df, file, sanitize = getOption("collabnet.export_sani
   if (!requireNamespace("openxlsx", quietly = TRUE)) stop("XLSX export needs the openxlsx package; use CSV instead.", call. = FALSE)
   openxlsx::write.xlsx(df, file, sheetName = "CollabNET", overwrite = TRUE)
   invisible(file)
+}
+
+# ---- E3e: one shared empty state for every output that needs rows ----------------------------------------------
+cn_empty_message <- function(context = NULL) {
+  base <- "No publications match the current lookup"
+  if (!is.null(context) && nzchar(context)) base <- paste0(base, " (", context, ")")
+  paste0(base, ". Check spelling, try Extended matching, or change the gate.")
+}
+cn_lookup_context <- function(author_list = NULL, gate = NULL) {
+  if (is.null(author_list) || !length(author_list) || all(!nzchar(author_list))) return("")
+  paste0("gate: ", if (is.null(gate) || !nzchar(gate)) "OR" else gate)
+}
+cn_has_rows <- function(df) !is.null(df) && is.data.frame(df) && nrow(df) > 0
+# validate() raises a shiny validation condition: outputs render the message as a grey empty state, observers stop
+# quietly (it inherits shiny.silent.error), DT never sends an Ajax error.
+cn_need_rows <- function(df, context = NULL, message = NULL) {
+  shiny::validate(shiny::need(cn_has_rows(df), if (is.null(message)) cn_empty_message(context) else message))
+  invisible(df)
 }

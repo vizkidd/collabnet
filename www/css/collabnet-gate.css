@@ -1,0 +1,40 @@
+/* E1: export gate dialog (www/js/collabnet-gate.js). Fixed overlay above Bootstrap modals (the .cnet save lives in one). */
+.cn-gate-backdrop { position: fixed; inset: 0; z-index: 10060; display: flex; align-items: center; justify-content: center;
+  padding: 12px; background: rgba(15, 23, 42, 0.55); }
+.cn-gate-backdrop[hidden] { display: none; }
+.cn-gate-dialog { box-sizing: border-box; width: min(460px, 100%); max-height: calc(100vh - 24px); overflow: auto;
+  background: #fff; color: #1f2937; border-radius: 8px; padding: 20px 22px; box-shadow: 0 12px 40px rgba(0,0,0,.35);
+  font-size: 14px; line-height: 1.45; }
+.cn-gate-dialog h2 { font-size: 18px; margin: 0 0 8px; font-weight: 700; }
+.cn-gate-clock { font: 700 40px/1.1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-align: center;
+  margin: 10px 0; color: #1d4f7a; letter-spacing: 1px; }
+.cn-gate-bmc { text-align: center; margin: 8px 0 10px; min-height: 48px; }
+.cn-gate-bmc-frame { border: 0; width: 230px; height: 64px; background: transparent; color-scheme: normal; }
+.cn-gate-bmc-frame[hidden], .cn-gate-dialog a.cn-gate-bmc-fallback[hidden], .cn-gate-code[hidden], .cn-gate-more[hidden],
+.cn-gate-dialog a.cn-gate-monthly-link[hidden] { display: none; }
+.cn-gate-dialog a.cn-gate-bmc-fallback { display: inline-block; padding: 10px 18px; border-radius: 8px; background: #FFDD00;
+  color: #000; border: 1px solid #000; font-weight: 700; text-decoration: none; }
+.cn-gate-code { margin: 8px 0; padding: 8px 10px; border: 1px dashed #1d4f7a; border-radius: 6px; }
+.cn-gate-code-value { font: 700 16px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 1px; user-select: all; white-space: nowrap; }
+.cn-gate-small, .cn-gate-code-hint { font-size: 12px; color: #4b5563; }
+.cn-gate-email-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.cn-gate-email-row .cn-gate-email { flex: 1 1 180px; min-width: 0; }
+.cn-gate-monthly { font-size: 13px; }
+.cn-gate-dialog a.cn-gate-monthly-link { color: #1d4f7a; text-decoration: underline; }
+.cn-gate-norefund { font-size: 13px; }
+.cn-gate-dialog a.cn-gate-policy { color: #1d4f7a; text-decoration: underline; }
+.cn-gate-status { margin: 8px 0; padding: 8px 10px; border-radius: 4px; background: #fef3c7; color: #78350f; }
+.cn-gate-queue { font-size: 13px; color: #4b5563; }
+.cn-gate-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+.cn-gate-actions .btn[hidden] { display: none; }
+body.dark-mode .cn-gate-dialog { background: #0f172a; color: #f1f5f9; border: 1px solid #334155; }
+body.dark-mode .cn-gate-clock { color: #93c5fd; }
+body.dark-mode .cn-gate-dialog a.cn-gate-policy { color: #93c5fd; }
+body.dark-mode .cn-gate-queue { color: #cbd5e1; }
+body.dark-mode .cn-gate-status { background: #422006; color: #fde68a; }
+body.dark-mode .cn-gate-small, body.dark-mode .cn-gate-code-hint { color: #cbd5e1; }
+body.dark-mode .cn-gate-code { border-color: #93c5fd; }
+body.dark-mode .cn-gate-dialog a.cn-gate-monthly-link { color: #93c5fd; }
+
+/* E3e: export with nothing to export (pre-check in collabnet-export-ready.js) */
+.cn-export-empty { opacity: .55; cursor: not-allowed; }
