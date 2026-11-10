@@ -269,7 +269,7 @@ for (t in cf_targets) {
 #   "Cross-Origin-Embedder-Policy" = "require-corp"
 # )) #host = "0.0.0.0"
 
-httpuv::runStaticServer("./wasm_build/", headers = list()) #host = "0.0.0.0"
+#httpuv::runStaticServer("./wasm_build/", headers = list()) #host = "0.0.0.0"
 
 # # httpuv::runServer(
 # #   host = "127.0.0.1", port = 7446,
