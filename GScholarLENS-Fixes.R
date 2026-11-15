@@ -633,51 +633,6 @@ collabnet_run_post <- function(verbose = TRUE) {
 }
 
 
-# ---------------------------------------------------------------------------
-# D1-6: data export helpers (see EXPORTS.md).
-# CSV/XLSX formula-injection protection: character cells that start with = + - @ TAB or CR are
-# prefixed with a single quote (') so spreadsheet programs show them as text instead of
-# evaluating them. Only character/factor cells are touched; numeric columns (including negative
-# numbers) are left as numbers. Controlled by options(collabnet.export_sanitize = TRUE/FALSE),
-# default TRUE.
-# ---------------------------------------------------------------------------
-cn_export_sanitize_vec <- function(x) {
-  if (is.factor(x)) x <- as.character(x)
-  if (!is.character(x)) return(x)
-  bad <- !is.na(x) & grepl("^[=+@\t\r-]", x, perl = TRUE)
-  x[bad] <- paste0("'", x[bad]); x
-}
-cn_export_flatten <- function(df) {
-  df <- as.data.frame(df, stringsAsFactors = FALSE, check.names = FALSE)
-  for (k in names(df)) if (is.list(df[[k]]))
-    df[[k]] <- vapply(df[[k]], function(v) paste(as.character(unlist(v)), collapse = "; "), character(1))
-  df
-}
-cn_export_prepare <- function(df, sanitize = getOption("collabnet.export_sanitize", TRUE)) {
-  if (is.null(df) || !is.data.frame(df) || !nrow(df)) df <- data.frame(Status = "No data matched the current filters.")
-  df <- cn_export_flatten(df)
-  # E3: exports always carry the OpenAlex column names (never JCR_Journal/JIF5Years/Qscore)
-  if (exists("cn_apply_column_aliases", mode = "function")) df <- cn_apply_column_aliases(df)
-  if (isTRUE(sanitize)) for (k in names(df)) df[[k]] <- cn_export_sanitize_vec(df[[k]])
-  df
-}
-# "CollabNET_<what>_YYYYmmdd-HHMMSSZ.<ext>" (UTC timestamp, filesystem-safe).
-cn_export_filename <- function(what, ext, time = Sys.time()) {
-  what <- gsub("[^A-Za-z0-9_-]+", "_", what)
-  sprintf("CollabNET_%s_%s.%s", what, format(time, "%Y%m%d-%H%M%SZ", tz = "UTC"), ext)
-}
-cn_export_csv <- function(df, file, sanitize = getOption("collabnet.export_sanitize", TRUE)) {
-  df <- cn_export_prepare(df, sanitize)
-  con <- file(file, open = "w", encoding = "UTF-8"); on.exit(close(con))
-  utils::write.csv(df, con, row.names = FALSE, na = "")
-  invisible(file)
-}
-cn_export_xlsx <- function(df, file, sanitize = getOption("collabnet.export_sanitize", TRUE)) {
-  df <- cn_export_prepare(df, sanitize)
-  if (!requireNamespace("openxlsx", quietly = TRUE)) stop("XLSX export needs the openxlsx package; use CSV instead.", call. = FALSE)
-  openxlsx::write.xlsx(df, file, sheetName = "CollabNET", overwrite = TRUE)
-  invisible(file)
-}
 
 # ---- E3e: one shared empty state for every output that needs rows ----------------------------------------------
 cn_empty_message <- function(context = NULL) {

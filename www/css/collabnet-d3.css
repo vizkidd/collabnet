@@ -108,9 +108,4 @@ body.dark-mode .table, body.dark-mode .shiny-table-output table, body.dark-mode 
 body.dark-mode .table > thead > tr > th, body.dark-mode .table > tbody > tr > td,
 body.dark-mode .shiny-table-output table th, body.dark-mode .shiny-table-output table td { border-color: #334155; }
 body.dark-mode .table-striped > tbody > tr:nth-of-type(odd) { background-color: #1f2937; }
-body.dark-mode .collabnet-ai-message.user { background: #1e3a5f; color: #e2e8f0; }
-body.dark-mode .collabnet-ai-message.assistant { background: #27272a; color: #e4e4e7; }
-body.dark-mode .collabnet-ai-message.system { background: #3f3519; color: #fde68a; }
-body.dark-mode .collabnet-ai-message strong { color: #cbd5e1; }
-body.dark-mode .cmcp-panel { background: #1e1e1e; color: #e4e4e7; border-color: #3f3f46; }
 body.dark-mode .form-control, body.dark-mode .selectize-input { background-color: #18181b; color: #e4e4e7; border-color: #3f3f46; }

@@ -51,8 +51,7 @@ cn_detect_communities <- function(g, algorithm = "leiden", resolution = 1, seed 
     algorithm <- "louvain"; note <- "cluster_leiden unavailable in this igraph build; fell back to Louvain"
   }
   cl <- tryCatch(with_seed(seed, switch(algorithm,
-    leiden  = igraph::cluster_leiden(g, objective_function = "modularity", weights = w,
-                                     resolution_parameter = resolution, n_iterations = -1),
+    leiden  = cn_cluster_leiden(g, w, resolution),
     louvain = igraph::cluster_louvain(g, weights = w, resolution = resolution),
     stop("unknown community algorithm '", algorithm, "'"))),
     error = function(e) { note <<- paste("community detection failed:", conditionMessage(e)); NULL })
@@ -1798,4 +1797,12 @@ cn_merge_worker_positions <- function(nodes, wp) {
   m <- match(as.character(nodes$id), ids)
   nodes$x <- x[m]; nodes$y <- y[m]
   nodes
+}
+
+## E3f: igraph >= 2.1.0 renamed cluster_leiden(resolution_parameter=) to resolution= (the old name warns: the
+## "preload error: ... deprecated" lines in the browser log). Use whichever this igraph build has.
+cn_cluster_leiden <- function(g, w, resolution) {
+  res_arg <- if ("resolution" %in% names(formals(igraph::cluster_leiden))) "resolution" else "resolution_parameter"
+  args <- list(g, objective_function = "modularity", weights = w, n_iterations = -1); args[[res_arg]] <- resolution
+  do.call(igraph::cluster_leiden, args)
 }

@@ -213,11 +213,6 @@
     if (win.jQuery) win.jQuery(doc).on("shiny:disconnected", function () { showOverlay(doc); });
     // D2-A3: heartbeat only where Shiny runs (the app frame), not in the outer Shinylive shell
     if (win.jQuery && win.Shiny) win.__cnHeartbeat = startHeartbeat(win);
-    var wire = function () {
-      var rb = doc.getElementById("collabnet-console-restart");
-      if (rb && !rb.__cnWired) { rb.__cnWired = true; rb.addEventListener("click", function () { restartSession({ window: win }); }); }
-    };
-    if (doc.readyState === "loading") doc.addEventListener("DOMContentLoaded", wire); else wire();
   }
 
   var api = { isExitReason: isExitReason, showOverlay: showOverlay, restartSession: restartSession,

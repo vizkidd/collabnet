@@ -1,0 +1,27 @@
+/* P10-B: CollabNET loading screen (free + full). Colours = design/tokens.json values (light; dark via prefers-color-scheme). */
+.cn-ld { position: fixed; inset: 0; z-index: 2147483000; display: flex; align-items: center; justify-content: center; overflow: auto;
+  background: #f8f9fa; color: #2c3e50; font: 16px/1.55 "Schibsted Grotesk", system-ui, -apple-system, "Segoe UI", sans-serif; transition: opacity .4s; }
+.cn-ld-out { opacity: 0; }
+.cn-ld-card { max-width: 560px; width: calc(100% - 32px); background: #ffffff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 24px; }
+.cn-ld-title { font-size: 1.4rem; margin: 0 0 12px; }
+.cn-ld-stages { margin: 0 0 12px; padding-left: 1.4em; }
+.cn-ld-stages li { color: #5f6b7a; }
+.cn-ld-stages li.active { color: #2c3e50; font-weight: 700; }
+.cn-ld-stages li.done { color: #2c3e50; }
+.cn-ld-stages li.done::after { content: " ✓"; }
+.cn-ld-bar { height: 8px; background: #e2e8f0; border-radius: 999px; overflow: hidden; }
+.cn-ld-fill { height: 100%; width: 0; background: #2b6a9c; transition: width .3s; }
+.cn-ld-detail, .cn-ld-time, .cn-ld-stall { font-size: 14px; color: #5f6b7a; }
+.cn-ld-reload { font: inherit; padding: 4px 12px; border-radius: 6px; border: 1px solid #2b6a9c; background: #2b6a9c; color: #ffffff; cursor: pointer; }
+.cn-ld-reload:focus-visible { outline: 3px solid #2b6a9c; outline-offset: 2px; }
+.cn-ld-about { border-top: 1px solid #e2e8f0; margin-top: 16px; font-size: 14px; }
+.cn-ld-about h2 { font-size: 1rem; }
+@media (prefers-color-scheme: dark) {
+  .cn-ld { background: #121212; color: #e2e8f0; }
+  .cn-ld-card { background: #1e1e1e; border-color: #334155; }
+  .cn-ld-stages li, .cn-ld-detail, .cn-ld-time, .cn-ld-stall { color: #9aa0a6; }
+  .cn-ld-stages li.active, .cn-ld-stages li.done { color: #e2e8f0; }
+  .cn-ld-bar { background: #334155; } .cn-ld-fill { background: #7cb7ff; }
+  .cn-ld-reload { background: #7cb7ff; border-color: #7cb7ff; color: #121212; }
+}
+@media (prefers-reduced-motion: reduce) { .cn-ld, .cn-ld-fill { transition: none; } }

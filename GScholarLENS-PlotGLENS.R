@@ -41,6 +41,19 @@ make_agg <- function(df, pos_col, pos_label) {
   )
 }
 
+# E3i: plotlyProxyInvoke() sends its custom message at once, while the renderPlotly outputs that
+# render_skeleton_plots() re-assigns in the same reactive flush are only sent when the flush ends. The browser then
+# got restyle/animate calls (explicit trace indices) for a div whose plot was not drawn yet (gd.data undefined) ->
+# plotly coerceTraceIndices "Cannot read properties of undefined (reading 'length')". Send the call after this
+# session's flush, i.e. after the output values; collabnet-widget-guard.js queues anything that still arrives early.
+cn_plotly_proxy_invoke <- function(proxy, ...) {
+  args <- list(...)
+  send <- function() do.call(plotly::plotlyProxyInvoke, c(list(proxy), args))
+  session <- proxy$session
+  if (!is.null(session) && is.function(session$onFlushed)) session$onFlushed(send, once = TRUE) else send()
+  invisible(proxy)
+}
+
 plot_glens_table <- function(rv,df,session){
   cn_log_debug("plot_glens_table(): invoked with %d rows", if (is.null(df)) 0L else nrow(df))
   if(is.null(df) || nrow(df) <= 0){
@@ -174,7 +187,7 @@ plot_glens_table <- function(rv,df,session){
   })
   # print(str(acounts_animate_payload))
   # print(paste("max_acounts:",max_acounts))
-  plotlyProxyInvoke(acounts_proxy, 
+  cn_plotly_proxy_invoke(acounts_proxy, 
                     "animate",
                     list(
                       data = acounts_animate_payload, 
@@ -215,7 +228,7 @@ plot_glens_table <- function(rv,df,session){
     )
   })
   # print(paste("max_ccounts:",max_ccounts))
-  plotlyProxyInvoke(ccounts_proxy, 
+  cn_plotly_proxy_invoke(ccounts_proxy, 
                     "animate", 
                     list(
                       data = ccounts_animate_payload, 
@@ -271,7 +284,7 @@ plot_glens_table <- function(rv,df,session){
       violin_trace_idx <- (i - 1) * 2
       scatter_trace_idx <- (i - 1) * 2 + 1
       
-      plotlyProxyInvoke(cdist_proxy, 
+      cn_plotly_proxy_invoke(cdist_proxy, 
                         "restyle",
                         list(
                           x=list(x_violin),y = list(y_violin),
@@ -280,7 +293,7 @@ plot_glens_table <- function(rv,df,session){
                         list(violin_trace_idx)
                         )
       cdist_proxy_data <- list(x = list(x_scatter), y = list(y_scatter), text = list(text_scatter), `marker.size` = list(size_scatter))
-      plotlyProxyInvoke(cdist_proxy, 
+      cn_plotly_proxy_invoke(cdist_proxy, 
                         "restyle", 
                         cdist_proxy_data, 
                         list(scatter_trace_idx)
@@ -324,7 +337,7 @@ plot_glens_table <- function(rv,df,session){
       ))
     })
     
-    plotlyProxyInvoke(aperc_proxy, 
+    cn_plotly_proxy_invoke(aperc_proxy, 
                       "restyle", 
                       list(
                         x = unname(aperc_x_list), y = unname(aperc_y_list), 
@@ -373,7 +386,7 @@ plot_glens_table <- function(rv,df,session){
       ))
     })
     
-    plotlyProxyInvoke(cperc_proxy, 
+    cn_plotly_proxy_invoke(cperc_proxy, 
                       "restyle", 
                       list(
                         x = unname(cperc_x_list), y = unname(cperc_y_list), 

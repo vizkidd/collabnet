@@ -10,21 +10,15 @@
 # A <meta> CSP cannot be report-only and does not apply to elements before it, so it is emitted first.
 CN_CSP_API_HOSTS <- c("https://api.elsevier.com", "https://api.crossref.org", "https://api.openalex.org",
                       "https://api.semanticscholar.org", "https://api.opencitations.net", "https://pub.orcid.org",
-                      "https://doi.org", "https://www.ncbi.nlm.nih.gov", "https://repo.r-wasm.org",
-                      "https://api.openai.com", "https://api.anthropic.com",   # D2-B3 in-page chat providers
-                      "https://generativelanguage.googleapis.com", "https://openrouter.ai")
+                      "https://doi.org", "https://www.ncbi.nlm.nih.gov", "https://repo.r-wasm.org"
+                      )
 CN_CSP_LOCAL_BRIDGE <- c("ws://127.0.0.1:*", "ws://localhost:*", "http://127.0.0.1:*", "http://localhost:*")
-# E3: Buy Me a Coffee button in the export dialog (srcdoc iframe inherits this policy; its fonts are already allowed).
-CN_CSP_BMC_SCRIPT <- "https://cdnjs.buymeacoffee.com"
+CN_CSP_BMC_SCRIPT <- NULL   # P10-A8: set only in editions with the export dialog
 CN_CSP_ALLOW_EVAL <- TRUE   # measured C3-2: without it the page throws "Evaluating a string as JavaScript violates ... unsafe-eval" (htmlwidgets/Shiny JS() evaluation) and the app breaks
 
 cn_app_csp_policy <- function(allow_eval = CN_CSP_ALLOW_EVAL) {
   script <- c("'self'", "'unsafe-inline'", if (isTRUE(allow_eval)) "'unsafe-eval'", "'wasm-unsafe-eval'", "blob:", CN_CSP_BMC_SCRIPT)
-  # E3/E3c: the gate API (donation Worker) on another origin must be reachable; derived from the gate config
-  # (GScholarLENS-Gate.R cn_gate_api_origin: option/env/baked/gate_config.json), legacy gate_verify_url otherwise.
-  vu <- getOption("collabnet.gate_verify_url", "auto")
-  verify_origin <- if (exists("cn_gate_api_origin", mode = "function")) cn_gate_api_origin()
-    else if (is.character(vu) && grepl("^https?://[^/]+", vu)) regmatches(vu, regexpr("^https?://[^/]+", vu)) else NULL
+  verify_origin <- NULL
   paste(c(
     "default-src 'self'",
     paste("script-src", paste(script, collapse = " ")),

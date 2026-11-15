@@ -49,6 +49,7 @@ fs::dir_create("keys")
 glens_env <- new.env(parent = emptyenv())
 # A-6: stable machine identifier (see GScholarLENS-Keys.R); never a per-run
 # random UUID unless no OS id and no writable config dir exist.
+source("GScholarLENS-Edition.R", local = TRUE)  # P10-A: edition_has()
 source("GScholarLENS-Keys.R", local = TRUE)
 glens_env$machine_id <- cn_machine_id()
 BIOS_ID <- glens_env$machine_id$id
@@ -142,10 +143,7 @@ source("GScholarLENS-helpers.R",local=TRUE)
 source("GScholarLENS-ShWeights.R", local = TRUE)  # C1-4
 source("GScholarLENS-Graph.R", local = TRUE)
 source("GScholarLENS-Fixes.R", local = TRUE)
-source("GScholarLENS-MCP.R", local = TRUE)
-source("GScholarLENS-Console.R", local = TRUE)
-source("GScholarLENS-Gate.R", local = TRUE)   # E1: export gate
-source("GScholarLENS-Parsers.R", local = TRUE)
+source("GScholarLENS-Runtime.R", local = TRUE)   # P10-A8: quit guard + heartbeat (every edition)
 cn_install_quit_override()  # D1-1 layer 3: guard base::quit/q in webR only (no-op on desktop R)
 
 server <- function(input, output, session) {
@@ -285,8 +283,6 @@ server <- function(input, output, session) {
   })
   
 
-  # MCP: request handling and consent/state pushes live in register_collabnet_mcp() (GScholarLENS-MCP.R),
-  # called below once net_data_filtered_debounced exists.
 
   observeEvent(input$browser_stored_keys, {
     keys <- input$browser_stored_keys
@@ -389,611 +385,7 @@ server <- function(input, output, session) {
   # })
   
   
-  observeEvent(input$predownload_btn, {
-    if (!cn_has_rows(rv$glens_full_table)) {   # E3e: nothing loaded -> message, no export dialog
-      showNotification(cn_export_empty_message(), type = "warning", id = "cn_export_empty")
-      return()
-    }
-    
-    showModal(modalDialog(
-      title = tags$span(icon("file-export", lib = "font-awesome"), " Data Export"),
-      size = "m",
-      
-      # --- INFO SECTION ---
-      tags$div(
-        style = "margin-bottom: 20px; padding: 15px; background: #f8f9fa; border-radius: 5px; border: 1px solid #ddd;",
-        radioGroupButtons("data_export_frame", label = "Export Data from", choices = c("Current View", "Full Data"), selected = "Current View", direction = "horizontal"),
-        tags$hr(style = "margin: 15px 0;"),
-      ),
-      
-      tags$div(
-        style = "text-align: center; margin-top: 20px; margin-bottom: 10px;",
-        downloadButton(
-          outputId = "download_btn",
-          label = "Download Data",
-          title = "CollabNET session (.cnet v2, gzipped JSON, UTF-8): the data table (Current View = current filters, or Full Data) plus all analysis settings (weights, identity policy, counting mode) and provenance. Re-upload it to restore or replay the session.",
-          `aria-label` = "Download the session as a .cnet file",
-          `data-toggle` = "tooltip",
-          icon = icon("download", lib = "font-awesome"),
-          class = "btn btn-primary btn-lg", 
-          style = "font-weight: normal; cursor: pointer; padding: 10px 30px;",
-          # Keeps your beautiful spinner state active, then automatically resets it after 15 seconds
-          onclick = '
-            var btn = this;
-            btn.innerHTML = "<i class=\\"fa fa-spinner fa-spin\\"></i> Preparing Download...";
-            setTimeout(function() {
-              btn.innerHTML = "<i class=\\"fa fa-download\\"></i> Download Data";
-            }, 15000);
-          '
-        )
-      ),
-      easyClose = FALSE,
-      footer = modalButton("Cancel")
-    ))
-  })
   
-  observeEvent(input$preupload_btn, {
-    
-    showModal(modalDialog(
-      title = tags$span(icon("file-import", lib = "font-awesome"), " File Upload Instructions"),
-      size = "m",
-      
-      # --- INFO SECTION ---
-      tags$div(
-        style = "margin-bottom: 20px; padding: 15px; background: #f8f9fa; border-radius: 5px; border: 1px solid #ddd;",
-        
-        tags$h5(icon("info-circle"), " Supported Formats", style = "margin-top: 0;"),
-        tags$p("Please upload a data file in one of the following formats: ", 
-               tags$strong(".csv, .tsv, .xlsx, .xls, .ris, .bib, Web of Science .txt, or .cnet (v2)")),
-        tags$p("Currently accepts files from these sources: ", 
-               tags$strong(tags$a("SCOPUS",href="https://www.scopus.com/pages/search/publications?type=advanced", target="_blank"),",", tags$a("GScholarLENS exported tables", href="https://project.iith.ac.in/sharmaglab/gscholarlens/", target="_blank"), ", or CollabNET saved sessions (.cnet)")),
-        tags$hr(style = "margin: 15px 0;"),
-        
-        tags$strong("Required Columns:"),
-        tags$p(style = "font-size: 12px; color: #666; margin-bottom: 5px;", "Your file must contain these columns (or variants of these names) to proceed:"),
-        tags$div(
-          style = "margin-bottom: 15px; display: flex; flex-wrap: wrap;",
-          lapply(collabnet_required_cols, function(col) {
-            tags$span(style = paste(base_badge_style, "background-color: #dc3545;"), col)
-          })
-        ),
-        
-        tags$strong("Optional Columns:"),
-        tags$p(style = "font-size: 12px; color: #666; margin-bottom: 5px;", "These metrics will be imported if available, but are not strictly required:"),
-        tags$div(
-          style = "display: flex; flex-wrap: wrap;",
-          lapply(collabnet_optional_cols, function(col) {
-            tags$span(style = paste(base_badge_style, "background-color: #6c757d;"), col)
-          })
-        )
-      ),
-      
-      # --- UPLOAD BUTTON SECTION ---
-      tags$div(
-        style = "text-align: center; margin-top: 20px; margin-bottom: 10px;",
-        tags$label(
-          class = "btn btn-primary btn-lg", # Made it a primary large button so it stands out
-          style = "font-weight: normal; cursor: pointer; padding: 10px 30px;",
-          tags$i(id = "upload_icon", class = "fa fa-upload"),
-          tags$span(id = "upload_text", " Browse & Upload File"), 
-          
-          tags$input(
-            id = "upload_btn",
-            type = "file",
-            multiple = FALSE,
-            accept = ".csv, .tsv, .xlsx, .xls, .cnet, .ris, .bib, .txt", # OS-level restriction (.rds disabled: P0-8d; RIS/BibTeX/WoS: P2-1)
-            style = "display: none;", # Hides the ugly native input, leaving only the label visible
-            onchange = "
-              document.getElementById('upload_text').innerText = ' Uploading...';
-              document.getElementById('upload_icon').className = 'fa fa-spinner fa-spin';
-              
-              // Reset the trigger button just in case
-              let pre_text = document.getElementById('preupload_text');
-              let pre_icon = document.getElementById('preupload_icon');
-              if(pre_text) pre_text.innerText = ' Uploading...';
-              if(pre_icon) pre_icon.className = 'fa fa-spinner fa-spin';
-            "
-          )
-        )
-      ),
-      
-      easyClose = TRUE,
-      footer = modalButton("Cancel")
-    ))
-  })
-  
-  observeEvent(input$upload_btn, {
-    
-    tryCatch({
-      # --- SUCCESS STATE ---
-      shinyjs::runjs("
-      document.getElementById('upload_text').innerText = ' Upload Success!';
-      document.getElementById('upload_icon').className = 'fa fa-check';
-      document.getElementById('upload_icon').style.color = '#28a745';
-      
-      document.getElementById('preupload_text').innerText = ' Upload Success!';
-      document.getElementById('preupload_icon').className = 'fa fa-check';
-      document.getElementById('preupload_icon').style.color = '#28a745';
-            
-    ")
-      
-      message("FILE UPLOADED!")
-      
-      # 2. Iterate through each uploaded file
-      rv$cnet_loaded_settings <- NULL; rv$cnet_loaded_app <- NULL   # C1-5: reset per upload
-      imported_data_list <- lapply(seq_len(nrow(input$upload_btn)), function(i) {
-        file_name <- input$upload_btn$name[i]
-        file_path <- input$upload_btn$datapath[i]
-        ext <- tolower(tools::file_ext(file_name))
-        
-        df <- switch(ext,
-                     "csv"  = read.csv(file_path, stringsAsFactors = FALSE, check.names = FALSE),
-                     "tsv"  = read.delim(file_path, sep = "\t", stringsAsFactors = FALSE, check.names = FALSE),
-                     # P2-1: bibliographic exports (RIS, BibTeX, Web of Science plain-text / tab-delimited)
-                     "ris"  = cn_parse_ris(file_path),
-                     "bib"  = cn_parse_bibtex(file_path),
-                     "txt"  = cn_parse_bibliographic(file_path, "txt") %||% {
-                       showNotification("Unrecognised .txt format: expected a Web of Science export (plain text or tab-delimited).", type = "error", duration = 10); NULL },
-                     "xlsx" = as.data.frame(readxl::read_excel(file_path)),
-                     "xls"  = as.data.frame(readxl::read_excel(file_path)),
-                     # P0-8d: .cnet v2 = validated gzipped JSON; readRDS() on uploads removed
-                     # (R deserialisation of untrusted files can execute code).
-                     "cnet" = tryCatch({
-                       sess <- cnet_read(file_path)
-                       rv$cnet_loaded_settings <- sess$settings %||% list()
-                       rv$cnet_loaded_app <- sess$app
-                       sess$data
-                     }, error = function(e) {
-                       showNotification(paste("Could not open session file", file_name, ":", conditionMessage(e)), type = "error", duration = 15)
-                       NULL
-                     }),
-                     "rds"  = {
-                       showNotification("Loading .rds files is disabled for security reasons (R deserialisation can execute code). Please upload CSV/TSV/Excel or a CollabNET v2 .cnet session.", type = "error", duration = 15)
-                       NULL
-                     },
-                     {
-                       warning(paste("Unsupported file extension:", ext))
-                       NULL 
-                     }
-        )
-        # E3: legacy column names (JCR_Journal/JIF5Years/Qscore) from older CollabNET exports -> OA_* names
-        return(cn_apply_column_aliases(df))
-      })
-      
-      rv$imported_data_list <- Filter(Negate(is.null), imported_data_list)
-      
-      # --- TRANSITION DELAY ---
-      shinyjs::delay(1500, {
-        shinyjs::runjs("
-        document.getElementById('preupload_text').innerText = '';
-        document.getElementById('preupload_icon').className = 'fa fa-upload';
-        document.getElementById('preupload_icon').style.color = ''; 
-        document.getElementById('preupload_btn').value = ''; 
-      ")
-        
-        showModal(modalDialog(
-          title = tags$span(icon("columns", lib = "font-awesome"), " Step 1: Column Mapping"),
-          size = "m",
-          # C1-5: a .cnet session can be loaded as data only, or replayed with all saved settings
-          if (!is.null(isolate(rv$cnet_loaded_settings)))
-            tags$div(class = "alert alert-info", style = "padding: 8px 12px;",
-              radioButtons("cnet_load_mode", "This upload contains a saved CollabNET session (.cnet). How should it be loaded?",
-                choices = c("Load data only (keep my current settings, rebuild with them)" = "data",
-                            "Replay full session (data + every saved setting: filters, identity policy, communities, layout, Sh weights)" = "replay"),
-                selected = "data")),
-          radioButtons("col_import_type", label = "Choose Column import type:", inline = TRUE, choices = c("Common Columns", "All Columns", "Map")),
-          uiOutput("column_mapping_ui"),
-          footer = tagList(
-            modalButton("Cancel"),
-            actionButton("next_row_merge", "Next: Configure Rows", 
-                         class = "btn-primary", 
-                         disabled = "disabled", 
-                         style = "pointer-events: none; opacity: 0.5;")
-          ),
-          easyClose = FALSE
-        ))
-        
-        if (is.null(rv$glens_full_table) || ncol(rv$glens_full_table) == 0 || nrow(rv$glens_full_table) == 0) {
-          updateRadioButtons(session, "col_import_type", selected = "All Columns")
-          shinyjs::delay(100, {
-            shinyjs::runjs("$('input[name=\"col_import_type\"][value=\"Common Columns\"]').prop('disabled', true);")
-          })
-        } else {
-          shinyjs::delay(100, {
-            shinyjs::runjs("$('input[name=\"col_import_type\"][value=\"Common Columns\"]').prop('disabled', false);")
-          })
-        }
-      })
-    }, error = function(e) {
-      shinyjs::runjs("
-      document.getElementById('upload_text').innerText = ' Upload Failed';
-      document.getElementById('upload_icon').className = 'fa fa-times';
-      document.getElementById('upload_icon').style.color = '#dc3545';
-    ")
-      showNotification(paste("Failed to process file:", e$message), type = "error", duration = 5)
-      rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'>Failed to process file:", cn_html_escape(e$message), "</span>"), sep="<br>")
-      
-      shinyjs::delay(3000, {
-        shinyjs::runjs("
-        document.getElementById('upload_text').innerText = '';
-        document.getElementById('upload_icon').className = 'fa fa-upload';
-        document.getElementById('upload_icon').style.color = '';
-        document.getElementById('upload_btn').value = '';
-      ")
-      })
-    })
-  })
-  
-  observeEvent(input$next_row_merge, {
-    req(rv$imported_data_list)
-    imported_data_list <- rv$imported_data_list
-    rv$saved_col_import_type <- input$col_import_type 
-    all_uploaded_cols <- unique(unlist(lapply(imported_data_list, names)))
-    
-    cols_to_keep <- c()
-    rename_map <- list()
-    detected_mv_cols <- list()
-    
-    for (col in all_uploaded_cols) {
-      safe_id <- make.names(col)
-      is_checked <- input[[paste0("map_chk_", safe_id)]]
-      if (is.null(is_checked)) is_checked <- TRUE 
-      
-      if (isTRUE(is_checked)) {
-        cols_to_keep <- c(cols_to_keep, col)
-        mapped_name <- input[[paste0("map_name_", safe_id)]]
-        final_name <- col
-        
-        if (!is.null(mapped_name) && trimws(mapped_name) != "" && trimws(mapped_name) != col) {
-          # Reverse-translate display names back to internal names
-          # e.g. "Journal" -> "User_Journal", "DOI" -> "doi", "ORCID" -> "orcid"
-          internal_name <- cn_internal_colname(trimws(mapped_name))
-          rename_map[[col]] <- internal_name
-          final_name <- internal_name
-        }
-        
-        delim_val <- input[[paste0("map_delim_", safe_id)]]
-        if (!is.null(delim_val) && trimws(delim_val) != "") {
-          detected_mv_cols[[final_name]] <- trimws(delim_val)
-        } else if (grepl("^(authors|author\\(s\\) id|keywords|author keywords|index keywords|scopus id|orcid)$", final_name, ignore.case = TRUE)) {
-          detected_mv_cols[[final_name]] <- ","
-        }
-      }
-    }
-    
-    imported_data_list <- lapply(imported_data_list, function(df) {
-      valid_cols <- intersect(names(df), cols_to_keep)
-      df <- df[, valid_cols, drop = FALSE]
-      current_names <- names(df)
-      for (i in seq_along(current_names)) {
-        if (current_names[i] %in% names(rename_map)) {
-          current_names[i] <- rename_map[[current_names[i]]]
-        }
-      }
-      names(df) <- make.unique(current_names, sep = "_")
-      return(df)
-    })
-    
-    merged_df <- dplyr::bind_rows(imported_data_list) %>% dplyr::distinct()
-    rv$intermediate_merged_df <- merged_df
-    rv$detected_mv_cols <- detected_mv_cols
-    
-    removeModal()
-    
-    # if (length(detected_mv_cols) > 0) {
-    #   showModal(modalDialog(
-    #     title = tags$span(icon("cut", lib = "font-awesome"), " Step 1.5: Confirm Splits"),
-    #     size = "l",
-    #     uiOutput("delimiter_ui"),
-    #     footer = tagList(
-    #       modalButton("Cancel"),
-    #       actionButton("next_after_delim", "Apply Splits & Continue to Step 2", class = "btn-warning")
-    #     ),
-    #     easyClose = FALSE
-    #   ))
-    # } else {
-    #   show_row_merge_modal(rv, session)
-    # }
-    
-    show_row_merge_modal(rv, session)
-  })
-
-  # observeEvent(input$next_after_delim, {
-  #   req(rv$intermediate_merged_df, rv$detected_mv_cols)
-  #   merged_df <- rv$intermediate_merged_df
-  #   
-  #   # 1. Create a temporary list to hold any edits the user made to the delimiters
-  #   updated_mv_cols <- rv$detected_mv_cols
-  #   
-  #   for(col in names(rv$detected_mv_cols)) {
-  #     action <- input[[paste0("delim_action_", make.names(col))]]
-  #     delim_val <- input[[paste0("delim_val_", make.names(col))]]
-  #     
-  #     # 2. SAVE the current delimiter value from the UI, even if they didn't split rows!
-  #     if (!is.null(delim_val) && trimws(delim_val) != "") {
-  #       updated_mv_cols[[col]] <- trimws(delim_val)
-  #     }
-  #     
-  #     if (!is.null(action) && action == "rows" && !is.null(delim_val) && trimws(delim_val) != "") {
-  #       sep_regex <- paste0("\\s*", escape_regex_inline(delim_val), "\\s*")
-  #       merged_df <- merged_df %>% 
-  #         tidyr::separate_rows(dplyr::all_of(col), sep = sep_regex) %>%
-  #         dplyr::mutate(!!col := trimws(.data[[col]]))
-  #     }
-  #   }
-  #   
-  #   rv$intermediate_merged_df <- merged_df
-  #   
-  #   # 3. OVERWRITE the reactive values so the Lookup Panel gets the newest delimiters
-  #   rv$detected_mv_cols <- updated_mv_cols
-  #   
-  #   removeModal()
-  #   show_row_merge_modal(rv, session)
-  # })
-  
-  # observeEvent(input$next_after_delim, {
-  #   req(rv$intermediate_merged_df, rv$detected_mv_cols)
-  #   merged_df <- rv$intermediate_merged_df
-  #   
-  #   for(col in names(rv$detected_mv_cols)) {
-  #     action <- input[[paste0("delim_action_", make.names(col))]]
-  #     delim_val <- input[[paste0("delim_val_", make.names(col))]]
-  #     
-  #     if (!is.null(action) && action == "rows" && !is.null(delim_val) && trimws(delim_val) != "") {
-  #       sep_regex <- paste0("\\s*", escape_regex_inline(delim_val), "\\s*")
-  #       merged_df <- merged_df %>% 
-  #         tidyr::separate_rows(dplyr::all_of(col), sep = sep_regex) %>%
-  #         dplyr::mutate(!!col := trimws(.data[[col]]))
-  #     }
-  #   }
-  #   
-  #   rv$intermediate_merged_df <- merged_df
-  #   removeModal()
-  #   show_row_merge_modal(rv, session)
-  # })
-  
-  observeEvent(input$confirm_import, {
-    req(rv$intermediate_merged_df)
-    shinyjs::disable("confirm_import")
-    
-    removeModal()
-    shinyjs::hide("orcid_bar_container")
-    shinyjs::hide("scopus_bar_container")
-    shinyjs::show("progress_overlay")
-    
-    merged_df <- rv$intermediate_merged_df
-    rv$glens_full_table_tmp <- rv$glens_full_table
-    
-    # Force all columns in both datasets to be character text.
-    raw_df <- merged_df %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character))
-    
-    # -------------------------------------------------------------------------
-    # --- 1. SAFELY CONSOLIDATE & RENAME KNOWN COLUMNS (MOVED UP) ---
-    # -------------------------------------------------------------------------
-    target_mappings <- list(
-      "orcid" = c("orcid", "ORCiD", "Orcid", "ORCID"),
-      "SCOPUS_ID" = c("SCOPUS_ID", "SCOPUS ID", "Scopus ID", "Author(s) ID"),
-      "Citations" = c("Citations", "Cited by", "Cited By", "citedby-count", "Times Cited", "Citation Count"),
-      "User_Journal" = c("User_Journal", "Source title", "prism:publicationName", "Journal"),
-      "doi" = c("doi", "DOI"),
-      "Authors" = c("Authors", "author", "Author(s)")
-    )
-    
-    for(targ in names(target_mappings)) {
-      aliases <- target_mappings[[targ]]
-      # Find which of the aliases actually exist in the current dataframe
-      found_cols <- intersect(aliases, colnames(raw_df))
-      
-      if (length(found_cols) > 0) {
-        master_vec <- rep(NA_character_, nrow(raw_df))
-        
-        # Coalesce all found columns into one master vector
-        for(fc in found_cols) {
-          master_vec <- dplyr::coalesce(master_vec, as.character(raw_df[[fc]]))
-        }
-        
-        # Assign the master merged column
-        raw_df[[targ]] <- master_vec
-        
-        # Drop the old alias columns so the dataset stays clean
-        drop_cols <- setdiff(found_cols, targ)
-        if (length(drop_cols) > 0) {
-          raw_df <- raw_df %>% dplyr::select(-dplyr::all_of(drop_cols))
-        }
-      }
-    }
-    
-    # --- 2. PARSE THE TARGET AUTHORS ---
-    target_variants <- stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n")))
-    target_variants <- target_variants[nzchar(target_variants)]
-    target_variants <- target_variants[target_variants != ""]
-    
-    if(length(target_variants) > 0) {
-      rv$target_variants_norm <- lapply(setNames(target_variants, target_variants), function(v) {
-        vn <- normalize_name(v)
-        list(norm = vn, parts = extract_parts(vn))
-      })
-      rv$author_match_regex <- build_name_regex_for_variants(target_variants)
-    } else {
-      rv$target_variants_norm <- NULL
-      rv$author_match_regex <- NULL
-    }
-    
-    # print("confirm_import:extend_input_table():")
-    # # --- 3. THE HEAVY LIFTING (Hybrid Paradigm) ---
-    # # NOW raw_df has standardized column names!
-    # extended_df <- extend_input_table(rv, raw_df, rv$author_match_regex, rv$target_variants_norm)
-    # merged_df <- match_journals(rv, extended_df,  glens_env$openalex_key, session = session)
-    # 
-    # # --- 4. NA REMOVAL ---
-    # # Keep rows if ANY column has a non-NA value (drops rows where ALL are NA)
-    # merged_df <- merged_df %>%
-    #   dplyr::filter(dplyr::if_any(dplyr::everything(), ~ !is.na(.)))
-    # 
-    # # Keep columns if they don't have ALL NA values (drops columns where ALL are NA)
-    # merged_df <- merged_df %>%
-    #   dplyr::select(dplyr::where(~ !all(is.na(.))))
-    # 
-    # # --- 5. HANDLE ROW LOGIC ---
-    # if (input$row_import_type == "New" || is.null(rv$glens_full_table)) {
-    #   glens_full_table <- merged_df
-    #   
-    # } else if (input$row_import_type == "Append") {
-    #   
-    #   if (rv$saved_col_import_type == "Common Columns") {
-    #     final_common_cols <- intersect(names(rv$glens_full_table), names(merged_df))
-    #     glens_full_table <- dplyr::bind_rows(
-    #       rv$glens_full_table[, final_common_cols, drop = FALSE],
-    #       merged_df[, final_common_cols, drop = FALSE]
-    #     )
-    #   } else {
-    #     print("MERGING:")
-    #     glens_full_table <- dplyr::bind_rows(rv$glens_full_table %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character)), merged_df)
-    #   }
-    #   
-    # } else if (input$row_import_type == "Merge") {
-    #   
-    #   join_keys <- input$row_merge_keys
-    #   join_type <- input$join_type 
-    #   
-    #   print("join_keys:")
-    #   print(join_keys)
-    #   print("join_type:")
-    #   print(join_type)
-    #   
-    #   if (!is.null(join_keys) && length(join_keys) > 0) {
-    #     
-    #     overlap_cols <- setdiff(intersect(names(rv$glens_full_table), names(merged_df)), join_keys)
-    #     
-    #     join_func <- switch(join_type,
-    #                         "inner" = dplyr::inner_join,
-    #                         "left"  = dplyr::left_join,
-    #                         "right" = dplyr::right_join,
-    #                         "full"  = dplyr::full_join)
-    #     
-    #     joined_df <- join_func(
-    #       rv$glens_full_table, 
-    #       merged_df, 
-    #       by = join_keys,  
-    #       suffix = c(".old", ".new"),
-    #       relationship = "many-to-many" 
-    #     )
-    #     
-    #     for(col in overlap_cols) {
-    #       old_col <- paste0(col, ".old")
-    #       new_col <- paste0(col, ".new")
-    #       
-    #       old_vals <- as.character(joined_df[[old_col]])
-    #       new_vals <- as.character(joined_df[[new_col]])
-    #       
-    #       joined_df[[col]] <- dplyr::coalesce(old_vals, new_vals)
-    #       
-    #       joined_df[[old_col]] <- NULL
-    #       joined_df[[new_col]] <- NULL
-    #     }
-    #     
-    #     joined_df <- joined_df %>%
-    #       dplyr::group_by(dplyr::across(dplyr::all_of(join_keys))) %>%
-    #       tidyr::fill(dplyr::everything(), .direction = "downup") %>%
-    #       dplyr::ungroup()
-    #     
-    #     glens_full_table <- joined_df
-    #     
-    #   } else {
-    #     warning("No join keys selected. Falling back to Append.")
-    #     glens_full_table <- dplyr::bind_rows(rv$glens_full_table %>% dplyr::mutate(dplyr::across(dplyr::everything(), as.character)), merged_df)
-    #   }
-    # }
-    # 
-    # if(nrow(glens_full_table) <= 0){
-    #   showNotification("Data import/merge returned empty rows. Try different options", type = "error", duration = 10)
-    #   rv$log_text <- paste(rv$log_text, paste("<span style='color: red;'>Data import/merge returned empty rows. Try different options </span>"),sep="<br>")
-    #   rv$imported_data_list <- NULL
-    #   rv$intermediate_merged_df <- NULL
-    #   rv$saved_col_import_type <- NULL
-    #   rv$glens_full_table <- rv$glens_full_table_tmp
-    #   # removeModal()
-    #   
-    #   shinyjs::hide("progress_overlay")
-    #   shinyjs::show("orcid_bar_container")
-    #   shinyjs::show("scopus_bar_container")
-    #   return()
-    # }
-    # 
-    # # --- 6. CHECK FOR MISSING REQUIRED COLUMNS ---
-    # missing_cols <- setdiff(collabnet_required_cols, colnames(glens_full_table))
-    # if(length(missing_cols) > 0) {
-    #   missing_str <- paste(missing_cols, collapse=", ")
-    #   rv$log_text <- paste(rv$log_text, 
-    #                        paste0("<span style='color: red;'>Missing required columns: ", missing_str, "</span>"), 
-    #                        sep="<br>")
-    #   showNotification(paste("Missing columns:", missing_str), type = "error", duration = 10)
-    # }
-    # 
-    # glens_full_table <- dplyr::distinct(glens_full_table)
-    # # Cleanup & Finalize
-    # rv$glens_full_table <- glens_full_table
-    # 
-    # # Initialize empty Skeletons so they are ready for the Proxy
-    # render_skeleton_plots(rv, glens_full_table, output)
-    # 
-    # # Configure Slider safely
-    # years <- as.numeric(na.omit(glens_full_table$Year))
-    # if (length(years) > 0) {
-    #   min_yr <- min(years)
-    #   max_yr <- max(years)
-    #   updateSliderInput(session, "year_slider", min = min_yr, max = max_yr, value = c(min_yr, max_yr))
-    # }
-    # 
-    # # Trigger a manual update if auto-refresh is OFF
-    # if (!isTRUE(input$auto_refresh_lookup)) {
-    #   # Increment a counter to signal the reactive graph
-    #   rv$manual_submit <- if(is.null(rv$manual_submit)) 1 else rv$manual_submit + 1
-    # }
-    # 
-    # rv$imported_data_list <- NULL
-    # rv$intermediate_merged_df <- NULL
-    # rv$saved_col_import_type <- NULL
-    # rv$log_text <- paste(rv$log_text, paste("Post-Import Total:",nrow(rv$glens_full_table),"lines..."),sep="<br>")
-    # 
-    # # saveRDS(rv$glens_full_table, "glens_full_table.rds")
-    # 
-    # # removeModal()
-    # shinyjs::hide("progress_overlay")
-    # shinyjs::show("orcid_bar_container")
-    # shinyjs::show("scopus_bar_container")
-    
-    cn_log_debug("confirm_import: extending input table with %d rows", nrow(raw_df))
-    # --- 1. THE HEAVY LIFTING (Part 1: R Formatting) ---
-    extended_df <- extend_input_table(rv, raw_df, rv$author_match_regex, rv$target_variants_norm, keep_all = TRUE)
-    
-    # Extract journals and append Name_norm column
-    target_journal_col <- if ("User_Journal" %in% names(extended_df)) extended_df$User_Journal else extended_df$Journal
-    
-    if (!is.null(target_journal_col)) {
-      extended_df$Name_norm <- sapply(target_journal_col, normalize_journal)
-      
-      # CRITICAL FIX: Save state to rv AFTER adding Name_norm
-      rv$pending_extended_df <- extended_df
-      rv$pending_flow_type <- "confirm_import"
-      
-      unique_journals <- unique(extended_df$Name_norm)
-      unique_journals <- unique_journals[!is.na(unique_journals) & trimws(unique_journals) != ""]
-      
-      shinyWidgets::updateProgressBar(session, id = "prog_journal", value = 0, title = "Journals Matched : 0%", status="warn")
-      
-      if (length(unique_journals) > 0) {
-        trigger_openalex_js(unique_journals, glens_env$openalex_key, glens_env$mail_key , "openalex_results")
-      } else {
-        shinyjs::runjs("Shiny.setInputValue('openalex_results', '[]', {priority: 'event'});")
-      }
-    } else {
-      rv$pending_extended_df <- extended_df
-      rv$pending_flow_type <- "confirm_import"
-      shinyjs::runjs("Shiny.setInputValue('openalex_results', '[]', {priority: 'event'});")
-    }
-    
-  })
   
   # output$dynamic_author_filter <- renderUI({
   #   req(input$author_list)
@@ -1091,113 +483,6 @@ server <- function(input, output, session) {
     rv$author_logic_gate <- input$author_logic_gate
   }, ignoreNULL = FALSE)
   
-  output$row_merge_ui <- renderUI({
-    # if (is.null(rv$glens_etable_final) || ncol(rv$glens_etable_final) == 0) {
-    #   return(tags$div(class = "alert alert-warning", "No existing data to merge with. Selecting 'New'."))
-    # }
-    
-    unlock_script <- tags$script(HTML("
-      setTimeout(function(){ 
-        var btn = $('#confirm_import');
-        btn.prop('disabled', false);
-        btn.css('pointer-events', 'auto');
-        btn.css('opacity', '1');
-      }, 300);
-    "))
-    
-    if (is.null(rv$glens_full_table) || ncol(rv$glens_full_table) == 0 || nrow(rv$glens_full_table) == 0) {
-      return(tagList(
-        tags$div(class = "alert alert-warning", "No existing data to merge with. Selecting 'New'."),
-        unlock_script # Make sure they can click confirm!
-      ))
-    }
-    req(input$row_import_type == "Merge")
-    
-    if (!is.null(rv$glens_full_table) && !is.null(rv$intermediate_merged_df)) {
-      # Only show keys that exist in BOTH datasets to prevent join errors
-      common_keys <- intersect(names(rv$glens_full_table), names(rv$intermediate_merged_df))
-      default_selected <- intersect(common_keys, c("doi", "DOI", "Title", "title", "orcid", "ORCID", "SCOPUS_ID", "Authors"))
-      if (length(default_selected) == 0 && length(common_keys) > 0) default_selected <- common_keys[1]
-      
-      # Show human-readable names in dropdown, but use internal names as values
-      merge_key_choices <- stats::setNames(common_keys, cn_display_colnames(common_keys))
-      
-      tagList(
-        tags$div(
-          style = "margin-bottom: 15px; padding: 10px; border-left: 3px solid #17a2b8; background-color: #f8f9fa;",
-          
-          # Primary Key Selector
-          selectizeInput("row_merge_keys", "Select Primary Key(s) to Join By:", 
-                         choices = merge_key_choices, selected = default_selected, multiple = TRUE, width = "100%",
-                         options = list(placeholder = "Select one or more keys (e.g., ORCID, Title)")),
-          
-          # NEW: Join Type Selector
-          selectInput("join_type", "Select Join Type:", width = "100%",
-                      choices = c(
-                        "Full Join (Keep ALL rows from both)" = "full",
-                        "Inner Join (Keep ONLY rows that match exactly)" = "inner",
-                        "Left Join (Keep ALL Existing App Data, drop unmapped Uploaded Data)" = "left",
-                        "Right Join (Keep ALL Uploaded Data, drop unmapped App Data)" = "right"
-                      ), 
-                      selected = "full"),
-          
-          tags$small(style = "color: #666;", 
-                     "Missing data within joined rows will be intelligently backfilled regardless of join type.")
-        ),
-        unlock_script # Unlock when the merge UI finishes painting
-      )
-    }
-  })
-  
-  observeEvent(input$row_import_type, {
-    if (input$row_import_type %in% c("New", "Append")) {
-      # If New or Append, no merge UI is needed, so unlock the button immediately
-      shinyjs::runjs("
-      var btn = $('#confirm_import');
-      btn.prop('disabled', false);
-      btn.css('pointer-events', 'auto');
-      btn.css('opacity', '1');
-    ")
-    } else if (input$row_import_type == "Merge") {
-      # If they click Merge, briefly lock the button until the UI finishes loading it
-      shinyjs::runjs("
-      var btn = $('#confirm_import');
-      btn.prop('disabled', true);
-      btn.css('pointer-events', 'none');
-      btn.css('opacity', '0.5');
-    ")
-    }
-  }, ignoreInit = FALSE)
-  
-  #observe for in-place split, combine, drop buttons
-  observe({
-    req(rv$imported_data_list, length(rv$imported_data_list) > 0)
-    uploaded_cols <- names(rv$imported_data_list[[1]])
-    
-    lapply(uploaded_cols, function(col) {
-      safe_id <- make.names(col)
-      
-      # Observe Split Button
-      observeEvent(input[[paste0("btn_split_", safe_id)]], {
-        message("Split triggered for column: ", col)
-        # Trigger split modal or logic here
-      }, ignoreInit = TRUE)
-      
-      # Observe Combine Button
-      observeEvent(input[[paste0("btn_combine_", safe_id)]], {
-        message("Combine triggered for column: ", col)
-        # Trigger combine modal or logic here
-      }, ignoreInit = TRUE)
-      
-      # Observe Drop Button
-      observeEvent(input[[paste0("btn_drop_", safe_id)]], {
-        message("Drop triggered for column: ", col)
-        # Example: update the checkbox to FALSE when dropped
-        updateCheckboxInput(session, paste0("map_chk_", safe_id), value = FALSE)
-      }, ignoreInit = TRUE)
-    })
-  })
-  
   #light to dark mode and vice versa
   observeEvent(input$theme_toggle, {
     shinyjs::toggleClass(selector = "body", class = "dark-mode")
@@ -1237,7 +522,6 @@ server <- function(input, output, session) {
           tags$li(tags$b("Graph Centrality Suite: "), "Full topology metrics including Degree, Betweenness, Closeness, Eigenvector Centrality, PageRank, and k-Core decomposition."),
           tags$li(tags$b("Hamiltonian Cycle Diagnostics: "), "Formal graph-theoretic verification of Dirac's and Ore's sufficient conditions for traceable collaboration loops."),
           tags$li(tags$b("Propositional Logic Gates: "), "Filter collaboration subnetworks using OR, AND, XOR, NOR, NAND, and FULL (unfiltered) cohort combinations."),
-          tags$li(tags$b("Session Portability: "), "Save and restore complete analytical states with portable ", tags$code(".cnet"), " session files (gzipped JSON, version 2; legacy binary .cnet files are not accepted).")
         ),
         tags$hr(),
         tags$h4(icon("cubes", lib = "font-awesome"), " System Architecture", style = "color: #4B8BBE; font-weight: bold;"),
@@ -1288,7 +572,6 @@ server <- function(input, output, session) {
           tags$li(tags$b("ORCiD: "), "Accepts standard 16-character identifiers (e.g., ", tags$code("0000-0002-8060-444X"), "), one per line. Trailing check digits 'X' or 'x' are validated and normalized automatically."),
           tags$li(tags$b("Scopus Author ID: "), "Accepts numeric IDs (e.g., ", tags$code("57871875700"), "). If an Elsevier Scopus API key is configured, ORCIDs can be mapped to Scopus Author IDs automatically."),
           tags$li(tags$b("DOIs: "), "Accepts Digital Object Identifiers (e.g., ", tags$code("10.1016/j.materresbull.2025.113811"), "). Resolves via OpenAlex with automatic exponential backoff retry on HTTP 429 and seamless failover to Crossref."),
-          tags$li(tags$b("File Upload Wizard: "), "Upload CSV/Excel files from Scopus, Web of Science, PubMed, Lens.org, or saved .cnet sessions. Step 1 maps columns and delimiters; Step 2 manages Append, Merge, or New dataset creation.")
         ),
 
         tags$hr(),
@@ -1400,8 +683,6 @@ server <- function(input, output, session) {
               tags$p("You can supply data in three convenient ways:"),
               tags$ol(
                 tags$li(tags$b("Live ORCiD Fetch: "), "Enter author ORCIDs in the left panel (e.g. ", tags$code("0000-0002-8060-444X"), " or Nobel laureates like ", tags$code("0000-0003-2287-2195"), "). Click ", tags$b("Submit / Fetch Data"), "."),
-                tags$li(tags$b("Upload CSV or Excel: "), "Click the ", tags$b("Upload"), " button in the top navigation to load exported Scopus, WoS, PubMed, or Lens records."),
-                tags$li(tags$b("Restore Session (.cnet): "), "Upload a saved ", tags$code(".cnet"), " file to instantly restore your entire research session.")
               ),
               tags$div(
                 class = "alert alert-warning",
@@ -1459,232 +740,6 @@ server <- function(input, output, session) {
     ))
   })
   
-  # --- Column Mapping UI Generation ---
-  output$column_mapping_ui <- renderUI({
-    req(rv$imported_data_list)
-    
-    # 1. Target Variants Dictionary
-    target_mappings <- list(
-      "orcid" = c("orcid", "ORCiD", "Orcid", "ORCID"),
-      "SCOPUS_ID" = c("SCOPUS_ID", "SCOPUS ID", "Scopus ID", "Author(s) ID"),
-      "Citations" = c("Citations", "Cited by", "Cited By", "citedby-count", "Times Cited", "Citation Count"),
-      "User_Journal" = c("User_Journal", "Source title", "prism:publicationName", "Journal"),
-      "doi" = c("doi", "DOI"),
-      "Authors" = c("Authors", "author", "Author(s)"),
-      "Year" = c("Year", "year", "Publication Year"),
-      "Title" = c("Title", "title", "Document Title", "Article Title"),
-      "Source" = c("Source", "source")
-    )
-    
-    # 2. Define Required vs Optional Columns
-    # required_cols <- c("Citations", "User_Journal", "Title", "Authors", "Year", "Source")
-    # optional_cols <- c("Qscore", "JIF5Years", "SCOPUS_ID", "doi", "JCR_Journal", "orcid", "Name")
-    
-    all_uploaded_cols <- unique(unlist(lapply(rv$imported_data_list, names)))
-    
-    custom_css <- tags$style(HTML("
-      .clickable-badge:hover, .clickable-selected-badge:hover {
-        transform: scale(1.05);
-        opacity: 0.85;
-      }
-    "))
-    
-    header_tags <- tags$div(
-      custom_css,
-      style = "margin-bottom: 15px; padding: 10px; background: #f8f9fa; border-radius: 5px; border: 1px solid #ddd;",
-      
-      tags$strong("Required Columns:"),
-      tags$div(
-        style = "margin-top: 5px; margin-bottom: 10px; display: flex; flex-wrap: wrap;",
-        lapply(collabnet_required_cols, function(col) {
-          display_label <- cn_display_colnames(col)
-          tags$span(id = paste0("req-badge-", col), class = "clickable-badge", style = paste(base_badge_style, "background-color: #dc3545;"), display_label)
-        })
-      ),
-      
-      tags$strong("Optional Columns:"),
-      tags$div(
-        style = "margin-top: 5px; margin-bottom: 15px; display: flex; flex-wrap: wrap;",
-        lapply(collabnet_optional_cols, function(col) {
-          display_label <- cn_display_colnames(col)
-          tags$span(id = paste0("opt-badge-", col), class = "clickable-badge", style = paste(base_badge_style, "background-color: #6c757d;"), display_label)
-        })
-      ),
-      
-      tags$strong("Selected Columns (Click to remove):"),
-      tags$div(
-        id = "selected-cols-container",
-        style = "margin-top: 5px; display: flex; flex-wrap: wrap;"
-      )
-    )
-    
-    # 4. Dynamic Rows Generation
-    rows_tags <- lapply(all_uploaded_cols, function(col) {
-      safe_id <- make.names(col)
-      safe_col_compare <- trimws(tolower(col))
-      prefill_name <- col
-      
-      for (targ in names(target_mappings)) {
-        safe_targs <- trimws(tolower(target_mappings[[targ]]))
-        if (safe_col_compare %in% safe_targs) {
-          prefill_name <- targ
-          break
-        }
-      }
-      
-      # Show user-friendly display name in the text field
-      prefill_display <- cn_display_colnames(prefill_name)
-      
-      tags$div(
-        class = "col-mapping-row",
-        style = "display: flex; align-items: center; padding: 8px; border-bottom: 1px solid #eee; border-radius: 4px; transition: background-color 0.3s ease;",
-        tags$div(style = "width: 5%;", checkboxInput(paste0("map_chk_", safe_id), "", value = TRUE)),
-        tags$div(style = "width: 30%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;", tags$strong(col)),
-        tags$div(style = "width: 10%; text-align: center;", icon("arrow-right")),
-        tags$div(style = "width: 35%;", textInput(paste0("map_name_", safe_id), "", value = prefill_display, width = "90%")),
-        tags$div(style = "width: 20%;", textInput(paste0("map_delim_", safe_id), "", value = if (grepl("^(authors|author\\(s\\) id|keywords|author keywords|index keywords|scopus id|orcid)$", prefill_display, ignore.case = TRUE)) "," else "", placeholder = "Delim (e.g. ,)", width = "100%"))
-      )
-    })
-    
-    # JS arrays use display names to match the text input values
-    js_req_display <- cn_display_colnames(collabnet_required_cols)
-    js_opt_display <- cn_display_colnames(collabnet_optional_cols)
-    js_req_array <- cn_js_value(as.character(js_req_display))
-    js_opt_array <- cn_js_value(as.character(js_opt_display))
-    
-    # 5. Javascript with Click Toggles
-    js_script <- tags$script(HTML(paste0("
-    function updateRequiredColumns() {
-      var required = ", js_req_array, ";
-      var optional = ", js_opt_array, ";
-      
-      $('.col-mapping-row').css('background-color', '');
-      var foundReq = [];
-      var foundOpt = [];
-      var selectedCols = [];
-      
-      $('.col-mapping-row input[type=\"text\"][id^=\"map_name_\"]').each(function() {
-         var val = $(this).val().trim();
-         var row = $(this).closest('.col-mapping-row');
-         var isChecked = row.find('input[type=\"checkbox\"]').is(':checked');
-         
-         if (!isChecked) {
-            row.css('background-color', 'rgba(220, 53, 69, 0.15)');
-         } else {
-            var origName = row.find('strong').text().trim();
-            var displayCol = (val !== '') ? val : origName;
-            selectedCols.push(displayCol);
-            
-            if (required.includes(val)) {
-               row.css('background-color', 'rgba(40, 167, 69, 0.2)');
-               foundReq.push(val);
-            } else if (optional.includes(val)) {
-               row.css('background-color', 'rgba(255, 193, 7, 0.2)');
-               foundOpt.push(val);
-            }
-         }
-      });
-      
-      required.forEach(function(col) {
-         var badge = $(document.getElementById('req-badge-' + col));
-         if(foundReq.includes(col)) {
-            badge.css('background-color', '#28a745');
-         } else {
-            badge.css('background-color', '#dc3545');
-         }
-      });
-      
-      optional.forEach(function(col) {
-         var badge = $(document.getElementById('opt-badge-' + col));
-         if(foundOpt.includes(col)) {
-            badge.css({'background-color': '#ffc107', 'color': '#212529'});
-         } else {
-            badge.css({'background-color': '#6c757d', 'color': 'white'});
-         }
-      });
-      
-      var selContainer = $('#selected-cols-container');
-      selContainer.empty();
-      selectedCols.forEach(function(colName) {
-         // Added clickable class for the selected badges
-         // SECURITY (P0-8a): column names are user data -> set via .text(), never HTML concat
-         selContainer.append($('<span class=\"clickable-selected-badge\" style=\"display: inline-block; padding: 4px 8px; margin: 2px; border-radius: 12px; font-size: 12px; font-weight: bold; background-color: #17a2b8; color: white; cursor: pointer; user-select: none; transition: transform 0.2s;\"></span>').text(colName));
-      });
-      
-      var allRequiredFound = required.every(function(reqCol) { return foundReq.includes(reqCol); });
-      var nextBtn = $('#next_row_merge');
-      
-      if (allRequiredFound) {
-         nextBtn.prop('disabled', false).removeClass('disabled').css({ 'pointer-events': 'auto', 'opacity': '1' });
-      } else {
-         nextBtn.prop('disabled', true).addClass('disabled').css({ 'pointer-events': 'none', 'opacity': '0.5' });
-      }
-    }
-    
-    var checkExist = setInterval(function() {
-       if ($('.col-mapping-row').length) {
-          clearInterval(checkExist); 
-          updateRequiredColumns();   
-          
-          $(document).off('input change', '.col-mapping-row input').on('input change', '.col-mapping-row input', updateRequiredColumns);
-          
-          // --- CLICK LOGIC: Required & Optional Badges ---
-          $(document).off('click', '.clickable-badge').on('click', '.clickable-badge', function() {
-             var badgeText = $(this).text().trim();
-             var targetRow = null;
-             
-             // Find the corresponding row
-             $('.col-mapping-row').each(function() {
-                var val = $(this).find('input[type=\"text\"][id^=\"map_name_\"]').val().trim();
-                var origName = $(this).find('strong').text().trim();
-                var displayCol = (val !== '') ? val : origName;
-                
-                if (displayCol === badgeText || val === badgeText) {
-                   targetRow = $(this);
-                   return false; // Break loop on first match
-                }
-             });
-             
-             // Toggle the checkbox
-             if (targetRow) {
-                var checkbox = targetRow.find('input[type=\"checkbox\"]');
-                checkbox.prop('checked', !checkbox.prop('checked')).trigger('change');
-             }
-          });
-          
-          // --- CLICK LOGIC: Selected Badges ---
-          $(document).off('click', '.clickable-selected-badge').on('click', '.clickable-selected-badge', function() {
-             var badgeText = $(this).text().trim();
-             var targetRow = null;
-             
-             $('.col-mapping-row').each(function() {
-                var val = $(this).find('input[type=\"text\"][id^=\"map_name_\"]').val().trim();
-                var origName = $(this).find('strong').text().trim();
-                var displayCol = (val !== '') ? val : origName;
-                var isChecked = $(this).find('input[type=\"checkbox\"]').is(':checked');
-                
-                if (displayCol === badgeText && isChecked) {
-                   targetRow = $(this);
-                   return false; 
-                }
-             });
-             
-             // Turn off the checkbox
-             if (targetRow) {
-                var checkbox = targetRow.find('input[type=\"checkbox\"]');
-                checkbox.prop('checked', false).trigger('change');
-             }
-          });
-       }
-    }, 100); 
-    ")))
-    
-    tagList(
-      header_tags,
-      tags$div(style = "max-height: 400px; overflow-y: auto; overflow-x: hidden;", rows_tags),
-      js_script
-    )
-  })
   
   observeEvent(input$toggle_extended, {
     rv$extended_controls <- !isTRUE(rv$extended_controls)
@@ -2191,8 +1246,11 @@ server <- function(input, output, session) {
     # })
     
     target_variants <- ""
-    if(length(input$author_list) > 0){
-      target_variants <- stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n")))
+    kw_in <- input$author_list
+    # P10-A6: editions without the keyword box (free/demo) never set input$author_list -> use the ORCID names
+    if (is.null(kw_in)) kw_in <- rv$orcid_kw_text
+    if(length(kw_in) > 0){
+      target_variants <- stringr::str_trim(unlist(stringr::str_split(kw_in, "\n")))
     target_variants <- target_variants[nzchar(target_variants)]
       target_variants <- target_variants[target_variants != ""]
       isolate({ rv$author_list <- target_variants })
@@ -2334,7 +1392,6 @@ server <- function(input, output, session) {
 
   # ---- C1-4: Sh-index author-position weights (user-editable; default = SH_DEFAULT_WEIGHTS) ----------------
   # C1-5: .cnet load modes (data only / replay full session into the UI controls)
-  register_cnet_replay(input, session, rv, delay_fn = function(ms, expr) shinyjs::delay(ms, expr))
   # D1-4: sh_weights() is the single canonical weights state list(mode = default|custom|newman, weights, newman,
   # errors); banner, weights table, help text and the weighted table below all read it.
   sh_weights <- register_sh_weights(input, output, session)
@@ -2618,7 +1675,8 @@ server <- function(input, output, session) {
     }
   })
   
-  # P2-6: the dormant JS Web Worker Pool (collabnet-worker-pool.js) was removed: R never dispatched work to it.
+  # P2-6: the old dormant JS Web Worker Pool was removed (R never dispatched work to it); C2-1 re-added a new,
+  # wired pool in www/js/collabnet-worker-pool.js for browser-side network layouts (see cn_use_worker_layout()).
   
   # ==============================================================================
   # DYNAMIC UI UPDATES 
@@ -2717,13 +1775,6 @@ server <- function(input, output, session) {
       ))
   }, server = FALSE)
 
-  # D1-6: publication table exports (current filters + current weight mode; sanitized, UTF-8)
-  output$download_table_csv <- downloadHandler(
-    filename = function() cn_export_filename("publications", "csv"),
-    content = cn_gate_content(session, "download_table_csv", function(file) cn_export_csv(tryCatch(glens_year_filtered_rx(), error = function(e) NULL), file)))
-  output$download_table_xlsx <- downloadHandler(
-    filename = function() cn_export_filename("publications", "xlsx"),
-    content = cn_gate_content(session, "download_table_xlsx", function(file) cn_export_xlsx(tryCatch(glens_year_filtered_rx(), error = function(e) NULL), file)))
   
   # output$network_full <- renderVisNetwork({
   #   df <- glens_full_table_rx() #glens_extended_rx() #glens_etable_final_rx()
@@ -2790,15 +1841,6 @@ server <- function(input, output, session) {
 
   # Calculate Filtered Network Data (Debounced)
   # 1. Initialize Network Cache (Updated for Range inputs)
-# P1-4: methods paragraph export (same text as the MCP tool collabnet_methods_text)
-output$download_methods <- downloadHandler(
-  filename = function() cn_export_filename("methods", "txt"),  # D1-6: UTC timestamp
-  content = cn_gate_content(session, "download_methods", function(file) {
-    net <- tryCatch(net_data_filtered_debounced(), error = function(e) NULL)
-    writeLines(cn_methods_text(cnet_settings_from_input(input), if (is.list(net)) net$stats else list(), rv$dedup_report,
-                               list(orcid = input$orcid_text, scopus_id = input$scopusid_text,
-                                    doi_count = length(split_doi_textarea(input$doi_text))), rv$retrieved_utc), file, useBytes = TRUE)
-  }))
 
 # P1-6: sensitivity bands (on demand; bounded inside cn_sensitivity). DT escapes by default.
 sensitivity_rv <- eventReactive(input$run_sensitivity, {
@@ -2882,38 +1924,11 @@ net_data_filtered_raw <- reactive({
 
   net_data_filtered_debounced <- net_data_filtered_raw %>% debounce(600)
   glens_env$net_data_filtered_debounced <- net_data_filtered_debounced
-  # Debug mode + floating R console (GScholarLENS-Console.R). Evaluation env is a child of this server() env,
-  # so rv, reactives (via isolate()) and data are visible from the console.
-  collabnet_console <- register_console(input, output, session, envir = new.env(parent = environment()))
-  # Unified MCP registry/dispatcher (GScholarLENS-MCP.R): serves the in-app AI chat, WebMCP and the local bridge.
-  # Must run inside server() after the debounced network exists. author_col/delim default to the active
-  # network column and its detected delimiter.
-  register_collabnet_mcp(input, output, session, rv, glens_year_filtered_all_rx, net_data_filtered_debounced,
-                         console = collabnet_console)
-  register_cn_gate(input, session, function() rv$glens_full_table)   # E1: export gate (GScholarLENS-Gate.R)
-  # E3e: export pre-check -- the browser blocks an export whose data is empty and shows a message instead
-  # (www/js/collabnet-export-ready.js), before the E1 gate dialog and before any download starts.
-  cn_export_ready_rx <- reactive(cn_export_ready_state(
-    tryCatch(glens_year_filtered_all_rx(), error = function(e) NULL), rv$glens_full_table,
-    tryCatch(net_data_filtered_debounced(), error = function(e) NULL), input$data_export_frame %||% "Current View"))
-  observe(session$sendCustomMessage("cn_export_ready", cn_export_ready_rx()))
   # E1 tests only (off unless the option is set): load a CSV straight into rv$glens_full_table, for browser tests
   # where the real upload/import flow stalls in headless Chromium.
   if (nzchar(getOption("collabnet.test_fixture_csv", ""))) observeEvent(TRUE, once = TRUE, {
     rv$glens_full_table <- utils::read.csv(getOption("collabnet.test_fixture_csv"), check.names = FALSE, stringsAsFactors = FALSE) })
 
-  # D3-(a): network downloads (filtered graph as shown) via cn_net_export_text() -> MCP export_graph
-  for (.dl in list(c("dl_net_nodes_csv", "network_nodes", "csv", "nodes_csv"), c("dl_net_edges_csv", "network_edges", "csv", "csv"),
-                   c("dl_net_graphml", "network", "graphml", "graphml"))) local({
-    d <- .dl
-    output[[d[1]]] <- downloadHandler(
-      filename = function() cn_export_filename(d[2], d[3]),
-      content = cn_gate_content(session, d[1], function(file) {
-        txt <- tryCatch(cn_net_export_text(d[4], net_data_filtered_debounced()), error = function(e) {
-          showNotification(paste("Network export failed:", conditionMessage(e)), type = "error"); NULL })
-        writeLines(enc2utf8(txt %||% ""), file, useBytes = TRUE)
-      }))
-  })
 
   observeEvent(list(input$node_freq_range, input$edge_freq_range,
                     input$cluster_size_range, input$custom_max_keywords,
@@ -3912,54 +2927,6 @@ net_data_filtered_raw <- reactive({
   # #     addFontAwesome()
   # # })
   
-  output$download_btn <- downloadHandler(
-    filename = function() {
-      cn_export_filename("session", "cnet")  # D1-6: UTC timestamp
-    },
-    content = cn_gate_content(session, "cnet", function(file) {   # E1: gated unless options(collabnet.gate_cnet = FALSE)
-      cn_log_info("--- Session export started ---")
-      # E3e: a req() on data_export_frame here stopped silently -> -> HTML error page saved as download_btn.html
-      if (is.null(input$data_export_frame)) session$sendInputMessage("data_export_frame", list(value = "Current View"))
-      
-      export_data <- NULL
-      
-      if (!identical(input$data_export_frame, "Full Data")) {
-        cn_log_debug("Fetching data from glens_year_filtered_rx()...")
-        # Use a tryCatch to prevent a silent reactive crash from hanging the browser
-        export_data <- tryCatch({
-          glens_year_filtered_rx()
-        }, error = function(e) {
-          cn_log_warn("Error reading reactive data: %s", conditionMessage(e))
-          return(NULL)
-        })
-      } else if (input$data_export_frame == "Full Data") {
-        cn_log_debug("Fetching data from rv$glens_full_table...")
-        export_data <- rv$glens_full_table
-      }
-      
-      # Validation check: If data is empty or failed, write a placeholder 
-      # to prevent a 0-byte file from hanging the browser window
-      if (is.null(export_data) || nrow(export_data) == 0) {
-        cn_log_warn("Export data is empty; writing placeholder session dataframe.")
-        export_data <- data.frame(Status = "No data matched the current filters.")
-      }
-      
-      cn_log_info("Writing .cnet v2 session file (gzipped JSON). Total rows: %d", nrow(export_data))
-      
-      # P0-8d: portable, validated JSON session format (no R serialisation)
-      cnet_write(file, list(
-        data = export_data,
-        settings = cnet_settings_from_input(input),
-        source = list(export_frame = input$data_export_frame,
-                      doi_count = length(strsplit(input$doi_text %||% "", "[\\s,;]+", perl = TRUE)[[1]]),
-                      orcid = input$orcid_text %||% NULL, scopus_id = input$scopusid_text %||% NULL),
-        retrieved_utc = rv$retrieved_utc %||% NULL,
-        dedup = rv$dedup_report %||% NULL
-      ))
-      
-      cn_log_info("--- Session export complete ---")
-    })
-  )
   
   output$dynamic_source_ui <- renderUI({
     req(rv$glens_full_table)
@@ -4330,73 +3297,6 @@ net_data_filtered_raw <- reactive({
         shinyjs::enable("submit_button")
       }
       
-    } else if (flow_type == "confirm_import") {
-      # --- CONFIRM IMPORT FINALE ---
-      glens_full_table <- execute_glens_merge(
-        table_existing = rv$glens_full_table,
-        table_new = matched_df,
-        import_type = input$row_import_type,
-        join_keys = input$row_merge_keys,
-        join_type = if (!is.null(input$join_type)) input$join_type else "full",
-        col_import_type = rv$saved_col_import_type
-      )
-      
-      if(nrow(glens_full_table) <= 0){
-        showNotification("Data import/merge returned empty rows. Try different options", type = "error", duration = 10)
-        rv$log_text <- paste(rv$log_text, "<span style='color: red;'>Data import/merge returned empty rows. Try different options </span>",sep="<br>")
-        rv$imported_data_list <- NULL
-        rv$intermediate_merged_df <- NULL
-        rv$saved_col_import_type <- NULL
-        rv$glens_full_table <- rv$glens_full_table_tmp
-        
-        shinyjs::hide("progress_overlay")
-        shinyjs::show("orcid_bar_container")
-        shinyjs::show("scopus_bar_container")
-        
-        # CLEAR PENDING STATE
-        rv$pending_extended_df <- NULL
-        rv$pending_flow_type <- NULL
-        return()
-      }
-      rv$is_glens_exec <- TRUE
-
-      # # Check Missing Columns
-      # missing_cols <- setdiff(collabnet_required_cols, colnames(glens_full_table))
-      # if(length(missing_cols) > 0) {
-      #   missing_str <- paste(missing_cols, collapse=", ")
-      #   rv$log_text <- paste(rv$log_text, paste0("<span style='color: red;'>Missing required columns: ", missing_str, "</span>"), sep="<br>")
-      #   showNotification(paste("Missing columns:", missing_str), type = "error", duration = 10)
-      # }
-      
-      dd <- cn_dedup_papers(glens_full_table)   # P1-2: DOI, then title + year
-      glens_full_table <- dd$data; rv$dedup_report <- dd$report
-      rv$retrieved_utc <- format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")   # P1-3: retrieval timestamp
-      if (dd$report$n_in > dd$report$n_out) showNotification(cn_dedup_message(dd$report), type = "message", duration = 10)
-      rv$glens_full_table <- glens_full_table
-      
-      render_skeleton_plots(rv, glens_full_table, output)
-      
-      # years <- as.numeric(na.omit(glens_full_table$Year))
-      # if (length(years) > 0) {
-      #   min_yr <- min(years)
-      #   max_yr <- max(years)
-      #   updateSliderInput(session, "year_slider", min = min_yr, max = max_yr, value = c(min_yr, max_yr))
-      # }
-      
-      if (!isTRUE(input$auto_refresh_lookup)) {
-        rv$manual_submit <- if(is.null(rv$manual_submit)) 1 else rv$manual_submit + 1
-      }
-      
-      shinyWidgets::updateProgressBar(session, id = "prog_analysis", value = 100, title = "Analysis Complete: 100%", status = "success")
-      
-      rv$imported_data_list <- NULL
-      rv$intermediate_merged_df <- NULL
-      rv$saved_col_import_type <- NULL
-      rv$log_text <- paste(rv$log_text, paste("Post-Import Total:",nrow(rv$glens_full_table),"lines..."),sep="<br>")
-      
-      shinyjs::delay(800, shinyjs::hide("progress_overlay"))
-      shinyjs::show("orcid_bar_container")
-      shinyjs::show("scopus_bar_container")
     }
     
     rv$is_glens_exec <- FALSE
@@ -4589,7 +3489,10 @@ net_data_filtered_raw <- reactive({
       cn_log_debug("submit_btn: raw_df rows=%d", nrow(raw_df))
       
       # --- 2. PARSE THE TARGET AUTHORS ---
-      target_variants <- stringr::str_trim(unlist(stringr::str_split(input$author_list, "\n")))
+      kw_src <- input$author_list
+      # P10-A6: if the browser has not echoed the ORCID-name keywords back yet, use the merged text directly
+      if ((is.null(kw_src) || !nzchar(trimws(kw_src))) && !is.null(rv$orcid_kw_text)) kw_src <- rv$orcid_kw_text
+      target_variants <- stringr::str_trim(unlist(stringr::str_split(kw_src, "\n")))
     target_variants <- target_variants[nzchar(target_variants)]
       target_variants <- target_variants[target_variants != ""]
 
@@ -4608,6 +3511,10 @@ net_data_filtered_raw <- reactive({
       shinyWidgets::updateProgressBar(session, id = "prog_analysis", value = 35, title = "Extending Tables: 35%", status = "info")
       # --- 1. THE HEAVY LIFTING (Part 1: R Formatting) ---
       extended_df <- extend_input_table(rv, raw_df, rv$author_match_regex, rv$target_variants_norm)
+      if (nrow(extended_df) && "label" %in% names(extended_df)) {   # P10-A6: how author positions were decided
+        mt <- cn_position_method_totals(extended_df)
+        rv$log_text <- paste(rv$log_text, sprintf("Author position: %d by ORCID, %d by name, %d unmatched", mt[["orcid"]], mt[["name"]], mt[["none"]]), sep = "<br>")
+      }
       shinyWidgets::updateProgressBar(session, id = "prog_analysis", value = 75, title = "Journal Matching & Metrics: 75%", status = "info")
       
       # Extract journals and append Name_norm column
@@ -5012,6 +3919,30 @@ net_data_filtered_raw <- reactive({
       # ==============================================================================
       if (orcid_count > 0) {
         rv$log_text <- paste(rv$log_text, sprintf("\nProcessing %d ORC-ID(s)...\n", length(orcid_list)), sep="<br>")
+        # P10-A6: the ORCID holder's names -> lookup keywords (else every author-position count stays 0 when the
+        # keyword box is empty). Merged visibly into the keyword box; user keywords are never dropped.
+        rv$orcid_kw_text <- NULL
+        if (!isFALSE(input$orcid_names_to_keywords)) {
+          if (is.null(rv$orcid_name_cache)) rv$orcid_name_cache <- new.env(parent = emptyenv())   # one request per iD per session
+          kw_text <- ""   # free/demo have no keyword box: the names are then used internally (rv$orcid_kw_text)
+          kw_before <- kw_text
+          for (oid in unique(cn_orcid_bare(orcid_list))) {
+            nm <- tryCatch(cn_orcid_holder_names(oid, cache = rv$orcid_name_cache,
+                                                 openalex_key = if (is.null(glens_env$openalex_key)) "" else glens_env$openalex_key),
+                           error = function(e) list(name = "", source = "none", variants = character(0)))
+            if (length(nm$variants)) {
+              mg <- cn_merge_keywords(kw_text, nm$variants); kw_text <- mg$text
+              rv$log_text <- paste(rv$log_text, cn_html_escape(sprintf("ORCID %s: name '%s' (source: %s); added %d keyword variants: %s",
+                oid, nm$name, nm$source, length(mg$added), if (length(mg$added)) paste(mg$added, collapse = "; ") else "(already present)")), sep = "<br>")
+            } else {
+              rv$log_text <- paste(rv$log_text, sprintf("<span style='color: #b8860b;'>%s</span>", cn_html_escape(sprintf(
+                "Warning: ORCID %s: no public name found (ORCID record private/empty, OpenAlex has no match). Add the author's name to the lookup keywords to get author positions.", oid))), sep = "<br>")
+            }
+          }
+          if (!identical(kw_text, kw_before)) {
+            rv$orcid_kw_text <- kw_text
+          }
+        }
         
         # output$log <- renderText({rv$log_text})
         cn_log_debug("ORCID phase 1: starting extraction for %d ORCID(s)", length(orcid_list))
@@ -5025,95 +3956,11 @@ net_data_filtered_raw <- reactive({
           }
           
           future({
-            # --- INSIDE FUTURE: Pure R only ---
-            if (length(strsplit(clean_orcid, "-")[[1]]) != 4) return(list(error = "Malformed ORCID"))
-            
-            target_url <- paste0("https://pub.orcid.org/v3.0/", clean_orcid, "/works")
-            local_is_WASM <- grepl(pattern="wasm", x=Sys.info()["machine"])
-            
-            res_text <- ""
-            
-            # 1. SMART FETCHING
-            tryCatch({
-              if (local_is_WASM) {
-                con <- url(target_url, headers = c(Accept = "application/xml"))
-                res_text <- paste(readLines(con, warn = FALSE), collapse = "\n")
-                close(con)
-              } else {
-                # Require httr locally because ORCID blocks base R user-agents!
-                resp <- httr::GET(target_url, httr::add_headers(Accept = "application/xml"))
-                if (httr::status_code(resp) == 200) {
-                  res_text <- httr::content(resp, as = "text", encoding = "UTF-8")
-                } else {
-                  return(list(df = data.frame(), error = paste("ORCID API returned HTTP", httr::status_code(resp))))
-                }
-              }
-            }, error = function(e) {
-              if (exists("con")) try(close(con), silent = TRUE)
-              return(list(df = data.frame(), error = e$message))
-            })
-            
-            if (trimws(res_text) == "") return(list(df = data.frame(), error = "Empty ORCID response"))
-            
-            # 2. BULLETPROOF XML PARSING (Ignore Namespaces via local-name())
-            xml_vec <- xml2::read_xml(res_text)
-            
-            # Find all works directly, bypassing <group> or namespace prefixes completely
-            xml_summaries <- xml2::xml_find_all(xml_vec, "//*[local-name()='work-summary']")
-            
-            if (length(xml_summaries) == 0) return(list(df = data.frame(), error = NULL))
-            
-            xtext_safe <- function(node, xpath) {
-              val <- xml2::xml_text(xml2::xml_find_first(node, xpath))
-              if (is.na(val) || trimws(val) == "") return(NA_character_) else return(trimws(val))
-            }
-            
-            # 3. EXTRACT DOI DETAILS
-            orcid_df <- purrr::map_dfr(xml_summaries, function(w) {
-              
-              # Get all external IDs attached to this specific paper
-              # We use .//* to ensure we only search INSIDE the current work summary
-              ext_id_nodes <- xml2::xml_find_all(w, ".//*[local-name()='external-id']")
-              
-              ext_id_val <- NA_character_
-              ext_id_url <- NA_character_
-              
-              if (length(ext_id_nodes) > 0) {
-                # Extract type, value, and URL for all IDs
-                id_types <- sapply(ext_id_nodes, function(x) xtext_safe(x, ".//*[local-name()='external-id-type']"))
-                id_vals <- sapply(ext_id_nodes, function(x) xtext_safe(x, ".//*[local-name()='external-id-value']"))
-                id_urls <- sapply(ext_id_nodes, function(x) xtext_safe(x, ".//*[local-name()='external-id-url']"))
-                
-                # Hunt for the DOI natively in R
-                doi_idx <- which(tolower(id_types) == "doi")
-                if (length(doi_idx) > 0) {
-                  ext_id_val <- id_vals[doi_idx[1]]
-                  ext_id_url <- id_urls[doi_idx[1]]
-                } else {
-                  # Fallback to the first ID if no DOI exists
-                  ext_id_val <- id_vals[1]
-                  ext_id_url <- id_urls[1]
-                }
-              }
-              
-              title_val <- xtext_safe(w, ".//*[local-name()='title']/*[local-name()='title']")
-              if (is.na(title_val)) title_val <- xtext_safe(w, ".//*[local-name()='title']")
-              
-              tibble::tibble(
-                source_name = xtext_safe(w, ".//*[local-name()='source-name']"),
-                title = title_val,
-                external_id_value = ext_id_val,
-                external_id_url = ext_id_url,
-                journal_title = xtext_safe(w, ".//*[local-name()='journal-title']"),
-                work_type = xtext_safe(w, ".//*[local-name()='type']"),
-                pub_year = xtext_safe(w, ".//*[local-name()='publication-date']/*[local-name()='year']"),
-                orcid = paste0("https://orcid.org/", clean_orcid)
-              )
-            })
-            
-            return(list(df = orcid_df, error = NULL))
-            
-          }, globals = c("clean_orcid"), seed = TRUE) %...>% (function(res) {
+            # P10-A: fetch + parse live in GScholarLENS-ORCID2Data.R (pure functions, unit-tested with a fixture)
+            cn_orcid_works(clean_orcid)
+          }, globals = list(clean_orcid = clean_orcid, cn_orcid_works = cn_orcid_works, cn_orcid_is_wellformed = cn_orcid_is_wellformed,
+                               cn_orcid_fetch_works = cn_orcid_fetch_works, cn_orcid_works_url = cn_orcid_works_url,
+                               cn_orcid_parse_works = cn_orcid_parse_works), seed = TRUE) %...>% (function(res) {
             
             # --- BACK ON MAIN THREAD: Safe to touch Shiny UI and reactives again ---
             if(!fs::file_exists(file.path("run.lock"))) return(NULL)

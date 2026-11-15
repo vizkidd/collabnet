@@ -103,37 +103,6 @@ base_badge_style <- "display: inline-block; padding: 4px 8px; margin: 2px; borde
 # base_badge_style <- "display: inline-block; padding: 4px 8px; margin: 2px; border-radius: 12px; font-size: 12px; font-weight: bold; color: white; user-select: none;"
 
 # Helper to launch the Step 2 Modal (Keeps your code DRY)
-show_row_merge_modal <- function(rv, session) {
-  showModal(modalDialog(
-    title = tags$span(icon("layer-group", lib = "font-awesome"), " Step 2: Row Merging"),
-    size = "m",
-    radioButtons("row_import_type", label = "Choose Row import type:", inline = TRUE, choices = c("New", "Append", "Merge")),
-    uiOutput("row_merge_ui"),
-    footer = tagList(
-      modalButton("Cancel"),
-      # shinyjs::disabled(actionButton("confirm_import", "Confirm & Finish Import", class = "btn-success"))
-      actionButton("confirm_import", "Confirm & Finish Import", 
-                   class = "btn-success",
-                   disabled = "disabled", 
-                   style = "pointer-events: none; opacity: 0.5;")
-    ),
-    easyClose = FALSE
-  ))
-  
-  has_existing_data <- !is.null(rv$glens_full_table) && is.data.frame(rv$glens_full_table) && nrow(rv$glens_full_table) > 0 && ncol(rv$glens_full_table) > 0
-  if (!has_existing_data) {
-    updateRadioButtons(session, "row_import_type", selected = "New")
-    shinyjs::delay(100, {
-      shinyjs::runjs("$('input[name=\"row_import_type\"][value=\"Append\"]').prop('disabled', true);")
-      shinyjs::runjs("$('input[name=\"row_import_type\"][value=\"Merge\"]').prop('disabled', true);")
-    })
-  } else {
-    shinyjs::delay(100, {
-      shinyjs::runjs("$('input[name=\"row_import_type\"][value=\"Append\"]').prop('disabled', false);")
-      shinyjs::runjs("$('input[name=\"row_import_type\"][value=\"Merge\"]').prop('disabled', false);")
-    })
-  }
-}
 
 show_fetch_merge_modal <- function(rv, session, new_count) {
   existing_count <- if (!is.null(rv$glens_full_table) && is.data.frame(rv$glens_full_table)) nrow(rv$glens_full_table) else 0

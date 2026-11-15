@@ -15,6 +15,15 @@
     return function () { if (t) ct(t); t = st(function () { t = null; fn(); }, ms); };
   }
 
+  // E3f: ignore hidden (0x0) containers and plotly widgets Plotly has not drawn yet -- a window 'resize' for those
+  // made htmlwidgets call Plotly.relayout on a non-plot ("reading '_guiEditing'" in the owner's webR log).
+  function relevant(entry) {
+    var r = entry && entry.contentRect, t = entry && entry.target;
+    if (!r || !(r.width > 0) || !(r.height > 0)) return false;
+    if (t && t.classList && t.classList.contains("plotly") && t.classList.contains("html-widget") && !t._fullLayout) return false;
+    return true;
+  }
+
   function attach(win) {
     var doc = win.document;
     var fire = debounce(function () {
@@ -24,6 +33,7 @@
     var ro = win.ResizeObserver ? new win.ResizeObserver(function (entries) {
       var changed = false;
       for (var i = 0; i < entries.length; i++) {
+        if (!relevant(entries[i])) continue;
         var w = Math.round(entries[i].contentRect.width);
         if (lastW.get(entries[i].target) !== w) { lastW.set(entries[i].target, w); changed = true; }
       }
@@ -43,7 +53,7 @@
     return { fire: fire, scan: scan };
   }
 
-  var api = { debounce: debounce, attach: attach, DEBOUNCE_MS: DEBOUNCE_MS };
+  var api = { debounce: debounce, relevant: relevant, attach: attach, DEBOUNCE_MS: DEBOUNCE_MS };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else {
     var go = function () { root.CollabNETResize = attach(root); };

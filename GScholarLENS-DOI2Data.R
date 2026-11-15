@@ -834,8 +834,6 @@ prepare_doi_metadata <- function(doi_input, orcid, rv, id_type = "DOI", write_fi
 #       doi2gscholarlens(x)  
 #     }, simplify = F))
 #     if(!is.null(output_xlsx)){
-#       #write.csv(lens_format_table, output_csv, row.names = FALSE)
-#       openxlsx::write.xlsx(lens_format_table, output_xlsx)
 #     }else{
 #       print(lens_format_table)
 #     }

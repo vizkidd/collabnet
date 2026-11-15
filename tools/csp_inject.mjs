@@ -13,13 +13,8 @@ export const API_HOSTS = [
   "https://api.semanticscholar.org", "https://api.opencitations.net", "https://pub.orcid.org",
   "https://doi.org", "https://www.ncbi.nlm.nih.gov",
   "https://repo.r-wasm.org",
-  "https://api.openai.com",
-  "https://api.anthropic.com", "https://generativelanguage.googleapis.com", "https://openrouter.ai",
 ];
-// E3: Buy Me a Coffee button (gate dialog, rendered in a srcdoc iframe that inherits this policy) + its detect script.
-export const BMC_SCRIPT = ["https://cdnjs.buymeacoffee.com", "'sha256-eMWsPfmv41Z85fYg+d/gPBrG/kS8UkAha6JImKwQrrA='"];
-export const BMC_STYLE = ["https://fonts.googleapis.com"];
-export const BMC_FONT = ["https://fonts.gstatic.com"];
+export const BMC_SCRIPT = [], BMC_STYLE = [], BMC_FONT = [];   // P10-A8: filled only in editions with the export dialog
 export const LOCAL_BRIDGE = ["ws://127.0.0.1:*", "ws://localhost:*", "http://127.0.0.1:*", "http://localhost:*"];
 export const MARK = 'data-collabnet-csp="1"';
 export const GUARD_FILE = "collabnet-session-guard.js";

@@ -8,15 +8,14 @@
 # # Force a fresh download of the WebAssembly assets
 # shinylive::assets_download()
 
-# E2 CLI:  Rscript buildWASM.R [--target=ghpages|workers|pages|both] [--dry-run] [--serve] [--base-path=/|/collabnet/]
-#          [--gate-api=https://collabnet.<account>.workers.dev]   (E3c: the ONE donation Worker; see DEPLOY_CLOUDFLARE.md)
-#                               [--project-name=collabnet] [--paid-plan] [--skip-export]
-# Default --target=ghpages = the previous behaviour (CI runs plain `Rscript buildWASM.R`). Cloudflare targets stage
-# wasm_build/ via tools/cf_deploy.mjs (Node >= 18, pinned wrangler; see DEPLOY_CLOUDFLARE.md). --skip-export reuses
-# an existing wasm_build/ (or --build-dir=DIR) instead of running shinylive::export.
+# CLI:  Rscript buildWASM.R [--skip-export] [--serve-local]
+# P10-A7: --serve-local (or env CN_SERVE=1) serves wasm_build/ with httpuv at the end; default off (prints the command).
+# --skip-export reuses an existing wasm_build/ (or --build-dir=DIR) instead of running shinylive::export.
+# P10-A8: reads only files inside this directory (edition dir or repo root); missing inputs fail before the export.
 cn_build_args <- function(args = commandArgs(trailingOnly = TRUE)) {
   o <- list(target = "ghpages", dry_run = FALSE, serve = FALSE, base_path = "/", project_name = "collabnet",
-            paid_plan = FALSE, skip_export = FALSE, build_dir = "wasm_build", gate_api = NULL)
+            paid_plan = FALSE, skip_export = FALSE, build_dir = "wasm_build",
+            serve_local = identical(Sys.getenv("CN_SERVE"), "1"))
   for (a in args) {
     kv <- regmatches(a, regexec("^--([a-z-]+)(=(.*))?$", a))[[1]]
     if (!length(kv)) stop("buildWASM: unexpected argument ", a, call. = FALSE)
@@ -24,9 +23,10 @@ cn_build_args <- function(args = commandArgs(trailingOnly = TRUE)) {
     switch(k,
       "target" = { if (!v %in% c("ghpages", "workers", "pages", "both")) stop("buildWASM: --target must be ghpages|workers|pages|both", call. = FALSE); o$target <- v },
       "dry-run" = o$dry_run <- TRUE, "serve" = o$serve <- TRUE, "paid-plan" = o$paid_plan <- TRUE, "skip-export" = o$skip_export <- TRUE,
+      "serve-local" = o$serve_local <- TRUE,
       "base-path" = { if (!grepl("^/?([A-Za-z0-9._-]+/?)*$", v)) stop("buildWASM: bad --base-path ", v, call. = FALSE)
                       o$base_path <- if (nzchar(gsub("/", "", v))) paste0("/", gsub("^/+|/+$", "", v), "/") else "/" },
-      "project-name" = o$project_name <- v, "build-dir" = o$build_dir <- v, "gate-api" = o$gate_api <- v,
+      "project-name" = o$project_name <- v, "build-dir" = o$build_dir <- v,
       stop("buildWASM: unknown option --", k, call. = FALSE))
   }
   if (o$serve && o$target %in% c("both", "ghpages")) stop("buildWASM: --serve needs --target=workers or --target=pages", call. = FALSE)
@@ -40,15 +40,29 @@ cn_node_check <- function() {
   if (is.na(v) || v < 18) stop("buildWASM: Node.js >= 18 required (found ", v, ")", call. = FALSE)
   invisible(TRUE)
 }
+# P10-A8: every edition dir is self-contained. Build inputs are taken ONLY from the working dir (no parent/repo-root
+# fallback: that would leak another edition's files into this bundle). cn_build_preflight() checks them all BEFORE the
+# slow shinylive export and stops with the full list of what is missing.
+cn_build_input <- function(path) {
+  if (file.exists(path)) return(path)
+  stop("buildWASM: ", path, " not found in ", normalizePath(getwd()), " (this edition dir is incomplete; regenerate it with ",
+       "Rscript editions/build_editions.R)", call. = FALSE)
+}
+CN_BUILD_INPUTS <- c("app.R", "ui.R", "server.R", "edition.R", "GScholarLENS-Edition.R", "GScholarLENS-Runtime.R", "www",
+                     "tools/csp_inject.mjs", "tools/html_head_patch.mjs", "tools/sw_patch.mjs")
+CN_BUILD_CLOUDFLARE <- FALSE
+cn_build_preflight <- function(inputs = CN_BUILD_INPUTS) {
+  if (!file.exists("edition.R") && dir.exists("editions")) inputs <- setdiff(inputs, "edition.R")   # repo root = full
+  miss <- inputs[!file.exists(inputs)]
+  if (length(miss)) stop("buildWASM: missing build input(s) in ", normalizePath(getwd()), ": ", paste(miss, collapse = ", "),
+                         "\n  Regenerate the edition dir: Rscript editions/build_editions.R --out=builds", call. = FALSE)
+  invisible(TRUE)
+}
 BUILD <- cn_build_args()
-# E3c: gate API baked into the bundle: --gate-api, else same-origin for Cloudflare targets (the Worker serves the app),
-# else (ghpages) the committed default in gate_config.json (placeholder -> no Worker -> honour button).
-cn_gate_env <- new.env(); sys.source("GScholarLENS-Gate.R", envir = cn_gate_env)
-BUILD$gate_api_resolved <- cn_gate_env$cn_gate_api_normalise(
-  if (!is.null(BUILD$gate_api)) BUILD$gate_api else if (BUILD$target != "ghpages") "same-origin" else { f <- cn_gate_env$cn_gate_api_config_file(); if (is.null(f)) "" else f })
-message("buildWASM: gate API = ", if (nzchar(BUILD$gate_api_resolved)) BUILD$gate_api_resolved else "(none: honour button only)",
-        if (!is.null(BUILD$gate_api)) " [--gate-api]" else if (BUILD$target != "ghpages") " [default for Cloudflare targets]" else " [gate_config.json]")
-if (BUILD$skip_export && !is.null(BUILD$gate_api)) warning("buildWASM: --gate-api is baked at export time; ignored with --skip-export", call. = FALSE)
+cn_build_preflight()
+if (!CN_BUILD_CLOUDFLARE && BUILD$target != "ghpages")
+  stop("buildWASM: this edition builds the static bundle only (--target=ghpages); Cloudflare targets belong to the full edition", call. = FALSE)
+baked_lines <- character(0); extra_origin <- NULL   # P10-A8: filled only by the export block (full)
 cn_node_check()
 
 if (!BUILD$skip_export) {   # E2: --skip-export reuses an existing build dir
@@ -67,10 +81,13 @@ helper_scripts <- c(
   "GScholarLENS-SCOPUS2Data.R", "GScholarLENS-ProcessJCR.R", "GScholarLENS-Session.R",
   "GScholarLENS-Data2GLENS.R", "GScholarLENS-PlotGLENS.R",
   "GScholarLENS-Graph.R", "GScholarLENS-helpers.R",
-  "GScholarLENS-Fixes.R", "GScholarLENS-MCP.R",
-  "GScholarLENS-Console.R", "GScholarLENS-Parsers.R", "GScholarLENS-ShWeights.R", "GScholarLENS-CSP.R",
-  "GScholarLENS-Keys.R", "GScholarLENS-Gate.R"   # E1: export gate
+  "GScholarLENS-Fixes.R",
+  "GScholarLENS-Runtime.R", "GScholarLENS-ShWeights.R", "GScholarLENS-CSP.R",
+  "GScholarLENS-Keys.R"
 )
+# P10-A8: module files are named only inside their edition blocks (they are not shipped in the other editions)
+helper_scripts <- c("edition.R", "GScholarLENS-Edition.R", helper_scripts)   # P10-A: edition constants first
+helper_scripts <- helper_scripts[file.exists(helper_scripts)]   # edition.R is absent in the repo root (= full)
 
 # cat("WASM <- TRUE", file="staging_app/app.R")
 # # Read and concatenate helper scripts and app files
@@ -79,7 +96,9 @@ helper_scripts <- c(
 # P1-5: build provenance, embedded in the bundled app (shown in About, written to .cnet and the methods text).
 .bi_commit <- Sys.getenv("GITHUB_SHA", tryCatch(system2("git", c("rev-parse", "--short", "HEAD"), stdout = TRUE, stderr = FALSE)[1], error = function(e) NA_character_))
 .bi_assets <- tryCatch(shinylive::assets_info(quiet = TRUE), error = function(e) NULL)
+.bi_edition <- if (file.exists("edition.R")) { .e <- new.env(); sys.source("edition.R", .e); get0("COLLABNET_EDITION", .e, ifnotfound = "full") } else "full"
 collabnet_build_info <- list(
+  edition = .bi_edition,   # P10-B: the full site build checks that its Free input really is a free build
   commit = substr(.bi_commit, 1, 12), built_utc = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
   shinylive_r = tryCatch(as.character(utils::packageVersion("shinylive")), error = function(e) NA_character_),
   shinylive_assets = tryCatch(as.character(shinylive::assets_version()), error = function(e) NA_character_),
@@ -91,7 +110,10 @@ build_info_line <- paste0("collabnet_build_info <- ", paste(deparse(collabnet_bu
 
 app_content_lines <- unlist(lapply(c(helper_scripts, app_files), function(x){
   lines <- readLines(x)
-  lines <- grep(pattern = "^\\s*source\\s*\\(", x = lines, value = TRUE, invert = TRUE)   # E-23: anchored (was any line containing "source(...)")
+  lines <- grep(pattern = "^\\s*source\\s*\\(", x = lines, value = TRUE, invert = TRUE)
+  # P10-A8: also `if (!exists("f")) source("X.R")` guards (ui.R): in the bundle every file is already concatenated, and
+  # webR has no X.R on disk, so a guard whose symbol is stripped by the edition would try to open it (preload error).
+  lines <- grep(pattern = "^\\s*if\\s*\\(\\s*!\\s*exists\\([^)]*\\)[^)]*\\)\\s*source\\s*\\(", x = lines, value = TRUE, invert = TRUE)   # E-23: anchored (was any line containing "source(...)")
   # lines <- grep(pattern = "require\\(httr2\\)", x = lines, value = TRUE, invert = TRUE)
   # if (nzchar(worker_js_content)) {
   #   worker_js_json <- jsonlite::toJSON(worker_js_content, auto_unbox = TRUE)
@@ -100,8 +122,10 @@ app_content_lines <- unlist(lapply(c(helper_scripts, app_files), function(x){
   return(lines)
 }))
 
-gate_api_line <- paste0("collabnet_gate_api_baked <- ", deparse(BUILD$gate_api_resolved))   # E3c
-cat(c(build_info_line, gate_api_line, app_content_lines), file="staging_app/app.R", sep="\n")
+# P10-A8: stringdist's .onLoad asks parallel::detectCores(), which is NA in webR, and prints "Could not detect number of
+# cores, defaulting to 1." as a preload message. It honours OMP_NUM_THREADS first, so set it (webR is single-threaded).
+omp_line <- 'if (!nzchar(Sys.getenv("OMP_NUM_THREADS"))) Sys.setenv(OMP_NUM_THREADS = "1")'
+cat(c(omp_line, build_info_line, baked_lines, app_content_lines), file="staging_app/app.R", sep="\n")
 
 fs::dir_copy("www/","staging_app/")
 # fs::file_copy(c(app_files, helper_scripts), "staging_app/")
@@ -127,38 +151,40 @@ if (BUILD$skip_export && !identical(BUILD$build_dir, "wasm_build")) {
 }
 # P3-6: inject the Content-Security-Policy <meta> into the exported shell (idempotent; untested in a browser)
 # E2b: Node port tools/csp_inject.mjs (byte-identical to csp_inject.py); fails the build instead of shipping without CSP.
-if (!file.exists("tools/csp_inject.mjs")) stop("buildWASM: tools/csp_inject.mjs not found (P3-6/E2b)", call. = FALSE)
-csp_status <- system2("node", c("tools/csp_inject.mjs", "wasm_build/index.html",
-                               if (!is.null(cn_gate_env$cn_gate_api_origin(BUILD$gate_api_resolved))) c("--extra-connect", cn_gate_env$cn_gate_api_origin(BUILD$gate_api_resolved))))   # E3c
+csp_js <- cn_build_input("tools/csp_inject.mjs")   # P3-6/E2b
+csp_status <- system2("node", c(csp_js, "wasm_build/index.html", if (!is.null(extra_origin)) c("--extra-connect", extra_origin)))
 if (!identical(csp_status, 0L)) stop("buildWASM: CSP injection (tools/csp_inject.mjs) failed; refusing to ship wasm_build/index.html without the CSP meta", call. = FALSE)
-# E1/E2/E3: donation policy + retired success/failure notices (deploy_static/README.md) next to the app:
-# wasm_build/success/, failure/, refund-policy/ -> https://vizkidd.github.io/collabnet/success/ etc.
-if (!fs::dir_exists("deploy_static")) stop("buildWASM: deploy_static/ not found (E1/E3 static pages)")
-for (f in setdiff(list.files("deploy_static", all.files = FALSE), "README.md")) {
-  src <- file.path("deploy_static", f)
-  if (fs::dir_exists(src)) fs::dir_copy(src, file.path("wasm_build", f), overwrite = TRUE) else fs::file_copy(src, file.path("wasm_build", f), overwrite = TRUE)
-}
+# P10-B: detailed loading screen (free + full; demo keeps Shinylive's default). Copied next to index.html like the session
+# guard; the build-time byte sizes go on the script tag (data-*) because webR downloads in a worker the page cannot see.
+local({
+  wb <- "wasm_build"; sl <- file.path(wb, "shinylive"); pk <- file.path(sl, "webr", "packages")
+  sz <- function(fs_) sum(file.size(fs_), na.rm = TRUE)
+  all_sl <- list.files(sl, recursive = TRUE, full.names = TRUE); in_pk <- startsWith(all_sl, paste0(pk, "/"))
+  rt <- sz(all_sl[!in_pk]); pb <- sz(all_sl[in_pk]); ab <- sz(file.path(wb, "app.json"))
+  np <- length(list.dirs(pk, recursive = FALSE))
+  file.copy(cn_build_input("www/js/collabnet-loader.js"), file.path(wb, "collabnet-loader.js"), overwrite = TRUE)
+  file.copy(cn_build_input("www/css/collabnet-loader.css"), file.path(wb, "collabnet-loader.css"), overwrite = TRUE)
+  idx <- file.path(wb, "index.html"); h <- readLines(idx, warn = FALSE, encoding = "UTF-8")
+  h <- h[!grepl("data-collabnet-loader", h, fixed = TRUE)]
+  tag <- c('<link rel="stylesheet" href="collabnet-loader.css" data-collabnet-loader="1">',
+           sprintf('<script src="collabnet-loader.js" data-collabnet-loader="1" data-runtime-bytes="%.0f" data-packages-bytes="%.0f" data-app-bytes="%.0f" data-packages="%d"></script>', rt, pb, ab, np))
+  at <- grep("</head>", h, fixed = TRUE)[1]
+  if (is.na(at)) stop("buildWASM: no </head> in wasm_build/index.html for the loader", call. = FALSE)
+  h <- append(h, tag, after = at - 1)
+  con <- file(idx, open = "w", encoding = "UTF-8"); writeLines(h, con); close(con)
+  message(sprintf("loader: runtime %.1f MB, %d packages %.1f MB, app.json %.1f MB", rt / 2^20, np, pb / 2^20, ab / 2^20))
+})
 # D3-6/7: tab title "CollabNET" + favicon links/files in the outer shell (the app itself runs in an iframe).
 # E2: Node port tools/html_head_patch.mjs (byte-identical to html_head_patch.py, kept one more release).
-if (!file.exists("tools/html_head_patch.mjs")) stop("buildWASM: tools/html_head_patch.mjs not found (D3-6/E2)")
-head_status <- system2("node", c("tools/html_head_patch.mjs", "wasm_build/index.html", "--title", "CollabNET", "--icons-from", "www"))
+head_status <- system2("node", c(cn_build_input("tools/html_head_patch.mjs"), "wasm_build/index.html", "--title", "CollabNET", "--icons-from", "www"))
 if (!identical(head_status, 0L)) stop("buildWASM: html_head_patch.mjs failed (no <head> in wasm_build/index.html?)")
 # D1-7 / D2-A1: guard the Shinylive service worker against 'only-if-cached' requests (see sw_patch.py).
 # Fails the build loudly (instead of warning) if node is missing (cn_node_check above) or the fetch-handler
 # pattern is not found, e.g. after a Shinylive upgrade changed the service worker shape.
 # E2: Node port tools/sw_patch.mjs (byte-identical to sw_patch.py, kept one more release).
-if (!file.exists("tools/sw_patch.mjs")) stop("buildWASM: tools/sw_patch.mjs not found (D2-A1/E2)")
-sw_status <- system2("node", c("tools/sw_patch.mjs", "wasm_build/shinylive-sw.js"))
+sw_status <- system2("node", c(cn_build_input("tools/sw_patch.mjs"), "wasm_build/shinylive-sw.js"))
 if (!identical(sw_status, 0L)) stop("buildWASM: sw_patch.mjs failed; the Shinylive fetch-handler pattern was not found in wasm_build/shinylive-sw.js")
 
-# E2: Cloudflare targets (ghpages: nothing more to do, CI uploads wasm_build/ as before).
-cf_targets <- switch(BUILD$target, ghpages = character(0), both = c("workers", "pages"), BUILD$target)
-for (t in cf_targets) {
-  st <- system2("node", c("tools/cf_deploy.mjs", paste0("--target=", t), "--src=wasm_build", "--out=cf_build",
-                          paste0("--base-path=", BUILD$base_path), paste0("--project-name=", BUILD$project_name),
-                          if (BUILD$paid_plan) "--paid-plan", if (BUILD$dry_run) "--dry-run", if (BUILD$serve) "--serve"))
-  if (!identical(st, 0L)) stop("buildWASM: Cloudflare ", t, " step failed (exit ", st, "); see messages above", call. = FALSE)
-}
 
 # # -----------------------------------------------------------------------------
 # # 3. FAST COLD-START OPTIMIZATION: Inject packages into library.data.gz
@@ -269,7 +295,14 @@ for (t in cf_targets) {
 #   "Cross-Origin-Embedder-Policy" = "require-corp"
 # )) #host = "0.0.0.0"
 
-#httpuv::runStaticServer("./wasm_build/", headers = list()) #host = "0.0.0.0"
+# P10-A7: serving is opt-in (--serve-local or CN_SERVE=1); by default the build ends here and prints the command,
+# so `source("buildWASM.R")` / CI return instead of blocking on a static server.
+if (isTRUE(BUILD$serve_local)) {
+  httpuv::runStaticServer("./wasm_build/", headers = list()) #host = "0.0.0.0"
+} else {
+  message("buildWASM: done -> ", normalizePath("wasm_build"), "\n  serve it with: Rscript -e 'httpuv::runStaticServer(\"wasm_build\")'",
+          "  (or rerun with --serve-local / CN_SERVE=1)")
+}
 
 # # httpuv::runServer(
 # #   host = "127.0.0.1", port = 7446,
