@@ -140,12 +140,15 @@ jobs:
       - name: Upload Static Web Site Artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: "wasm_build" # Configured to target your script's output destination
+          name: github-pages-${{ github.run_attempt }}
+          path: "wasm_build"
           retention-days: 1
 
       - name: Deploy Directly to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+        with:
+          artifact_name: github-pages-${{ github.run_attempt }}
 
       - name: Verify build output
         run: ls -la ./wasm_build
