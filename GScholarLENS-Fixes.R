@@ -645,9 +645,46 @@ cn_lookup_context <- function(author_list = NULL, gate = NULL) {
   paste0("gate: ", if (is.null(gate) || !nzchar(gate)) "OR" else gate)
 }
 cn_has_rows <- function(df) !is.null(df) && is.data.frame(df) && nrow(df) > 0
+# P10-C25r4: ONE place that decides which output panels are shown (ui.R wraps them in conditionalPanel on the
+# output.cn_has_data / output.cn_panel_ego flags that server.R derives from this). Cheap on purpose: only looks at
+# the row count of the loaded dataset (rv$glens_full_table) and at plain input values -- never builds the network.
+#   has_data -- a dataset with >= 1 row is loaded (false before loading and again after it is cleared)
+#   ego      -- has_data AND at least one non-empty author/keyword is selected (ego metrics need a focal author)
+cn_panel_visibility <- function(data, inputs = list()) {
+  has <- cn_has_rows(data)
+  al <- inputs[["author_list"]]
+  al <- if (is.null(al)) character(0) else trimws(as.character(unlist(al)))
+  list(has_data = has, ego = has && any(nzchar(al) & !is.na(al)))
+}
 # validate() raises a shiny validation condition: outputs render the message as a grey empty state, observers stop
 # quietly (it inherits shiny.silent.error), DT never sends an Ajax error.
 cn_need_rows <- function(df, context = NULL, message = NULL) {
   shiny::validate(shiny::need(cn_has_rows(df), if (is.null(message)) cn_empty_message(context) else message))
   invisible(df)
+}
+
+# C25_r11: Close / reset -> Soft reset (www/js/collabnet-reset.js sets input$cn_reset). Puts every DATA field of the
+# server's reactiveValues back to its initial value (server.R rv <- reactiveValues(...)), so output.cn_has_data turns
+# FALSE, the result panels hide and the empty state + spotlight return -- without a reload. Option fields
+# (extended_controls, auto_refresh_lookup, ext_match, ignore_case) are not listed, so they keep the user's choice.
+# keys = TRUE also forgets the API keys held in memory (glens_env$<name>_key) and their has_key_* flags.
+CN_RESET_DATA_DEFAULTS <- list(
+  author_list = list(), glens_full_table = data.frame(), glens_etable_final = data.frame(),
+  glens_year_filtered = data.frame(), summary_table = data.frame(), scopus_df = data.frame(),
+  scopus_future_list = list(), api_journal_cache = list(), wos_df = data.frame(), semantic_df = data.frame(),
+  doi_count = 0, sh_index = 0, is_glens_exec = FALSE, is_cancelled = FALSE, log_text = NULL,
+  acounts_plotly = NULL, ccounts_plotly = NULL, cdist_plotly = NULL, aperc_plotly = NULL, cperc_plotly = NULL,
+  post_diagnostics = NULL)
+CN_RESET_KEY_NAMES <- c("scopus_key", "openalex_key", "mail_key", "wos_key", "semantic_key", "crossref_key", "opencites_key")
+cn_reset_data <- function(rv, env = NULL, keys = FALSE) {
+  for (k in names(CN_RESET_DATA_DEFAULTS)) {
+    rv[[k]] <- CN_RESET_DATA_DEFAULTS[[k]]   # reactiveValues / environment: [[<- NULL stores NULL (keeps the field)
+  }
+  if (isTRUE(keys)) {
+    for (k in CN_RESET_KEY_NAMES) {
+      if (!is.null(env)) assign(k, "", envir = env)
+      rv[[paste0("has_key_", sub("_key$", "", k))]] <- FALSE
+    }
+  }
+  invisible(rv)
 }

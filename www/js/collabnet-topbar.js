@@ -155,7 +155,7 @@
   }
 
   function controlsOf(buttons) {
-    return Array.prototype.filter.call(buttons.children, function (c) { return c.id !== "cn-topbar-toggle"; });
+    return Array.prototype.filter.call(buttons.children, function (c) { return c.id !== "cn-topbar-toggle" && c.id !== "cn-keystore-unlock"; });   // C25_r12: the Unlock group is not a pill
   }
 
   function attach(win) {

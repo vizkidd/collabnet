@@ -49,6 +49,8 @@ if (!exists("edition_has", mode = "function")) source("GScholarLENS-Edition.R", 
 if (!exists("cn_install_quit_override", mode = "function")) source("GScholarLENS-Runtime.R", local = TRUE)  # P10-A8: shared guards
 if (!exists("SH_DEFAULT_WEIGHTS")) source("GScholarLENS-ShWeights.R", local = TRUE)  # C1-4
 if (!exists("cn_csp_meta")) source("GScholarLENS-CSP.R", local = TRUE)  # C3-2
+# C25_r10: empty-state note. Editions without file import (Demo) have no Upload control, so they only mention Fetch.
+CN_EMPTY_NOTE <- "Fetch (Left) a dataset to see metrics, charts, the publication table and the network."
 
 ui <- fluidPage(
   tags$head(cn_csp_meta()),   # C3-2: app-page CSP (first head element after Shiny deps)
@@ -118,6 +120,10 @@ ui <- fluidPage(
     tags$script(src = "js/collabnet-worker-pool.js"),
     tags$script(src = "js/collabnet-keystore.js"),
     tags$script(src = "js/collabnet-topbar.js", defer = NA),   # D2-B2 icon-only top bar
+    tags$link(rel = "stylesheet", href = "css/collabnet-spotlight.css"),   # C25_r10: empty-state spotlight (Fetch + Upload)
+    tags$script(src = "js/collabnet-spotlight.js", defer = NA),
+    tags$link(rel = "stylesheet", href = "css/collabnet-reset.css"),   # C25_r11: Close / reset dialog
+    tags$script(src = "js/collabnet-reset.js", defer = NA),
     cn_plotly_static_deps(),   # E3h: plotly library in <head> at page load (root fix for "Plotly is not defined")
     tags$script(src = "js/collabnet-widget-guard.js"),   # E3f: plotly render/resize/proxy guards (backstop)
     tags$link(rel = "stylesheet", href = "css/collabnet-topbar.css"),
@@ -1074,6 +1080,7 @@ ui <- fluidPage(
             } else {
               button.html('&#43;'); // Plus symbol
             }
+            button.attr('aria-expanded', content.is(':visible') ? 'true' : 'false');
           });
         });
       });
@@ -1304,6 +1311,10 @@ ui <- fluidPage(
       actionButton("readme_btn", tags$span(class = "cn-topbar-label", "Readme"), `aria-label` = "Readme", icon = icon("circle-info", lib = "font-awesome"), class = "btn-outline-white"),
       actionButton("manual_btn", tags$span(class = "cn-topbar-label", "Manual"), `aria-label` = "Manual", icon = icon("book-open", lib = "font-awesome"), class = "btn-outline-white"),
       actionButton("theme_toggle", tags$span(class = "cn-topbar-label", "Dark mode"), `aria-label` = "Dark mode", icon = icon("moon", lib = "font-awesome"), class = "btn-outline-white"),
+      # C25_r11: Close / reset (all editions); js/collabnet-reset.js opens the dialog (soft / hard reset, reload)
+      tags$button(id = "cn_reset_btn", type = "button", class = "btn btn-default btn-outline-white", title = "Close / reset",
+                  `aria-label` = "Close / reset", `aria-haspopup` = "dialog",
+                  icon("xmark", lib = "font-awesome"), tags$span(class = "cn-topbar-label", "Close / reset")),
       NULL
     )
   ),
@@ -1319,6 +1330,7 @@ ui <- fluidPage(
       
       # Section 1: Fetch
       tags$div(
+        id = "cn_fetch_card",   # C25_r10: highlighted by the empty-state spotlight
         class = "custom-card",
         style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; margin-bottom: 25px;",
         tags$div(
@@ -1381,22 +1393,25 @@ ui <- fluidPage(
         )
       ),
       tags$div(
-        class = "custom-card",
+        class = "custom-card", id = "lookup_controls_card",
         style = "box-shadow: 0 4px 8px rgba(0,0,0,0.05); padding: 20px; border-radius: 10px; border-top: 6px solid #4B8BBE; margin-bottom: 25px;",
         tags$div(
           class = "custom-card-header",
           style = "display: flex; justify-content: space-between; align-items: center; cursor: pointer; user-select: none; margin-bottom: 0;",
           h4("Lookup Controls", style = "margin: 0; font-weight: bold; font-size: 16px;"),
+          # P10-C6: starts minimized in every edition (content display:none, "+" button); a header click expands it.
+          # Inputs inside stay bound while hidden, and its outputs have suspendWhenHidden = FALSE (server.R).
           tags$button(
             type = "button", 
-            class = "btn-minimize", 
+            class = "btn-minimize", `aria-expanded` = "false", `aria-controls` = "lookup_controls_content",
+            `aria-label` = "Show or hide Lookup Controls",
             style = "background: transparent; border: none; font-size: 1.6em; line-height: 1; cursor: pointer; padding: 0 5px;",
-            HTML("&minus;")
+            HTML("&#43;")
           ),
         ),
         tags$div(
-          class = "custom-card-content",
-          style = "display: block;",
+          class = "custom-card-content", id = "lookup_controls_content",
+          style = "display: none;",
           tags$br(),
           # The Toggle Lock Button (initialized shown)
           actionButton("toggle_extended", "Hide Lookup Controls", icon = icon("lock"), 
@@ -1505,6 +1520,16 @@ ui <- fluidPage(
     
     column(
       width = 9,
+      # P10-C25r4: before a dataset is loaded (and after it is cleared) only this note shows; the result cards below
+      # are wrapped in ONE conditionalPanel on output.cn_has_data (server.R, cn_panel_visibility()).
+      conditionalPanel(
+        condition = "!output.cn_has_data",
+        tags$div(id = "cn_no_data_note", class = "custom-card cn-no-data", style = "padding: 20px; border-radius: 10px; margin-bottom: 25px; color: #555;",
+                 tags$p(style = "margin: 0;", icon("circle-info"), paste0(" ", CN_EMPTY_NOTE)))
+      ),
+      conditionalPanel(
+        condition = "output.cn_has_data",
+        id = "cn_results_panels",
       # 3) Impact Metrics
       tags$div(
         class = "custom-card",
@@ -2019,7 +2044,10 @@ ui <- fluidPage(
                     h4("Ego & Brokerage Metrics"),
                     tags$p(style = "color: #666; font-size: 13px;",
                            "Analyzes individual author neighborhood networks (ego networks), structural constraint, effective network size, and Burt's structural holes."),
-                    tableOutput("ego_metrics_table"),
+                    # P10-C25r4: ego metrics need a focal author -> hidden (and not computed) until one is selected
+                    conditionalPanel("!output.cn_panel_ego",
+                      tags$p(class = "text-muted", style = "font-size: 13px;", "Select an author or keyword in the lookup to see ego metrics.")),
+                    conditionalPanel("output.cn_panel_ego", tableOutput("ego_metrics_table")),
                     hr(),
                     h4("Bibliometrics"),
                     tags$p(style = "color: #666; font-size: 13px;",
@@ -2099,6 +2127,7 @@ ui <- fluidPage(
           )
         )
       ),
+      ),  # P10-C25r4: closes conditionalPanel("output.cn_has_data") around the result cards (3-6 + Overlap)
       # # 7) Network graph - full
       # tags$div(
       #   class = "custom-card",

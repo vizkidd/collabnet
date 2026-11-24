@@ -1,0 +1,23 @@
+/* C25_r10: empty-state spotlight. While no dataset is loaded (body.cn-spotlight, set by js/collabnet-spotlight.js) a
+   semi-transparent overlay dims the page; the top bar (all its buttons) and the Fetch card sit above it and stay fully
+   usable; Fetch (left) and Upload (top bar) get an accent glow from the app palette (#4B8BBE blue, #f39c12 amber).
+   Clicking the dimmed area (or Esc) dismisses the spotlight until the app returns to the empty state. */
+#cn-spotlight-overlay { display: none; }
+body.cn-spotlight #cn-spotlight-overlay {
+  display: block; position: fixed; inset: 0; z-index: 1030; background: rgba(15, 23, 42, 0.55); cursor: pointer;
+}
+body.dark-mode.cn-spotlight #cn-spotlight-overlay { background: rgba(0, 0, 0, 0.62); }
+body.cn-spotlight .header-container { position: relative; z-index: 1035; }
+body.cn-spotlight #cn_fetch_card {
+  position: relative; z-index: 1035;
+  outline: 3px solid #4B8BBE; outline-offset: 3px;
+  box-shadow: 0 0 0 6px rgba(75, 139, 190, 0.35), 0 0 28px 6px rgba(75, 139, 190, 0.55) !important;
+}
+body.dark-mode.cn-spotlight #cn_fetch_card { outline-color: #7fb3dc; box-shadow: 0 0 0 6px rgba(127, 179, 220, 0.3), 0 0 28px 6px rgba(127, 179, 220, 0.45) !important; }
+/* gentle pulse only when the user has not asked for reduced motion */
+@media (prefers-reduced-motion: no-preference) {
+  body.cn-spotlight #cn_fetch_card { animation: cn-spot-pulse 2.4s ease-in-out infinite; }
+}
+@keyframes cn-spot-pulse { 50% { outline-offset: 6px; } }
+/* narrow screens: the top bar wraps (all buttons stay visible, Upload first) and the sidebar stacks, so the Fetch card is
+   the first block under the bar; both stay visible and reachable. #cn-topbar-toggle is covered in case a menu is used. */

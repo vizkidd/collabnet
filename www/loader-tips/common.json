@@ -1,0 +1,22 @@
+[
+ "Fetch an author's works by ORCID iD: 16 characters in four groups (e.g. 0000-0002-8060-444X); the checksum is checked before anything is fetched.",
+ "Records come from ORCID, Scopus, Semantic Scholar, OpenAlex and Crossref, fetched directly by your browser; no CollabNET server sits in between.",
+ "Scopus needs your own Elsevier API key: click the key icon in the top bar. By default the key is kept in memory for this session only.",
+ "Hit an HTTP 429 rate limit? CollabNET retries with exponential backoff and falls back to the Crossref resolver automatically.",
+ "Edges use Newman fractional weighting: a paper with n authors adds 1/(n-1) to each co-author pair, so huge consortium papers do not dominate.",
+ "Use the edge weight slider to drop weak or one-off co-authorships and keep the core collaborations.",
+ "Tick \"Extract statistical backbone (disparity filter)\" to keep only significant ties; a lower alpha gives a sparser backbone.",
+ "Community detection offers Leiden (modularity, recommended) and Louvain; colour nodes by community to see research groups.",
+ "Betweenness centrality counts how often an author lies on the shortest paths between others: high values mark brokers between groups.",
+ "PageRank (damping 0.85) rewards authors who collaborate with well-connected authors; coreness (k-core) finds the densely connected centre.",
+ "Cut-vertex highlighting marks articulation points in red: removing one of those authors splits the network.",
+ "The Ego & Brokerage tab analyses each author's neighbourhood: structural constraint, effective network size and Burt's structural holes.",
+ "Venn diagrams compare up to 4 sets; UpSet plots show larger combinations of overlaps without the clutter.",
+ "Layout engines: Fruchterman-Reingold (force-directed), DrL (fast for large networks), Kamada-Kawai, or a background Web Worker.",
+ "Turn the network physics off to drag nodes into place by hand without them springing back.",
+ "Hamiltonian diagnostics check Dirac's and Ore's conditions on the collaboration graph.",
+ "The authorship position chart shows how often authors appear first, second, corresponding or as co-authors.",
+ "Prefer a dark screen? The moon button in the top bar switches to dark mode.",
+ "Keyboard users: press Tab through the top bar; each icon button shows its label when focused.",
+ "The first visit downloads R and its packages into your browser; later visits load from the browser cache and start much faster."
+]

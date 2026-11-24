@@ -119,19 +119,47 @@
     } else if (window.console) { console.log(text); }
   }
 
+  // C25_r12: styles for the unlock bar (kept in this file so every edition gets them without a new stylesheet)
+  function injectUnlockStyle() {
+    if (document.getElementById('cn-keystore-unlock-style')) return;
+    var st = document.createElement('style'); st.id = 'cn-keystore-unlock-style';
+    st.textContent =
+      '#cn-keystore-unlock{background:#fff;color:#1f2937;border:1px solid #ccc;border-radius:6px;padding:4px 8px;font-size:13px;' +
+        'display:flex;flex-wrap:wrap;align-items:center;gap:6px;box-sizing:border-box;max-width:100%;min-width:0}' +
+      '#cn-keystore-unlock label{margin:0;font-weight:normal;flex:1 1 12em;min-width:0;white-space:normal}' +
+      '#cn-keystore-unlock input{width:140px;max-width:100%;flex:0 1 140px;min-width:80px;color:#1f2937}' +
+      '#cn-keystore-unlock .btn{min-height:30px}' +
+      '#cn-keystore-unlock.cn-ks-inbar{position:static;flex:0 1 auto;order:99}' +
+      '#cn-keystore-unlock.cn-ks-fixed{position:fixed;top:8px;right:8px;z-index:10050;box-shadow:0 2px 8px rgba(0,0,0,.2)}' +
+      '@media (max-width:767.98px){#cn-keystore-unlock.cn-ks-inbar{flex:1 1 100%}}' +
+      'body.dark-mode #cn-keystore-unlock{background:#1e293b;color:#f1f5f9;border-color:#475569}' +
+      'body.dark-mode #cn-keystore-unlock .cn-ks-dismiss{color:#f1f5f9}';
+    (document.head || document.documentElement).appendChild(st);
+  }
+
   function showUnlockBar() {
     if (document.getElementById('cn-keystore-unlock')) return;
     var bar = document.createElement('div');
     bar.id = 'cn-keystore-unlock';
-    bar.style.cssText = 'position:fixed;top:8px;right:8px;z-index:10050;background:#fff;border:1px solid #ccc;border-radius:6px;padding:8px;box-shadow:0 2px 8px rgba(0,0,0,.2);font-size:13px;';
-    var label = document.createElement('span');
-    label.textContent = 'Encrypted API keys saved on this device. Passphrase: ';
-    var pass = document.createElement('input'); pass.type = 'password'; pass.style.width = '140px';
-    var unlock = document.createElement('button'); unlock.textContent = 'Unlock'; unlock.className = 'btn btn-xs btn-success';
-    var forgetBtn = document.createElement('button'); forgetBtn.textContent = 'Forget'; forgetBtn.className = 'btn btn-xs btn-default';
-    var close = document.createElement('button'); close.textContent = '×'; close.className = 'btn btn-xs btn-link';
+    bar.setAttribute('role', 'group'); bar.setAttribute('aria-label', 'Unlock saved API keys');
+    // C25_r12: the bar is the LAST item of the top bar's button row (.header-buttons, a wrapping flex row), not a
+    // position:fixed layer over it, so it keeps its place at the top-right but can never cover the Close / reset
+    // button or any other top-bar control: the row makes room, and at narrow widths it wraps. Fallback (no top bar,
+    // e.g. a test page): the old fixed corner.
+    injectUnlockStyle();
+    var row = document.querySelector('.header-container .header-buttons');
+    bar.className = row ? 'cn-ks-inbar' : 'cn-ks-fixed';
+    var label = document.createElement('label');
+    label.textContent = 'Encrypted API keys saved on this device. Passphrase:';
+    var pass = document.createElement('input'); pass.type = 'password'; pass.id = 'cn-keystore-pass-unlock'; pass.autocomplete = 'current-password';
+    label.htmlFor = pass.id;
+    var unlock = document.createElement('button'); unlock.type = 'button'; unlock.textContent = 'Unlock'; unlock.className = 'btn btn-xs btn-success';
+    var forgetBtn = document.createElement('button'); forgetBtn.type = 'button'; forgetBtn.textContent = 'Forget'; forgetBtn.className = 'btn btn-xs btn-default';
+    var close = document.createElement('button'); close.type = 'button'; close.textContent = '×'; close.className = 'btn btn-xs btn-link cn-ks-dismiss';
+    close.setAttribute('aria-label', 'Hide the unlock bar'); close.title = 'Hide the unlock bar';
     bar.appendChild(label); bar.appendChild(pass); bar.appendChild(unlock); bar.appendChild(forgetBtn); bar.appendChild(close);
-    document.body.appendChild(bar);
+    if (row) row.appendChild(bar); else document.body.appendChild(bar);
+    pass.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); unlock.click(); } });
     unlock.addEventListener('click', async function () {
       try {
         var keys = await loadEncrypted(ls, pass.value);
@@ -187,6 +215,7 @@
       if (hasStore(ls)) showUnlockBar();
     } catch (e) { if (root.console) root.console.error('collabnet-keystore: shiny:connected setup failed', e); }
   }
+  api.showUnlockBar = function () { if (hasStore(ls)) showUnlockBar(); };   // C25_r12: tests (no reload needed)
   registerHandlers();   // as early as possible (Shiny's API exists before the socket opens)
   if (typeof $ === 'function') $(document).on('shiny:connected', onConnected);
 })(typeof window !== 'undefined' ? window : globalThis);

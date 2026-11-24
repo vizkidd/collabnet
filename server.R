@@ -182,6 +182,26 @@ server <- function(input, output, session) {
     post_diagnostics = NULL
   )
   glens_env$rv <- rv
+  # C25_r11: Close / reset -> Soft reset, in place (www/js/collabnet-reset.js). Data back to the initial values
+  # (GScholarLENS-Fixes.R cn_reset_data), options kept; keys = TRUE also forgets the in-memory API keys, empties the key
+  # boxes and tells the browser keystore to forget its copy.
+  observeEvent(input$cn_reset, {
+    keys <- isTRUE(input$cn_reset$keys)
+    cn_reset_data(rv, glens_env, keys = keys)
+    if (keys) {
+      for (k in c("mail_key", "scopus_key", "openalex_key")) try(updateTextInput(session, k, value = ""), silent = TRUE)
+      session$sendCustomMessage("forget_browser_keys", list())
+    }
+  }, ignoreInit = TRUE)
+
+  # P10-C25r4: output panels are hidden until there is data (ui.R: conditionalPanel("output.cn_has_data") around the
+  # result cards, "output.cn_panel_ego" around the ego metrics). Only these tiny logical flags are kept alive while
+  # hidden (suspendWhenHidden = FALSE); the heavy outputs inside the hidden panels stay suspended by Shiny.
+  cn_panels_rx <- reactive(cn_panel_visibility(rv$glens_full_table, list(author_list = rv$author_list)))
+  output$cn_has_data <- reactive(isTRUE(cn_panels_rx()$has_data))
+  output$cn_panel_ego <- reactive(isTRUE(cn_panels_rx()$ego))
+  outputOptions(output, "cn_has_data", suspendWhenHidden = FALSE)
+  outputOptions(output, "cn_panel_ego", suspendWhenHidden = FALSE)
   
   # --- App Boot Operational Pre-flight Self-Test (POST) & Machine Precision ---
   post_results <- tryCatch(collabnet_run_post(verbose = TRUE), error = function(e) {
@@ -697,7 +717,7 @@ server <- function(input, output, session) {
             tags$div(
               style = "padding: 20px 10px; line-height: 1.7;",
               tags$h4("Step 2: Focal Authors & Relationship Gates", style = "color: #4B8BBE; font-weight: bold;"),
-              tags$p("In the ", tags$b("Lookup Controls"), " card, type target author names line-by-line (e.g., ", tags$code("Demis Hassabis"), ", ", tags$code("John Jumper"), ")."),
+              tags$p("Open the ", tags$b("Lookup Controls"), " card (it starts minimized: click its header or the ", tags$b("+"), "), then type target author names line-by-line (e.g., ", tags$code("Demis Hassabis"), ", ", tags$code("John Jumper"), ")."),
               tags$p("Then select a ", tags$b("Relationship Filter"), " logic gate:"),
               tags$ul(
                 tags$li(tags$b("Full Data (Unfiltered): "), "Keep every paper in the dataset; focal authors are highlighted in the network."),

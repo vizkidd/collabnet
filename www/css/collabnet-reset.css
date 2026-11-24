@@ -1,0 +1,25 @@
+/* C25_r11: Close / reset dialog (js/collabnet-reset.js). Above the spotlight overlay (1030) and the top bar (1035). */
+.cn-reset-backdrop { position: fixed; inset: 0; z-index: 1060; background: rgba(15, 23, 42, 0.55);
+  display: flex; align-items: center; justify-content: center; padding: 16px; }
+.cn-reset-backdrop[hidden] { display: none; }
+.cn-reset-dialog { background: #fff; color: #1f2937; border-radius: 8px; max-width: 520px; width: 100%;
+  padding: 18px 20px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35); max-height: calc(100vh - 32px); overflow: auto; }
+.cn-reset-dialog h2 { font-size: 1.25rem; margin: 0 0 6px; }
+.cn-reset-dialog p { margin: 0 0 12px; color: #4b5563; }
+.cn-reset-row { display: flex; gap: 12px; align-items: center; margin: 10px 0; }
+.cn-reset-row .btn { min-width: 118px; flex: none; }
+.cn-reset-explain { font-size: 0.9rem; color: #4b5563; }
+.cn-reset-keys { display: block; font-weight: normal; margin: 14px 0 4px; font-size: 0.9rem; }
+.cn-reset-foot { text-align: right; margin-top: 10px; }
+.cn-reset-dialog .btn:focus-visible, .cn-reset-keys input:focus-visible { outline: 3px solid #f39c12; outline-offset: 2px; }
+body.dark-mode .cn-reset-dialog { background: #1f2937; color: #e5e7eb; }
+body.dark-mode .cn-reset-dialog p, body.dark-mode .cn-reset-explain { color: #cbd5e1; }
+body.dark-mode .cn-reset-backdrop { background: rgba(0, 0, 0, 0.65); }
+@media (max-width: 480px) {
+  .cn-reset-row { flex-direction: column; align-items: stretch; gap: 4px; }
+}
+#cn-reset-toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 1070;
+  background: #2c3e50; color: #fff; padding: 10px 16px; border-radius: 6px; opacity: 0; pointer-events: none;
+  transition: opacity 0.2s; max-width: calc(100vw - 32px); }
+#cn-reset-toast.is-on { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { #cn-reset-toast { transition: none; } }

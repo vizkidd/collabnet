@@ -12,8 +12,6 @@
 .cn-ld-bar { height: 8px; background: #e2e8f0; border-radius: 999px; overflow: hidden; }
 .cn-ld-fill { height: 100%; width: 0; background: #2b6a9c; transition: width .3s; }
 .cn-ld-detail, .cn-ld-time, .cn-ld-stall { font-size: 14px; color: #5f6b7a; }
-.cn-ld-reload { font: inherit; padding: 4px 12px; border-radius: 6px; border: 1px solid #2b6a9c; background: #2b6a9c; color: #ffffff; cursor: pointer; }
-.cn-ld-reload:focus-visible { outline: 3px solid #2b6a9c; outline-offset: 2px; }
 .cn-ld-about { border-top: 1px solid #e2e8f0; margin-top: 16px; font-size: 14px; }
 .cn-ld-about h2 { font-size: 1rem; }
 @media (prefers-color-scheme: dark) {
@@ -22,6 +20,23 @@
   .cn-ld-stages li, .cn-ld-detail, .cn-ld-time, .cn-ld-stall { color: #9aa0a6; }
   .cn-ld-stages li.active, .cn-ld-stages li.done { color: #e2e8f0; }
   .cn-ld-bar { background: #334155; } .cn-ld-fill { background: #7cb7ff; }
-  .cn-ld-reload { background: #7cb7ff; border-color: #7cb7ff; color: #121212; }
 }
 @media (prefers-reduced-motion: reduce) { .cn-ld, .cn-ld-fill { transition: none; } }
+/* P10-C6: slow-loading hint and "While you wait" tip carousel (tokens: primary #2b6a9c / dark #7cb7ff, border #e2e8f0) */
+.cn-ld-stall { margin-top: 12px; padding: 12px; border: 1px solid #f0b400; border-radius: 8px; background: #fff8e1; color: #5c4300; }
+.cn-ld-stall-title { margin: 0 0 4px; font-weight: 700; color: #5c4300; }
+.cn-ld-stall-list { margin: 0 0 8px; padding-left: 1.2em; }
+.cn-ld-tip { min-height: 4.8em; border-radius: 6px; outline: none; }
+.cn-ld-tip:focus-visible { outline: 3px solid #2b6a9c; outline-offset: 2px; }
+.cn-ld-tip-text { margin: 0; color: #2c3e50; transition: opacity .25s; }
+.cn-ld-tip-nav { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.cn-ld-tip-btn { font: inherit; font-size: 18px; line-height: 1; min-width: 36px; min-height: 32px; border-radius: 6px; border: 1px solid #2b6a9c; background: #ffffff; color: #1d4f7a; cursor: pointer; }
+.cn-ld-tip-btn:focus-visible { outline: 3px solid #2b6a9c; outline-offset: 2px; }
+.cn-ld-tip-pos { font-size: 13px; color: #5f6b7a; font-variant-numeric: tabular-nums; }
+@media (prefers-color-scheme: dark) {
+  .cn-ld-stall { background: #2e2700; color: #ffe08a; border-color: #f0b400; }
+  .cn-ld-stall-title { color: #ffe08a; }
+  .cn-ld-tip-text { color: #e2e8f0; } .cn-ld-tip-pos { color: #9aa0a6; }
+  .cn-ld-tip-btn { background: #1e1e1e; color: #7cb7ff; border-color: #7cb7ff; }
+}
+@media (prefers-reduced-motion: reduce) { .cn-ld-tip-text { transition: none; } }
